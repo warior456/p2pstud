@@ -124,12 +124,12 @@
 
 | ID | Requirement | Priority | Status |
 |---|---|---|---|
-| R7.1 | BLAKE3 verification on every received chunk (via iroh-blobs, not custom) | Must | ⬜ |
-| R7.2 | Path traversal prevention on all user-supplied paths | Must | ⬜ |
-| R7.3 | No unauthenticated HTTP/RPC ports on student machines | Must | ⬜ |
-| R7.4 | SecretKey owner-only file permissions (0o600 / Windows ACL) | Must | ⬜ |
-| R7.5 | Relay TLS required (no plaintext relay connections) | Must | ⬜ |
-| R7.6 | IPC commands sanitize all string inputs before use as paths | Must | ⬜ |
+| R7.1 | BLAKE3 verification on every received chunk (via iroh-blobs, not custom) | Must | ✅ |
+| R7.2 | Path traversal prevention on all user-supplied paths | Must | ✅ |
+| R7.3 | No unauthenticated HTTP/RPC ports on student machines | Must | ✅ |
+| R7.4 | SecretKey owner-only file permissions (0o600 / Windows ACL) | Must | ✅ |
+| R7.5 | Relay TLS required (no plaintext relay connections) | Must | ✅ |
+| R7.6 | IPC commands sanitize all string inputs before use as paths | Must | ✅ |
 
 ---
 
@@ -137,14 +137,14 @@
 
 | ID | Requirement | Priority | Status |
 |---|---|---|---|
-| R8.1 | Unit tests for LRU eviction (oldest-first, pin survival, 80% target) | Must | ⬜ |
-| R8.2 | Unit tests for path traversal rejection | Must | ⬜ |
-| R8.3 | Unit test: SecretKey serialization round-trip | Must | ⬜ |
-| R8.4 | Integration test: two local Iroh nodes exchange a blob | Must | ⬜ |
-| R8.5 | Frontend component tests (Vitest) with mocked IPC | Should | ⬜ |
-| R8.6 | CI: build both Windows and Linux targets on push to main | Must | ⬜ |
-| R8.7 | CI: clippy with -D warnings (zero warnings policy) | Must | ⬜ |
-| R8.8 | CI: cargo fmt check | Must | ⬜ |
+| R8.1 | Unit tests for LRU eviction (oldest-first, pin survival, 80% target) | Must | ✅ |
+| R8.2 | Unit tests for path traversal rejection | Must | ✅ |
+| R8.3 | Unit test: SecretKey serialization round-trip | Must | ✅ |
+| R8.4 | Integration test: two local Iroh nodes exchange a blob | Must | ✅ |
+| R8.5 | Frontend component tests (Vitest) with mocked IPC | Should | ✅ |
+| R8.6 | CI: build both Windows and Linux targets on push to main | Must | ✅ |
+| R8.7 | CI: clippy with -D warnings (zero warnings policy) | Must | ✅ |
+| R8.8 | CI: cargo fmt check | Must | ✅ |
 
 ---
 

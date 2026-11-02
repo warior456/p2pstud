@@ -14,15 +14,15 @@ path = "src/bin/anchor.rs"
 
 [lib]
 name = "p2pstud_lib"
-crate-type = ["staticlib", "cdylib", "rlib"]
+crate-type = ["rlib"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri          = { version = "2", features = ["protocol-asset"] }
+tauri          = { version = "2" }
 tauri-plugin-shell = "2"
-tauri-plugin-dialog = "2"
+# tauri-plugin-dialog removed (not required)
 tauri-plugin-fs    = "2"
 
 # P2P networking
@@ -49,6 +49,11 @@ dirs           = "5"
 # Logging
 tracing             = "0.1"
 tracing-subscriber  = { version = "0.3", features = ["env-filter"] }
+
+# Utilities
+bytes          = "1"
+rand           = "0.8"
+nonzero_ext    = "0.3"
 
 # CLI (anchor binary only)
 clap = { version = "4", features = ["derive"] }

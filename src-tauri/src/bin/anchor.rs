@@ -17,7 +17,8 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use clap::Parser;
 use governor::{Quota, RateLimiter};
-use iroh::{Endpoint, RelayMode, RelayUrl, SecretKey};
+use iroh::key::SecretKey;
+use iroh::{Endpoint, RelayMode};
 use iroh_blobs::net_protocol::Blobs;
 use iroh_blobs::store::fs::Store as BlobStore;
 use iroh_blobs::util::local_pool::LocalPool;
@@ -99,7 +100,7 @@ async fn main() -> Result<()> {
     let blob_dir = args.data_dir.join("blobs");
     std::fs::create_dir_all(&blob_dir)?;
     let pool = LocalPool::default();
-    let store = BlobStore::load_or_create(&blob_dir).await?;
+    let store = BlobStore::load(&blob_dir).await?;
 
     // Build QUIC endpoint.
     let endpoint = Endpoint::builder()
@@ -116,14 +117,13 @@ async fn main() -> Result<()> {
     tracing::info!(addr = ?endpoint.node_addr().await?, "Endpoint bound");
 
     // Attach blobs protocol.
-    let blobs = Arc::new(
-        Blobs::builder(store)
-            .build(&pool.handle(), &endpoint)
-            .await?,
-    );
+    let router = iroh::protocol::Router::builder(endpoint);
+    let _blobs = Blobs::builder(store).build(pool.handle(), router.endpoint());
+    let router = router.accept(iroh_blobs::ALPN, _blobs.clone());
+    let running_router = router.spawn().await?;
 
     // Build rate limiters.
-    let aggregate_limiter = Arc::new(
+    let _aggregate_limiter = Arc::new(
         RateLimiter::direct(
             Quota::per_second(nonzero!(1u32))
                 .allow_burst(nonzero!(1u32))
@@ -147,7 +147,7 @@ async fn main() -> Result<()> {
     signal::ctrl_c().await.context("waiting for Ctrl+C")?;
     tracing::info!("Shutting down anchor node");
 
-    endpoint.close().await;
+    let _ = running_router.shutdown().await;
     Ok(())
 }
 
@@ -187,6 +187,7 @@ async fn start_relay_server(args: &Args) -> Result<()> {
 
 /// Token-bucket rate limiter state for egress throttling.
 /// Each peer session gets its own `SessionLimiter`; the aggregate is shared.
+#[allow(dead_code)]
 struct SessionLimiter {
     /// Bytes remaining in the current token bucket for this session.
     session_tokens: f64,
@@ -198,6 +199,7 @@ struct SessionLimiter {
     last_refill: Instant,
 }
 
+#[allow(dead_code)]
 impl SessionLimiter {
     fn new(
         max_session_bps: u32,
@@ -243,4 +245,5 @@ impl SessionLimiter {
         }
     }
 }
+
 

@@ -4,7 +4,7 @@
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
-use crate::storage::blob_tracker::{total_bytes, total_pinned_bytes, total_unpinned_bytes};
+use crate::storage::blob_tracker::{total_bytes, total_pinned_bytes};
 use crate::AppState;
 
 /// Payload returned to the frontend by `get_storage_stats`.

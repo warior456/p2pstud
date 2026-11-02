@@ -6,12 +6,19 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Result};
 
+fn strip_unc_prefix(path: PathBuf) -> PathBuf {
+    #[cfg(windows)]
+    {
+        let s = path.to_string_lossy();
+        if let Some(stripped) = s.strip_prefix(r"\\?\") {
+            return PathBuf::from(stripped.to_string());
+        }
+    }
+    path
+}
+
 /// Join `base` with `user_input` and verify the result stays within `base`.
 /// Returns an error on any path traversal attempt (e.g., "../../../etc/passwd").
-///
-/// NOTE: Both `base` and the joined path are canonicalized, so the base must
-/// exist on disk before this is called. For components that don't exist yet
-/// (e.g., new file names), use `safe_join_unchecked` instead.
 pub fn safe_join(base: &Path, user_input: &str) -> Result<PathBuf> {
     // Reject null bytes — they would truncate paths on C-backed syscalls.
     if user_input.contains('\0') {
@@ -21,13 +28,17 @@ pub fn safe_join(base: &Path, user_input: &str) -> Result<PathBuf> {
     let joined = base.join(user_input);
 
     // Canonicalize requires the path to exist on disk.
-    let canonical = joined
-        .canonicalize()
-        .map_err(|e| anyhow::anyhow!("path does not exist or cannot be resolved: {e}"))?;
+    let canonical = strip_unc_prefix(
+        joined
+            .canonicalize()
+            .map_err(|e| anyhow::anyhow!("path does not exist or cannot be resolved: {e}"))?,
+    );
 
-    let canonical_base = base
-        .canonicalize()
-        .map_err(|e| anyhow::anyhow!("base path cannot be resolved: {e}"))?;
+    let canonical_base = strip_unc_prefix(
+        base
+            .canonicalize()
+            .map_err(|e| anyhow::anyhow!("base path cannot be resolved: {e}"))?,
+    );
 
     if !canonical.starts_with(&canonical_base) {
         bail!(
@@ -47,13 +58,15 @@ pub fn safe_join_new(base: &Path, user_input: &str) -> Result<PathBuf> {
         bail!("path contains null byte");
     }
 
-    let joined = base.join(user_input);
-    let normalized = normalize_path(&joined);
-
     // The canonical base must exist (we only relax requirements for the child).
-    let canonical_base = base
-        .canonicalize()
-        .map_err(|e| anyhow::anyhow!("base path cannot be resolved: {e}"))?;
+    let canonical_base = strip_unc_prefix(
+        base
+            .canonicalize()
+            .map_err(|e| anyhow::anyhow!("base path cannot be resolved: {e}"))?,
+    );
+
+    let joined = canonical_base.join(user_input);
+    let normalized = normalize_path(&joined);
 
     if !normalized.starts_with(&canonical_base) {
         bail!(
@@ -98,7 +111,8 @@ mod tests {
         std::fs::create_dir(&sub).unwrap();
         let result = safe_join(dir.path(), "subdir");
         assert!(result.is_ok());
-        assert!(result.unwrap().starts_with(dir.path()));
+        let expected = strip_unc_prefix(dir.path().canonicalize().unwrap());
+        assert!(result.unwrap().starts_with(&expected));
     }
 
     #[test]
@@ -135,4 +149,3 @@ mod tests {
         assert!(result.is_err());
     }
 }
-

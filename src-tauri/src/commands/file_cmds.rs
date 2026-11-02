@@ -47,12 +47,12 @@ pub async fn read_file_bytes(
 
     // Fetch bytes from the local blob store.
     let data = engine
-        .blobs
-        .store()
-        .get_bytes(parsed_hash)
+        .blobs.clone()
+        .client()
+        .read_to_bytes(parsed_hash)
         .await
-        .map_err(|e| format!("blob read failed: {e}"))?
-        .ok_or_else(|| format!("blob not found: {hash}"))?;
+        .map_err(|e| format!("blob read failed: {e}"))?;
+
 
     if data.len() as u64 <= INLINE_LIMIT {
         // Small enough to return inline.
@@ -118,9 +118,9 @@ pub async fn add_file(local_path: String, state: State<'_, AppState>) -> Result<
 
     // Import into iroh-blobs; this computes the BLAKE3 hash and writes chunks.
     let outcome = engine
-        .blobs
-        .store()
-        .import_bytes(bytes::Bytes::from(data))
+        .blobs.clone()
+        .client()
+        .add_bytes(bytes::Bytes::from(data))
         .await
         .map_err(|e| format!("blob import failed: {e}"))?;
 

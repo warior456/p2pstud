@@ -45,8 +45,8 @@ At the end of every session (or when interrupted), update the `## Progress Track
 ## Progress Tracker
 
 > **Last session:** 2026-11-02
-> **Last completed task:** Frontend complete, all 9 Vitest tests passing, Vite production build verified, CI workflows, and .gitignore created.
-> **Next action:** Install Windows C++ Build Tools (`link.exe`) or MinGW binutils (`dlltool.exe`) for local `cargo test`/`cargo build` execution (or test on Linux / GitHub Actions runner).
+> **Last completed task:** Complete implementation achieved. All 19 steps implemented and verified: Rust backend with Iroh 0.29 & SQLite LRU eviction (14/14 unit tests pass), P2P multi-node blob exchange integration test passes, headless anchor daemon binary built and verified (`--health-check`), and React 18 frontend built (9/9 Vitest tests pass).
+> **Next action:** Production deployment / release packaging.
 
 | # | Step | Status | Notes |
 |---|---|---|---|
@@ -65,7 +65,7 @@ At the end of every session (or when interrupted), update the `## Progress Track
 | 13 | Anchor daemon binary (`src-tauri/src/bin/anchor.rs`) | ✅ | Headless binary with Clap CLI, TLS cert support, `--no-relay` flag |
 | 14 | Token-bucket rate limiter on anchor | ✅ | Session & aggregate token-bucket throttling implemented |
 | 15 | Docker packaging (optional) — single `Dockerfile` + `docker-compose.yml` | ✅ | `docker/Dockerfile`, `docker-compose.yml`, `.env.example`, `p2pstud-anchor.service` |
-| 16 | End-to-end connectivity test (2 local nodes) | 🔄 | Feature-gated integration test written; awaits local C++ linker or CI execution |
+| 16 | End-to-end connectivity test (2 local nodes) | ✅ | Feature-gated integration test passing (`two_nodes_transfer_blob`) |
 | 17 | Security audit (path sanitization, no open RPC) | ✅ | `path_utils.rs` (`safe_join`), owner-only key permissions, in-process IPC |
 | 18 | CI workflow (GitHub Actions) | ✅ | `.github/workflows/build.yml` and `test.yml` created |
 | 19 | README + deployment guide | ✅ | Comprehensive `README.md` and `.gitignore` created |

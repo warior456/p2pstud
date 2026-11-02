@@ -5,7 +5,7 @@
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use iroh::SecretKey;
+use iroh::key::SecretKey;
 
 /// Path within the app data directory where the secret key is stored.
 const KEY_FILENAME: &str = "iroh_secret.key";
@@ -24,7 +24,7 @@ pub fn load_or_create_secret_key(data_dir: &Path) -> Result<SecretKey> {
 
         Ok(SecretKey::from_bytes(&arr))
     } else {
-        let key = SecretKey::generate(rand::rngs::OsRng);
+        let key = SecretKey::generate();
         let bytes = key.to_bytes();
 
         // Write atomically via a temp file, then rename.
@@ -58,7 +58,13 @@ pub fn load_or_create_secret_key(data_dir: &Path) -> Result<SecretKey> {
 fn restrict_file_to_current_user(path: &std::path::Path) -> Result<()> {
     use std::process::Command;
 
-    let path_str = path.to_string_lossy();
+    let full_path = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir().unwrap_or_default().join(path)
+    };
+    let path_str = full_path.to_string_lossy();
+    let username = std::env::var("USERNAME").unwrap_or_else(|_| "Everyone".to_string());
 
     // Remove inherited permissions and grant current user full control only.
     let status = Command::new("icacls")
@@ -66,7 +72,7 @@ fn restrict_file_to_current_user(path: &std::path::Path) -> Result<()> {
             path_str.as_ref(),
             "/inheritance:r",  // remove inherited ACEs
             "/grant:r",
-            &format!("{}:F", std::env::var("USERNAME").unwrap_or_default()),
+            &format!("{}:(F)", username),
         ])
         .status()
         .context("running icacls to restrict secret key permissions")?;

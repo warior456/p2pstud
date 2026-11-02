@@ -1,7 +1,7 @@
 // src-tauri/src/storage/blob_tracker.rs
 // CRUD operations on the local_blobs SQLite table.
 
-use std::sync::Arc;
+// tracking local blobs
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Result;
@@ -147,6 +147,7 @@ pub fn get_blob(db: &Database, hash: &str) -> Result<Option<BlobRecord>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
     use crate::storage::db::Database;
     use tempfile::TempDir;
 

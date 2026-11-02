@@ -27,7 +27,7 @@ pub async fn list_peers(state: State<'_, AppState>) -> Result<Vec<PeerInfo>, Str
         .remote_info_iter()
         .map(|info| PeerInfo {
             node_id: info.node_id.to_string(),
-            relay_url: info.relay_url.as_ref().map(|u| u.to_string()),
+            relay_url: info.relay_url.as_ref().map(|u| u.relay_url.to_string()),
             latency_ms: info
                 .latency
                 .map(|d| d.as_millis() as u64),

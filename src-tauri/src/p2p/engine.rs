@@ -6,7 +6,9 @@ use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::Result;
-use iroh::{Endpoint, NodeId, RelayMode, SecretKey};
+use iroh::key::SecretKey;
+use iroh::{Endpoint, NodeId, RelayMap, RelayMode};
+use iroh::protocol::Router;
 use iroh_blobs::net_protocol::Blobs;
 use iroh_blobs::store::fs::Store as BlobStore;
 use iroh_blobs::util::local_pool::LocalPool;
@@ -21,6 +23,7 @@ use crate::storage::db::Database;
 pub struct IrohEngine {
     pub endpoint: Endpoint,
     pub blobs: Arc<Blobs<BlobStore>>,
+    _router: Arc<Router>,
     _pool: Arc<LocalPool>,
 }
 
@@ -45,25 +48,29 @@ impl IrohEngine {
         let blob_dir = data_dir.join("blobs");
         std::fs::create_dir_all(&blob_dir)?;
         let pool = LocalPool::default();
-        let store = BlobStore::load_or_create(&blob_dir).await?;
+        let store = BlobStore::load(&blob_dir).await?;
 
         // 4. Build QUIC endpoint with relay fallback.
         let endpoint = Endpoint::builder()
             .secret_key(secret_key)
-            .relay_mode(RelayMode::Custom(relay.into()))
+            .relay_mode(RelayMode::Custom(RelayMap::from_url(relay)))
             .bind()
             .await?;
 
-        // 5. Attach blobs protocol handler.
-        let blobs = Arc::new(
+        let router = Router::builder(endpoint);
+        let blobs =
             Blobs::builder(store)
-                .build(&pool.handle(), &endpoint)
-                .await?,
-        );
+                .build(pool.handle(), router.endpoint());
+        let router = router.accept(iroh_blobs::ALPN, blobs.clone());
+        let endpoint = router.endpoint().clone();
+        let running_router = router.spawn().await?;
+
+        // done
 
         Ok(IrohEngine {
             endpoint,
             blobs,
+            _router: Arc::new(running_router),
             _pool: Arc::new(pool),
         })
     }
