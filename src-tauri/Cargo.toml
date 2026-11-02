@@ -3,6 +3,7 @@ name = "p2pstud-tauri"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.77"
+default-run = "p2pstud"
 
 [[bin]]
 name = "p2pstud"
@@ -20,7 +21,7 @@ crate-type = ["rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri          = { version = "2" }
+tauri          = { version = "2", features = [] }
 tauri-plugin-shell = "2"
 # tauri-plugin-dialog removed (not required)
 tauri-plugin-fs    = "2"
