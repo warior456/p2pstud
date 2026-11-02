@@ -58,7 +58,7 @@ pub async fn run_eviction_pass(db: &Arc<Database>, engine: &IrohEngine) -> Resul
     };
 
     let high_mark = (quota as f64 * EVICTION_HIGH_WATERMARK) as u64;
-    let low_mark  = (quota as f64 * EVICTION_LOW_WATERMARK)  as u64;
+    let low_mark = (quota as f64 * EVICTION_LOW_WATERMARK) as u64;
 
     let mut used = total_unpinned_bytes(db)?;
     if used <= high_mark {
@@ -169,7 +169,8 @@ mod tests {
     /// Sets quota to `quota` bytes, inserts `n` blobs each of `blob_size` bytes
     /// (oldest inserted first so LRU order matches insertion order).
     fn fill_db(db: &Arc<Database>, quota: u64, n: usize, blob_size: u64) {
-        db.set_setting("cache_limit_bytes", &quota.to_string()).unwrap();
+        db.set_setting("cache_limit_bytes", &quota.to_string())
+            .unwrap();
         db.set_setting("full_mirror", "false").unwrap();
         for i in 0..n {
             let hash = format!("{:064x}", i); // fake 64-char hex hash
@@ -207,7 +208,13 @@ mod tests {
         db.set_setting("full_mirror", "false").unwrap();
 
         // Insert one pinned blob.
-        upsert_blob(&db, "pinned_hash_000000000000000000000000000000000000000000000000000000", 500, true).unwrap();
+        upsert_blob(
+            &db,
+            "pinned_hash_000000000000000000000000000000000000000000000000000000",
+            500,
+            true,
+        )
+        .unwrap();
         // Insert enough unpinned to trigger eviction.
         for i in 1..=6 {
             let hash = format!("{:064}", i);
@@ -241,4 +248,3 @@ mod tests {
         assert!(candidates[1].last_accessed_at <= candidates[2].last_accessed_at);
     }
 }
-

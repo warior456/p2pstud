@@ -17,6 +17,6 @@ pub fn parse_relay_url(url_str: &str) -> anyhow::Result<RelayUrl> {
     } else {
         url_str
     };
-    s.parse::<RelayUrl>().map_err(|e| anyhow::anyhow!("invalid relay URL '{}': {}", s, e))
+    s.parse::<RelayUrl>()
+        .map_err(|e| anyhow::anyhow!("invalid relay URL '{}': {}", s, e))
 }
-

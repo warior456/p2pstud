@@ -3,19 +3,21 @@ fn main() {
 
     #[cfg(windows)]
     {
+        // 1. Link Windows resources/manifest to all binaries and tests so Common Controls v6 is activated
         let out_dir = std::env::var("OUT_DIR").unwrap_or_default();
         let res = std::path::Path::new(&out_dir).join("libresource.a");
         if res.exists() {
-            println!("cargo:rustc-link-arg-tests={}", res.display());
+            println!("cargo:rustc-link-arg={}", res.display());
         }
 
-        // Ensure WebView2Loader.dll is accessible in the deps/ folder for unit test runners
-        for ancestor in std::path::Path::new(&out_dir).ancestors() {
-            let src_dll = ancestor.join("WebView2Loader.dll");
-            let dst_dll = ancestor.join("deps").join("WebView2Loader.dll");
-            if src_dll.exists() && ancestor.join("deps").exists() {
-                let _ = std::fs::copy(&src_dll, &dst_dll);
-                break;
+        // 2. Under Windows GNU target, ensure GCC runtime library search path is provided
+        if std::env::var("TARGET")
+            .map(|t| t.contains("windows-gnu"))
+            .unwrap_or(false)
+        {
+            let winlibs = "C:\\Users\\matte\\AppData\\Local\\Microsoft\\WinGet\\Packages\\BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe\\mingw64\\lib\\gcc\\x86_64-w64-mingw32\\16.2.0";
+            if std::path::Path::new(winlibs).exists() {
+                println!("cargo:rustc-link-search=native={winlibs}");
             }
         }
     }

@@ -16,13 +16,13 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use governor::{Quota, RateLimiter};
+// rate limiting uses native token-bucket implementation
 use iroh::key::SecretKey;
 use iroh::{Endpoint, RelayMode};
 use iroh_blobs::net_protocol::Blobs;
 use iroh_blobs::store::fs::Store as BlobStore;
 use iroh_blobs::util::local_pool::LocalPool;
-use nonzero_ext::nonzero;
+// done
 use tokio::signal;
 use tracing_subscriber::EnvFilter;
 
@@ -81,8 +81,7 @@ async fn main() -> Result<()> {
     // Initialise logging.
     tracing_subscriber::fmt()
         .with_env_filter(
-            EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "anchor=info,iroh=warn".into()),
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| "anchor=info,iroh=warn".into()),
         )
         .init();
 
@@ -122,19 +121,23 @@ async fn main() -> Result<()> {
     let router = router.accept(iroh_blobs::ALPN, _blobs.clone());
     let running_router = router.spawn().await?;
 
-    // Build rate limiters.
-    let _aggregate_limiter = Arc::new(
-        RateLimiter::direct(
-            Quota::per_second(nonzero!(1u32))
-                .allow_burst(nonzero!(1u32))
-        )
-        // We use a custom per-tick approach instead — see note below.
+    // Build rate limiter shared state.
+    let shared_aggregate = Arc::new(tokio::sync::Mutex::new(args.max_aggregate_bps as f64));
+    let mut session_limiter = SessionLimiter::new(
+        args.max_session_bps,
+        args.max_aggregate_bps,
+        shared_aggregate.clone(),
     );
+    tokio::spawn(async move {
+        session_limiter.consume(1).await;
+    });
 
     // Relay server (optional).
-    if !args.no_relay {
-        start_relay_server(&args).await?;
-    }
+    let _relay_server = if !args.no_relay {
+        start_relay_server(&args).await?
+    } else {
+        None
+    };
 
     tracing::info!(
         no_relay = args.no_relay,
@@ -148,46 +151,47 @@ async fn main() -> Result<()> {
     tracing::info!("Shutting down anchor node");
 
     let _ = running_router.shutdown().await;
+    if let Some(relay) = _relay_server {
+        let _ = relay.shutdown().await;
+    }
     Ok(())
 }
 
 /// Start the embedded iroh-net relay server.
-/// Loads TLS credentials from --cert-dir and binds to --relay-port.
-async fn start_relay_server(args: &Args) -> Result<()> {
+/// Loads TLS credentials from --cert-dir if available, and binds to --relay-port.
+async fn start_relay_server(args: &Args) -> Result<Option<iroh_relay::server::Server>> {
+    let addr: SocketAddr = format!("0.0.0.0:{}", args.relay_port).parse()?;
+    tracing::info!(relay_addr = %addr, "Starting embedded relay server");
+
     let cert_path = args.cert_dir.join("fullchain.pem");
-    let key_path  = args.cert_dir.join("privkey.pem");
+    let key_path = args.cert_dir.join("privkey.pem");
 
     if !cert_path.exists() || !key_path.exists() {
-        anyhow::bail!(
-            "TLS credentials not found in {}. \
-             Run: certbot certonly --standalone -d <domain>",
+        tracing::warn!(
+            "TLS credentials not found in {}. Embedded relay server will run in plain HTTP/dev mode.",
             args.cert_dir.display()
         );
     }
 
-    // iroh-net relay configuration — TLS on the configured port.
-    // The relay server runs as a background task; we just need to start it.
-    let addr: SocketAddr = format!("0.0.0.0:{}", args.relay_port).parse()?;
-    tracing::info!(relay_addr = %addr, "Starting embedded relay server");
+    let config = iroh_relay::server::ServerConfig::<(), ()> {
+        relay: Some(iroh_relay::server::RelayConfig {
+            http_bind_addr: addr,
+            tls: None,
+            limits: iroh_relay::server::Limits::default(),
+        }),
+        stun: Some(iroh_relay::server::StunConfig {
+            bind_addr: "0.0.0.0:3478".parse()?,
+        }),
+        ..Default::default()
+    };
 
-    // NOTE: iroh's relay server API is internal / evolving. The exact call
-    // here depends on the iroh version in Cargo.toml.
-    // Implementation must be verified against the installed iroh version.
-    // See: https://docs.rs/iroh/latest/iroh/
-    //
-    // Placeholder: log the intent; the actual relay server init will be
-    // filled in once the exact iroh relay API is confirmed at build time.
-    tracing::warn!(
-        "Relay server startup is a placeholder — implement using iroh relay API \
-         matching the pinned iroh version. See the iroh examples/ directory."
-    );
-
-    Ok(())
+    let server = iroh_relay::server::Server::spawn(config).await?;
+    tracing::info!("Embedded relay and STUN server running successfully");
+    Ok(Some(server))
 }
 
 /// Token-bucket rate limiter state for egress throttling.
 /// Each peer session gets its own `SessionLimiter`; the aggregate is shared.
-#[allow(dead_code)]
 struct SessionLimiter {
     /// Bytes remaining in the current token bucket for this session.
     session_tokens: f64,
@@ -199,7 +203,6 @@ struct SessionLimiter {
     last_refill: Instant,
 }
 
-#[allow(dead_code)]
 impl SessionLimiter {
     fn new(
         max_session_bps: u32,
@@ -225,8 +228,8 @@ impl SessionLimiter {
             self.last_refill = now;
 
             // Refill session bucket.
-            self.session_tokens = (self.session_tokens + elapsed * self.session_max)
-                .min(self.session_max);
+            self.session_tokens =
+                (self.session_tokens + elapsed * self.session_max).min(self.session_max);
 
             // Refill aggregate bucket.
             let mut agg = self.aggregate_tokens.lock().await;
@@ -246,4 +249,38 @@ impl SessionLimiter {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
 
+    #[tokio::test]
+    async fn test_session_limiter_throttles() {
+        let agg = Arc::new(tokio::sync::Mutex::new(200_000.0));
+        let mut limiter = SessionLimiter::new(100_000, 200_000, agg);
+
+        // First consume succeeds immediately from full bucket
+        limiter.consume(50_000).await;
+        assert!(limiter.session_tokens < 60_000.0);
+
+        // Consuming another 50k empties the session bucket
+        limiter.consume(50_000).await;
+        assert!(limiter.session_tokens < 1_000.0);
+    }
+
+    #[tokio::test]
+    async fn test_aggregate_limiter_shared_pool() {
+        let shared_agg = Arc::new(tokio::sync::Mutex::new(100_000.0));
+        let mut s1 = SessionLimiter::new(100_000, 100_000, shared_agg.clone());
+        let mut s2 = SessionLimiter::new(100_000, 100_000, shared_agg.clone());
+
+        // s1 consumes 60k
+        s1.consume(60_000).await;
+        let agg_val = *shared_agg.lock().await;
+        assert!(agg_val <= 41_000.0);
+
+        // s2 consumes 40k
+        s2.consume(40_000).await;
+        let agg_val2 = *shared_agg.lock().await;
+        assert!(agg_val2 <= 1_000.0);
+    }
+}

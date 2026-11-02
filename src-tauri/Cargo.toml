@@ -28,6 +28,7 @@ tauri-plugin-fs    = "2"
 # P2P networking
 iroh           = "0.29"
 iroh-blobs     = "0.29"
+iroh-relay     = "0.29"
 
 # Async runtime
 tokio          = { version = "1", features = ["full"] }

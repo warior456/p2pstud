@@ -75,6 +75,7 @@ pub fn run() {
             commands::storage_cmds::set_cache_limit,
             commands::file_cmds::pin_file,
             commands::file_cmds::unpin_file,
+            commands::file_cmds::list_files,
             commands::file_cmds::read_file_bytes,
             commands::file_cmds::add_file,
             commands::peer_cmds::list_peers,
@@ -83,4 +84,3 @@ pub fn run() {
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
-

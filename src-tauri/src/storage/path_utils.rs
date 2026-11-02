@@ -35,8 +35,7 @@ pub fn safe_join(base: &Path, user_input: &str) -> Result<PathBuf> {
     );
 
     let canonical_base = strip_unc_prefix(
-        base
-            .canonicalize()
+        base.canonicalize()
             .map_err(|e| anyhow::anyhow!("base path cannot be resolved: {e}"))?,
     );
 
@@ -60,8 +59,7 @@ pub fn safe_join_new(base: &Path, user_input: &str) -> Result<PathBuf> {
 
     // The canonical base must exist (we only relax requirements for the child).
     let canonical_base = strip_unc_prefix(
-        base
-            .canonicalize()
+        base.canonicalize()
             .map_err(|e| anyhow::anyhow!("base path cannot be resolved: {e}"))?,
     );
 

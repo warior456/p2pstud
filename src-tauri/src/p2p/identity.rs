@@ -18,9 +18,9 @@ pub fn load_or_create_secret_key(data_dir: &Path) -> Result<SecretKey> {
         let bytes = std::fs::read(&key_path)
             .with_context(|| format!("reading secret key from {}", key_path.display()))?;
 
-        let arr: [u8; 32] = bytes
-            .try_into()
-            .map_err(|_| anyhow::anyhow!("secret key file has wrong length — delete it to regenerate"))?;
+        let arr: [u8; 32] = bytes.try_into().map_err(|_| {
+            anyhow::anyhow!("secret key file has wrong length — delete it to regenerate")
+        })?;
 
         Ok(SecretKey::from_bytes(&arr))
     } else {
@@ -46,7 +46,10 @@ pub fn load_or_create_secret_key(data_dir: &Path) -> Result<SecretKey> {
         std::fs::rename(&tmp, &key_path)
             .with_context(|| format!("renaming temp key to {}", key_path.display()))?;
 
-        tracing::info!("Generated new node identity, saved to {}", key_path.display());
+        tracing::info!(
+            "Generated new node identity, saved to {}",
+            key_path.display()
+        );
         Ok(key)
     }
 }
@@ -70,7 +73,7 @@ fn restrict_file_to_current_user(path: &std::path::Path) -> Result<()> {
     let status = Command::new("icacls")
         .args([
             path_str.as_ref(),
-            "/inheritance:r",  // remove inherited ACEs
+            "/inheritance:r", // remove inherited ACEs
             "/grant:r",
             &format!("{}:(F)", username),
         ])
@@ -104,4 +107,3 @@ mod tests {
         assert!(dir.path().join("iroh_secret.key").exists());
     }
 }
-

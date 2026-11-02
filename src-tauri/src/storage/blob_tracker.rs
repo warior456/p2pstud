@@ -118,7 +118,8 @@ pub fn oldest_unpinned(db: &Database, limit: usize) -> Result<Vec<BlobRecord>> {
             is_pinned: row.get::<_, i64>(3)? != 0,
         })
     })?;
-    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(Into::into)
 }
 
 /// Look up a single blob by hash.
@@ -144,11 +145,34 @@ pub fn get_blob(db: &Database, hash: &str) -> Result<Option<BlobRecord>> {
     }
 }
 
+/// Return all blobs in the database ordered by last_accessed_at descending.
+pub fn list_all_blobs(db: &Database) -> Result<Vec<BlobRecord>> {
+    let conn = db.lock();
+    let mut stmt = conn.prepare(
+        "SELECT hash, size_bytes, last_accessed_at, is_pinned
+         FROM local_blobs
+         ORDER BY last_accessed_at DESC",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok(BlobRecord {
+            hash: row.get(0)?,
+            size_bytes: row.get::<_, i64>(1)? as u64,
+            last_accessed_at: row.get(2)?,
+            is_pinned: row.get::<_, i64>(3)? != 0,
+        })
+    })?;
+    let mut results = Vec::new();
+    for row in rows {
+        results.push(row?);
+    }
+    Ok(results)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
     use crate::storage::db::Database;
+    use std::sync::Arc;
     use tempfile::TempDir;
 
     fn make_db() -> (TempDir, Arc<Database>) {
@@ -187,4 +211,3 @@ mod tests {
         assert_eq!(total_bytes(&db).unwrap(), 800);
     }
 }
-

@@ -3,8 +3,16 @@
 
 use tauri::{AppHandle, Emitter, State};
 
-use crate::storage::blob_tracker::{set_pinned, touch_blob, upsert_blob};
+use crate::storage::blob_tracker::{
+    list_all_blobs, set_pinned, touch_blob, upsert_blob, BlobRecord,
+};
 use crate::AppState;
+
+/// List all tracked files and blobs from the SQLite database.
+#[tauri::command]
+pub async fn list_files(state: State<'_, AppState>) -> Result<Vec<BlobRecord>, String> {
+    list_all_blobs(&state.db).map_err(|e| e.to_string())
+}
 
 /// Set a blob's pinned state (true = protect from eviction).
 #[tauri::command]
@@ -41,18 +49,16 @@ pub async fn read_file_bytes(
         .map_err(|e| format!("invalid hash '{hash}': {e}"))?;
 
     let guard = state.engine.read().await;
-    let engine = guard
-        .as_ref()
-        .ok_or("Iroh engine not yet started")?;
+    let engine = guard.as_ref().ok_or("Iroh engine not yet started")?;
 
     // Fetch bytes from the local blob store.
     let data = engine
-        .blobs.clone()
+        .blobs
+        .clone()
         .client()
         .read_to_bytes(parsed_hash)
         .await
         .map_err(|e| format!("blob read failed: {e}"))?;
-
 
     if data.len() as u64 <= INLINE_LIMIT {
         // Small enough to return inline.
@@ -101,8 +107,7 @@ pub async fn add_file(local_path: String, state: State<'_, AppState>) -> Result<
     let path = std::path::Path::new(&local_path);
 
     // Security: verify the file actually exists and is a file (not a symlink to /dev/mem etc.).
-    let meta = std::fs::metadata(path)
-        .map_err(|e| format!("cannot stat '{}': {e}", local_path))?;
+    let meta = std::fs::metadata(path).map_err(|e| format!("cannot stat '{}': {e}", local_path))?;
 
     if !meta.is_file() {
         return Err(format!("'{}' is not a regular file", local_path));
@@ -112,13 +117,12 @@ pub async fn add_file(local_path: String, state: State<'_, AppState>) -> Result<
     let size_bytes = data.len() as u64;
 
     let guard = state.engine.read().await;
-    let engine = guard
-        .as_ref()
-        .ok_or("Iroh engine not yet started")?;
+    let engine = guard.as_ref().ok_or("Iroh engine not yet started")?;
 
     // Import into iroh-blobs; this computes the BLAKE3 hash and writes chunks.
     let outcome = engine
-        .blobs.clone()
+        .blobs
+        .clone()
         .client()
         .add_bytes(bytes::Bytes::from(data))
         .await
@@ -132,4 +136,3 @@ pub async fn add_file(local_path: String, state: State<'_, AppState>) -> Result<
     tracing::info!(hash = %hash, bytes = size_bytes, "Added file to workspace");
     Ok(hash)
 }
-

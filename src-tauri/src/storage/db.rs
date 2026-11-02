@@ -5,7 +5,7 @@ use std::path::Path;
 use std::sync::Mutex;
 
 use anyhow::{Context, Result};
-use rusqlite::{Connection, params};
+use rusqlite::{params, Connection};
 
 /// All SQL migrations in order. Each entry is applied exactly once,
 /// identified by its 1-based index as the schema version.
@@ -63,8 +63,7 @@ impl Database {
         let conn = self.conn.lock().unwrap();
 
         // Create a simple user_version-based migration tracker.
-        let current_version: i64 =
-            conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+        let current_version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
 
         let pending = &MIGRATIONS[current_version as usize..];
         for (i, sql) in pending.iter().enumerate() {
@@ -109,4 +108,3 @@ impl Database {
         self.conn.lock().unwrap()
     }
 }
-

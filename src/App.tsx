@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { 
   FolderGit2, 
   Settings, 
@@ -62,6 +62,28 @@ export function App() {
 
   const { stats, refetch: refetchStats } = useStorageStats();
   const { nodeId } = usePeerStatus();
+
+  useEffect(() => {
+    async function loadWorkspaceFiles() {
+      try {
+        const records = await invoke<Array<{ hash: string; size_bytes: number; is_pinned: boolean }>>('list_files');
+        if (records && records.length > 0) {
+          setFiles(
+            records.map((r) => ({
+              name: `Document-${r.hash.slice(0, 8)}.pdf`,
+              hash: r.hash,
+              size_bytes: r.size_bytes,
+              is_dir: false,
+              sync_state: r.is_pinned ? 'pinned' : 'cached',
+            }))
+          );
+        }
+      } catch {
+        // Fallback to initial files if running in standalone browser preview
+      }
+    }
+    loadWorkspaceFiles();
+  }, []);
 
   const handleNavigate = (index: number) => {
     if (index === -1) {

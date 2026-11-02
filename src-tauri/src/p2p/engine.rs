@@ -7,8 +7,8 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use iroh::key::SecretKey;
-use iroh::{Endpoint, NodeId, RelayMap, RelayMode};
 use iroh::protocol::Router;
+use iroh::{Endpoint, NodeId, RelayMap, RelayMode};
 use iroh_blobs::net_protocol::Blobs;
 use iroh_blobs::store::fs::Store as BlobStore;
 use iroh_blobs::util::local_pool::LocalPool;
@@ -58,9 +58,7 @@ impl IrohEngine {
             .await?;
 
         let router = Router::builder(endpoint);
-        let blobs =
-            Blobs::builder(store)
-                .build(pool.handle(), router.endpoint());
+        let blobs = Blobs::builder(store).build(pool.handle(), router.endpoint());
         let router = router.accept(iroh_blobs::ALPN, blobs.clone());
         let endpoint = router.endpoint().clone();
         let running_router = router.spawn().await?;
@@ -85,4 +83,3 @@ impl IrohEngine {
         self.endpoint.remote_info_iter().count()
     }
 }
-
