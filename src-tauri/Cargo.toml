@@ -1,0 +1,67 @@
+[package]
+name = "p2pstud-tauri"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.77"
+
+[[bin]]
+name = "p2pstud"
+path = "src/main.rs"
+
+[[bin]]
+name = "anchor"
+path = "src/bin/anchor.rs"
+
+[lib]
+name = "p2pstud_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri          = { version = "2", features = ["protocol-asset"] }
+tauri-plugin-shell = "2"
+tauri-plugin-dialog = "2"
+tauri-plugin-fs    = "2"
+
+# P2P networking
+iroh           = "0.29"
+iroh-blobs     = "0.29"
+
+# Async runtime
+tokio          = { version = "1", features = ["full"] }
+
+# Local storage
+rusqlite       = { version = "0.31", features = ["bundled"] }
+
+# Serialisation
+serde          = { version = "1", features = ["derive"] }
+serde_json     = "1"
+
+# Error handling
+anyhow         = "1"
+thiserror      = "1"
+
+# Platform dirs
+dirs           = "5"
+
+# Logging
+tracing             = "0.1"
+tracing-subscriber  = { version = "0.3", features = ["env-filter"] }
+
+# CLI (anchor binary only)
+clap = { version = "4", features = ["derive"] }
+
+# Rate limiting
+governor = "0.6"
+
+[dev-dependencies]
+tempfile    = "3"
+tokio-test  = "0.4"
+
+[features]
+# Enables network integration tests (require two running Iroh nodes)
+integration = []
+
+
