@@ -9,18 +9,23 @@ import {
   MoreVertical,
   Download,
   Eye,
-  Copy
+  Copy,
+  Trash2,
+  Lock,
+  User
 } from 'lucide-react';
 import { FileEntry } from '../../types';
 
 interface FileRowProps {
   file: FileEntry;
   isSelected?: boolean;
+  currentUserId?: string | null;
   onClick: () => void;
   onPin: (hash: string) => void;
   onUnpin: (hash: string) => void;
   onDownload: (hash: string) => void;
   onPreview: (hash: string) => void;
+  onDelete?: (hash: string) => void;
 }
 
 function formatBytes(bytes: number): string {
@@ -34,13 +39,17 @@ function formatBytes(bytes: number): string {
 export const FileRow: React.FC<FileRowProps> = ({
   file,
   isSelected = false,
+  currentUserId,
   onClick,
   onPin,
   onUnpin,
   onDownload,
   onPreview,
+  onDelete,
 }) => {
   const [menuOpen, setMenuOpen] = useState(false);
+
+  const isOwner = !file.owner_node_id || (currentUserId && file.owner_node_id === currentUserId);
 
   const handleContextMenu = (e: React.MouseEvent) => {
     e.preventDefault();
@@ -101,6 +110,17 @@ export const FileRow: React.FC<FileRowProps> = ({
           <FileText className="w-5 h-5 text-blue-500 flex-shrink-0" />
         )}
         <span className="truncate font-medium text-gray-800">{file.name}</span>
+        {file.owner_node_id && (
+          <span
+            className={`text-[10px] px-1.5 py-0.5 rounded flex items-center gap-1 flex-shrink-0 ${
+              isOwner ? 'bg-green-50 text-green-700 border border-green-200' : 'bg-gray-100 text-gray-500'
+            }`}
+            title={`Uploaded by: ${file.owner_node_id}`}
+          >
+            <User className="w-2.5 h-2.5" />
+            {isOwner ? 'Uploaded by you' : `${file.owner_node_id.slice(0, 6)}...`}
+          </span>
+        )}
       </div>
 
       <div className="flex items-center gap-4 flex-shrink-0">
@@ -122,7 +142,7 @@ export const FileRow: React.FC<FileRowProps> = ({
 
       {menuOpen && (
         <div 
-          className="absolute right-4 top-10 z-20 w-44 bg-white border border-gray-200 rounded-lg shadow-lg py-1 text-xs"
+          className="absolute right-4 top-10 z-20 w-48 bg-white border border-gray-200 rounded-lg shadow-lg py-1 text-xs"
           onMouseLeave={() => setMenuOpen(false)}
         >
           {!file.is_dir && (
@@ -183,9 +203,33 @@ export const FileRow: React.FC<FileRowProps> = ({
           >
             <Copy className="w-3.5 h-3.5" /> Copy Hash (BLAKE3)
           </button>
+
+          {!file.is_dir && (
+            <>
+              <div className="border-t border-gray-100 my-1" />
+              {isOwner ? (
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    if (onDelete) onDelete(file.hash);
+                    setMenuOpen(false);
+                  }}
+                  className="w-full text-left px-3 py-1.5 flex items-center gap-2 hover:bg-red-50 text-red-600 font-medium"
+                >
+                  <Trash2 className="w-3.5 h-3.5 text-red-600" /> Delete My File
+                </button>
+              ) : (
+                <div 
+                  className="w-full text-left px-3 py-1.5 flex items-center gap-2 text-gray-400 cursor-not-allowed"
+                  title="Only the uploader can delete this file"
+                >
+                  <Lock className="w-3.5 h-3.5" /> Only uploader can delete
+                </div>
+              )}
+            </>
+          )}
         </div>
       )}
     </div>
   );
 };
-

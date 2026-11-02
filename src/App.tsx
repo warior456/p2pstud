@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { 
   FolderGit2, 
   Settings, 
@@ -6,7 +6,8 @@ import {
   FileText, 
   Share2, 
   RefreshCw,
-  Search
+  Search,
+  Upload
 } from 'lucide-react';
 import { FileEntry } from './types';
 import { useStorageStats } from './hooks/useStorageStats';
@@ -19,71 +20,91 @@ import { CacheSlider } from './components/Settings/CacheSlider';
 import { TelemetryBar } from './components/Footer/TelemetryBar';
 import { invoke } from '@tauri-apps/api/core';
 
-// Mock course folder structure for initial campus experience
-const INITIAL_FILES: FileEntry[] = [
-  {
-    name: 'CS101-Lecture-01-Distributed-Systems.pdf',
-    hash: 'b3a89e1f00000000000000000000000000000000000000000000000000000001',
-    size_bytes: 4210000,
-    is_dir: false,
-    sync_state: 'cached',
-  },
-  {
-    name: 'CS101-Assignment-2-P2P.md',
-    hash: 'c8914b3000000000000000000000000000000000000000000000000000000002',
-    size_bytes: 14200,
-    is_dir: false,
-    sync_state: 'pinned',
-  },
-  {
-    name: 'Midterm-Exam-Review-Slides.pdf',
-    hash: 'e41029aa00000000000000000000000000000000000000000000000000000003',
-    size_bytes: 15400000,
-    is_dir: false,
-    sync_state: 'cloud_only',
-  },
-  {
-    name: 'Lab-Solutions-Week-4.md',
-    hash: 'f90112dd00000000000000000000000000000000000000000000000000000004',
-    size_bytes: 8500,
-    is_dir: false,
-    sync_state: 'downloading',
-    download_progress: 68,
-  },
-];
+interface BlobRecord {
+  hash: string;
+  name: string | null;
+  size_bytes: number;
+  last_accessed_at: number;
+  is_pinned: boolean;
+  owner_node_id: string | null;
+}
 
 export function App() {
-  const [paths, setPaths] = useState<string[]>(['CS101-2026']);
-  const [files, setFiles] = useState<FileEntry[]>(INITIAL_FILES);
+  const [paths, setPaths] = useState<string[]>(['Shared Cloud']);
+  const [files, setFiles] = useState<FileEntry[]>([]);
   const [selectedHash, setSelectedHash] = useState<string | null>(null);
   const [currentView, setCurrentView] = useState<'explorer' | 'pdf' | 'markdown' | 'settings'>('explorer');
   const [searchQuery, setSearchQuery] = useState('');
   const [pdfData, setPdfData] = useState<Uint8Array | null>(null);
 
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
   const { stats, refetch: refetchStats } = useStorageStats();
   const { nodeId } = usePeerStatus();
 
-  useEffect(() => {
-    async function loadWorkspaceFiles() {
-      try {
-        const records = await invoke<Array<{ hash: string; size_bytes: number; is_pinned: boolean }>>('list_files');
-        if (records && records.length > 0) {
-          setFiles(
-            records.map((r) => ({
-              name: `Document-${r.hash.slice(0, 8)}.pdf`,
-              hash: r.hash,
-              size_bytes: r.size_bytes,
-              is_dir: false,
-              sync_state: r.is_pinned ? 'pinned' : 'cached',
-            }))
-          );
-        }
-      } catch {
-        // Fallback to initial files if running in standalone browser preview
+  const loadWorkspaceFiles = async () => {
+    try {
+      const records = await invoke<BlobRecord[]>('list_files');
+      if (records) {
+        setFiles(
+          records.map((r) => ({
+            name: r.name || `Document-${r.hash.slice(0, 8)}.bin`,
+            hash: r.hash,
+            size_bytes: r.size_bytes,
+            is_dir: false,
+            sync_state: r.is_pinned ? 'pinned' : 'cached',
+            owner_node_id: r.owner_node_id || undefined,
+            last_accessed_at: r.last_accessed_at,
+          }))
+        );
       }
+    } catch (err) {
+      console.warn('Failed to fetch workspace files:', err);
     }
+  };
+
+  useEffect(() => {
     loadWorkspaceFiles();
   }, []);
+
+  const handleTriggerUpload = () => {
+    fileInputRef.current?.click();
+  };
+
+  const handleFileInputChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const selectedFiles = e.target.files;
+    if (!selectedFiles || selectedFiles.length === 0) return;
+
+    for (let i = 0; i < selectedFiles.length; i++) {
+      const file = selectedFiles[i];
+      try {
+        const buffer = await file.arrayBuffer();
+        const bytes = Array.from(new Uint8Array(buffer));
+        await invoke('upload_file_bytes', { name: file.name, data: bytes });
+      } catch (err) {
+        console.error('Failed to upload file:', err);
+        alert(`Failed to upload ${file.name}: ${err}`);
+      }
+    }
+
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+    }
+
+    await loadWorkspaceFiles();
+    refetchStats();
+  };
+
+  const handleDelete = async (hash: string) => {
+    try {
+      await invoke('delete_file', { hash });
+      setFiles((prev) => prev.filter((f) => f.hash !== hash));
+      refetchStats();
+    } catch (err) {
+      console.error('Delete error:', err);
+      alert(`Delete failed: ${err}`);
+    }
+  };
 
   const handleNavigate = (index: number) => {
     if (index === -1) {
@@ -108,7 +129,6 @@ export function App() {
         if (bytes && bytes.length > 0) {
           setPdfData(new Uint8Array(bytes));
         } else {
-          // Fallback minimal PDF mock for development preview
           setPdfData(null);
         }
       } catch {
@@ -157,24 +177,20 @@ export function App() {
     }, 1500);
   };
 
-  const handleFileUploaded = (hash: string) => {
-    const newEntry: FileEntry = {
-      name: `Uploaded-Document-${hash.slice(0, 8)}.pdf`,
-      hash,
-      size_bytes: 2048000,
-      is_dir: false,
-      sync_state: 'cached',
-    };
-    setFiles((prev) => [newEntry, ...prev]);
-    refetchStats();
-  };
-
   const filteredFiles = files.filter((f) =>
     f.name.toLowerCase().includes(searchQuery.toLowerCase())
   );
 
   return (
     <div className="flex flex-col h-screen w-screen overflow-hidden bg-gray-50 text-gray-900 select-none">
+      <input
+        type="file"
+        ref={fileInputRef}
+        onChange={handleFileInputChange}
+        multiple
+        className="hidden"
+      />
+
       {/* Top Header Bar */}
       <header className="h-12 bg-white border-b border-gray-200 px-4 flex items-center justify-between shadow-xs z-10">
         <div className="flex items-center gap-3">
@@ -182,7 +198,7 @@ export function App() {
             <FolderGit2 className="w-5 h-5" />
           </div>
           <div>
-            <h1 className="font-bold text-sm tracking-tight text-gray-900">P2P Campus Workspace</h1>
+            <h1 className="font-bold text-sm tracking-tight text-gray-900">P2P Shared Cloud</h1>
             <p className="text-[10px] text-gray-500 font-mono truncate max-w-[280px]">
               {nodeId ? `Node: ${nodeId}` : 'Initializing Iroh Quic Engine...'}
             </p>
@@ -194,17 +210,29 @@ export function App() {
           <Search className="w-3.5 h-3.5 text-gray-400 absolute left-2.5 top-2.5" />
           <input
             type="text"
-            placeholder="Search workspace files & hashes..."
+            placeholder="Search files & hashes..."
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             className="w-full text-xs pl-8 pr-3 py-1.5 bg-gray-100 border border-transparent rounded-md focus:bg-white focus:border-blue-500 focus:outline-none transition-all"
           />
         </div>
 
-        {/* Action icons */}
+        {/* Action icons & Upload */}
         <div className="flex items-center gap-2">
           <button
-            onClick={() => refetchStats()}
+            onClick={handleTriggerUpload}
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-md text-xs font-semibold shadow-xs transition-colors"
+            title="Upload file to P2P Cloud"
+          >
+            <Upload className="w-3.5 h-3.5" />
+            <span>Upload File</span>
+          </button>
+
+          <button
+            onClick={() => {
+              loadWorkspaceFiles();
+              refetchStats();
+            }}
             className="p-1.5 rounded-md text-gray-600 hover:text-gray-900 hover:bg-gray-100 transition-colors"
             title="Refresh Swarm Cache"
           >
@@ -243,18 +271,7 @@ export function App() {
                   }`}
                 >
                   <Share2 className="w-4 h-4 text-blue-500" />
-                  Campus P2P Mesh
-                </button>
-                <button
-                  onClick={() => setCurrentView('markdown')}
-                  className={`w-full flex items-center gap-2.5 px-3 py-2 text-xs rounded-lg font-medium transition-colors ${
-                    currentView === 'markdown'
-                      ? 'bg-blue-50 text-blue-700'
-                      : 'text-gray-700 hover:bg-gray-100'
-                  }`}
-                >
-                  <FileText className="w-4 h-4 text-emerald-500" />
-                  Collaborative Notes
+                  Shared Cloud Folder
                 </button>
               </div>
             </div>
@@ -269,14 +286,14 @@ export function App() {
                   className="w-full flex items-center gap-2.5 px-3 py-1.5 text-xs text-gray-600 rounded-lg hover:bg-gray-100"
                 >
                   <FileCode className="w-3.5 h-3.5 text-red-500" />
-                  Slide Decks (.pdf)
+                  Documents (.pdf)
                 </button>
                 <button
                   onClick={() => setSearchQuery('.md')}
                   className="w-full flex items-center gap-2.5 px-3 py-1.5 text-xs text-gray-600 rounded-lg hover:bg-gray-100"
                 >
                   <FileText className="w-3.5 h-3.5 text-blue-500" />
-                  Markdown (.md)
+                  Notes (.md, .txt)
                 </button>
               </div>
             </div>
@@ -306,6 +323,7 @@ export function App() {
               <FileTree
                 files={filteredFiles}
                 selectedHash={selectedHash}
+                currentUserId={nodeId}
                 onSelectFile={handleSelectFile}
                 onNavigateFolder={handleNavigateFolder}
                 onPin={handlePin}
@@ -315,7 +333,12 @@ export function App() {
                   const f = files.find((item) => item.hash === hash);
                   if (f) handleSelectFile(f);
                 }}
-                onFileUploaded={handleFileUploaded}
+                onDelete={handleDelete}
+                onFileUploaded={() => {
+                  loadWorkspaceFiles();
+                  refetchStats();
+                }}
+                onTriggerUpload={handleTriggerUpload}
               />
             </>
           )}
@@ -350,4 +373,5 @@ export function App() {
     </div>
   );
 }
+
 export default App;

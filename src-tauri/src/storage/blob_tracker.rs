@@ -14,9 +14,11 @@ use crate::storage::db::Database;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BlobRecord {
     pub hash: String,
+    pub name: Option<String>,
     pub size_bytes: u64,
     pub last_accessed_at: i64,
     pub is_pinned: bool,
+    pub owner_node_id: Option<String>,
 }
 
 fn now_unix() -> i64 {
@@ -27,15 +29,31 @@ fn now_unix() -> i64 {
 }
 
 /// Insert or replace a blob record (upsert).
-pub fn upsert_blob(db: &Database, hash: &str, size_bytes: u64, is_pinned: bool) -> Result<()> {
+pub fn upsert_blob(
+    db: &Database,
+    hash: &str,
+    name: Option<&str>,
+    size_bytes: u64,
+    is_pinned: bool,
+    owner_node_id: Option<&str>,
+) -> Result<()> {
     let conn = db.lock();
     conn.execute(
-        "INSERT INTO local_blobs(hash, size_bytes, last_accessed_at, is_pinned)
-         VALUES(?1, ?2, ?3, ?4)
+        "INSERT INTO local_blobs(hash, name, size_bytes, last_accessed_at, is_pinned, owner_node_id)
+         VALUES(?1, ?2, ?3, ?4, ?5, ?6)
          ON CONFLICT(hash) DO UPDATE SET
+             name             = COALESCE(excluded.name, local_blobs.name),
              size_bytes       = excluded.size_bytes,
-             last_accessed_at = excluded.last_accessed_at",
-        params![hash, size_bytes as i64, now_unix(), is_pinned as i64],
+             last_accessed_at = excluded.last_accessed_at,
+             owner_node_id    = COALESCE(excluded.owner_node_id, local_blobs.owner_node_id)",
+        params![
+            hash,
+            name,
+            size_bytes as i64,
+            now_unix(),
+            is_pinned as i64,
+            owner_node_id
+        ],
     )?;
     Ok(())
 }
@@ -104,7 +122,7 @@ pub fn total_pinned_bytes(db: &Database) -> Result<u64> {
 pub fn oldest_unpinned(db: &Database, limit: usize) -> Result<Vec<BlobRecord>> {
     let conn = db.lock();
     let mut stmt = conn.prepare(
-        "SELECT hash, size_bytes, last_accessed_at, is_pinned
+        "SELECT hash, name, size_bytes, last_accessed_at, is_pinned, owner_node_id
          FROM local_blobs
          WHERE is_pinned = 0
          ORDER BY last_accessed_at ASC
@@ -113,9 +131,11 @@ pub fn oldest_unpinned(db: &Database, limit: usize) -> Result<Vec<BlobRecord>> {
     let rows = stmt.query_map(params![limit as i64], |row| {
         Ok(BlobRecord {
             hash: row.get(0)?,
-            size_bytes: row.get::<_, i64>(1)? as u64,
-            last_accessed_at: row.get(2)?,
-            is_pinned: row.get::<_, i64>(3)? != 0,
+            name: row.get(1)?,
+            size_bytes: row.get::<_, i64>(2)? as u64,
+            last_accessed_at: row.get(3)?,
+            is_pinned: row.get::<_, i64>(4)? != 0,
+            owner_node_id: row.get(5)?,
         })
     })?;
     rows.collect::<rusqlite::Result<Vec<_>>>()
@@ -126,15 +146,17 @@ pub fn oldest_unpinned(db: &Database, limit: usize) -> Result<Vec<BlobRecord>> {
 pub fn get_blob(db: &Database, hash: &str) -> Result<Option<BlobRecord>> {
     let conn = db.lock();
     let result = conn.query_row(
-        "SELECT hash, size_bytes, last_accessed_at, is_pinned
+        "SELECT hash, name, size_bytes, last_accessed_at, is_pinned, owner_node_id
          FROM local_blobs WHERE hash = ?1",
         params![hash],
         |row| {
             Ok(BlobRecord {
                 hash: row.get(0)?,
-                size_bytes: row.get::<_, i64>(1)? as u64,
-                last_accessed_at: row.get(2)?,
-                is_pinned: row.get::<_, i64>(3)? != 0,
+                name: row.get(1)?,
+                size_bytes: row.get::<_, i64>(2)? as u64,
+                last_accessed_at: row.get(3)?,
+                is_pinned: row.get::<_, i64>(4)? != 0,
+                owner_node_id: row.get(5)?,
             })
         },
     );
@@ -149,16 +171,18 @@ pub fn get_blob(db: &Database, hash: &str) -> Result<Option<BlobRecord>> {
 pub fn list_all_blobs(db: &Database) -> Result<Vec<BlobRecord>> {
     let conn = db.lock();
     let mut stmt = conn.prepare(
-        "SELECT hash, size_bytes, last_accessed_at, is_pinned
+        "SELECT hash, name, size_bytes, last_accessed_at, is_pinned, owner_node_id
          FROM local_blobs
          ORDER BY last_accessed_at DESC",
     )?;
     let rows = stmt.query_map([], |row| {
         Ok(BlobRecord {
             hash: row.get(0)?,
-            size_bytes: row.get::<_, i64>(1)? as u64,
-            last_accessed_at: row.get(2)?,
-            is_pinned: row.get::<_, i64>(3)? != 0,
+            name: row.get(1)?,
+            size_bytes: row.get::<_, i64>(2)? as u64,
+            last_accessed_at: row.get(3)?,
+            is_pinned: row.get::<_, i64>(4)? != 0,
+            owner_node_id: row.get(5)?,
         })
     })?;
     let mut results = Vec::new();
@@ -184,8 +208,10 @@ mod tests {
     #[test]
     fn upsert_and_touch() {
         let (_dir, db) = make_db();
-        upsert_blob(&db, "hash1", 1024, false).unwrap();
+        upsert_blob(&db, "hash1", Some("test.pdf"), 1024, false, Some("node1")).unwrap();
         let before = get_blob(&db, "hash1").unwrap().unwrap();
+        assert_eq!(before.name.as_deref(), Some("test.pdf"));
+        assert_eq!(before.owner_node_id.as_deref(), Some("node1"));
         std::thread::sleep(std::time::Duration::from_secs(1));
         touch_blob(&db, "hash1").unwrap();
         let after = get_blob(&db, "hash1").unwrap().unwrap();
@@ -195,8 +221,8 @@ mod tests {
     #[test]
     fn pin_protects_from_listing() {
         let (_dir, db) = make_db();
-        upsert_blob(&db, "pinned", 100, true).unwrap();
-        upsert_blob(&db, "unpinned", 100, false).unwrap();
+        upsert_blob(&db, "pinned", None, 100, true, None).unwrap();
+        upsert_blob(&db, "unpinned", None, 100, false, None).unwrap();
         let evictable = oldest_unpinned(&db, 100).unwrap();
         assert!(evictable.iter().all(|b| b.hash != "pinned"));
     }
@@ -204,8 +230,8 @@ mod tests {
     #[test]
     fn totals_are_correct() {
         let (_dir, db) = make_db();
-        upsert_blob(&db, "a", 500, false).unwrap();
-        upsert_blob(&db, "b", 300, true).unwrap();
+        upsert_blob(&db, "a", None, 500, false, None).unwrap();
+        upsert_blob(&db, "b", None, 300, true, None).unwrap();
         assert_eq!(total_unpinned_bytes(&db).unwrap(), 500);
         assert_eq!(total_pinned_bytes(&db).unwrap(), 300);
         assert_eq!(total_bytes(&db).unwrap(), 800);

@@ -4,7 +4,7 @@
 use tauri::{AppHandle, Emitter, State};
 
 use crate::storage::blob_tracker::{
-    list_all_blobs, set_pinned, touch_blob, upsert_blob, BlobRecord,
+    delete_blob, get_blob, list_all_blobs, set_pinned, touch_blob, upsert_blob, BlobRecord,
 };
 use crate::AppState;
 
@@ -101,7 +101,7 @@ pub async fn read_file_bytes(
 /// Add a local file to the workspace blob store.
 ///
 /// Reads `local_path` from disk, imports it into iroh-blobs (computing the BLAKE3 hash),
-/// records it in SQLite, and returns the BLAKE3 hex hash.
+/// records it in SQLite with ownership and filename, and returns the BLAKE3 hex hash.
 #[tauri::command]
 pub async fn add_file(local_path: String, state: State<'_, AppState>) -> Result<String, String> {
     let path = std::path::Path::new(&local_path);
@@ -113,11 +113,17 @@ pub async fn add_file(local_path: String, state: State<'_, AppState>) -> Result<
         return Err(format!("'{}' is not a regular file", local_path));
     }
 
+    let file_name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .map(|s| s.to_string());
+
     let data = std::fs::read(path).map_err(|e| format!("read failed: {e}"))?;
     let size_bytes = data.len() as u64;
 
     let guard = state.engine.read().await;
     let engine = guard.as_ref().ok_or("Iroh engine not yet started")?;
+    let owner_node_id = engine.node_id().to_string();
 
     // Import into iroh-blobs; this computes the BLAKE3 hash and writes chunks.
     let outcome = engine
@@ -130,9 +136,85 @@ pub async fn add_file(local_path: String, state: State<'_, AppState>) -> Result<
 
     let hash = outcome.hash.to_hex().to_string();
 
-    // Record in SQLite.
-    upsert_blob(&state.db, &hash, size_bytes, false).map_err(|e| e.to_string())?;
+    // Record in SQLite with filename and owner node ID.
+    upsert_blob(
+        &state.db,
+        &hash,
+        file_name.as_deref(),
+        size_bytes,
+        false,
+        Some(&owner_node_id),
+    )
+    .map_err(|e| e.to_string())?;
 
-    tracing::info!(hash = %hash, bytes = size_bytes, "Added file to workspace");
+    tracing::info!(hash = %hash, name = ?file_name, owner = %owner_node_id, bytes = size_bytes, "Added file to workspace");
     Ok(hash)
+}
+
+/// Upload a file to the shared cloud workspace via in-memory bytes (e.g. from UI file input).
+#[tauri::command]
+pub async fn upload_file_bytes(
+    name: String,
+    data: Vec<u8>,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    let size_bytes = data.len() as u64;
+
+    let guard = state.engine.read().await;
+    let engine = guard.as_ref().ok_or("Iroh engine not yet started")?;
+    let owner_node_id = engine.node_id().to_string();
+
+    let outcome = engine
+        .blobs
+        .clone()
+        .client()
+        .add_bytes(bytes::Bytes::from(data))
+        .await
+        .map_err(|e| format!("blob import failed: {e}"))?;
+
+    let hash = outcome.hash.to_hex().to_string();
+
+    upsert_blob(
+        &state.db,
+        &hash,
+        Some(&name),
+        size_bytes,
+        false,
+        Some(&owner_node_id),
+    )
+    .map_err(|e| e.to_string())?;
+
+    tracing::info!(hash = %hash, name = %name, owner = %owner_node_id, bytes = size_bytes, "Uploaded file to workspace");
+    Ok(hash)
+}
+
+/// Delete a file by hash.
+/// ONLY the node that originally uploaded the file is permitted to delete it.
+#[tauri::command]
+pub async fn delete_file(hash: String, state: State<'_, AppState>) -> Result<(), String> {
+    let blob = get_blob(&state.db, &hash)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("file '{hash}' not found in workspace"))?;
+
+    let guard = state.engine.read().await;
+    let engine = guard.as_ref().ok_or("Iroh engine not yet started")?;
+    let my_node_id = engine.node_id().to_string();
+
+    // Check ownership: only the uploader can delete
+    if let Some(owner) = &blob.owner_node_id {
+        if owner != &my_node_id {
+            return Err("Permission denied: You can only delete files that you uploaded.".to_string());
+        }
+    }
+
+    // Delete record from SQLite
+    delete_blob(&state.db, &hash).map_err(|e| e.to_string())?;
+
+    // Delete blob data from local Iroh store
+    if let Ok(parsed_hash) = hash.parse::<iroh_blobs::Hash>() {
+        let _ = engine.blobs.clone().client().delete_blob(parsed_hash).await;
+    }
+
+    tracing::info!(hash = %hash, "Deleted file from workspace");
+    Ok(())
 }

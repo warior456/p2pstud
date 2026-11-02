@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { UploadCloud } from 'lucide-react';
+import { UploadCloud, Plus } from 'lucide-react';
 import { FileEntry } from '../../types';
 import { FileRow } from './FileRow';
 import { invoke } from '@tauri-apps/api/core';
@@ -7,25 +7,31 @@ import { invoke } from '@tauri-apps/api/core';
 interface FileTreeProps {
   files: FileEntry[];
   selectedHash: string | null;
+  currentUserId?: string | null;
   onSelectFile: (file: FileEntry) => void;
   onNavigateFolder: (name: string) => void;
   onPin: (hash: string) => void;
   onUnpin: (hash: string) => void;
   onDownload: (hash: string) => void;
   onPreview: (hash: string) => void;
+  onDelete?: (hash: string) => void;
   onFileUploaded?: (hash: string) => void;
+  onTriggerUpload?: () => void;
 }
 
 export const FileTree: React.FC<FileTreeProps> = ({
   files,
   selectedHash,
+  currentUserId,
   onSelectFile,
   onNavigateFolder,
   onPin,
   onUnpin,
   onDownload,
   onPreview,
+  onDelete,
   onFileUploaded,
+  onTriggerUpload,
 }) => {
   const [isDragging, setIsDragging] = useState(false);
 
@@ -46,15 +52,16 @@ export const FileTree: React.FC<FileTreeProps> = ({
     if (items.length > 0) {
       for (let i = 0; i < items.length; i++) {
         const file = items[i];
-        // In Tauri with webview, (file as any).path may provide system path
-        const path = (file as any).path;
-        if (path) {
-          try {
-            const hash = await invoke<string>('add_file', { localPath: path });
-            if (onFileUploaded) onFileUploaded(hash);
-          } catch (err) {
-            console.error('Failed to upload file:', err);
-          }
+        try {
+          const buffer = await file.arrayBuffer();
+          const bytes = Array.from(new Uint8Array(buffer));
+          const hash = await invoke<string>('upload_file_bytes', {
+            name: file.name,
+            data: bytes,
+          });
+          if (onFileUploaded) onFileUploaded(hash);
+        } catch (err) {
+          console.error('Failed to upload dropped file:', err);
         }
       }
     }
@@ -77,10 +84,21 @@ export const FileTree: React.FC<FileTreeProps> = ({
       )}
 
       {files.length === 0 ? (
-        <div className="flex flex-col items-center justify-center py-20 text-gray-400">
-          <UploadCloud className="w-10 h-10 mb-2 stroke-[1.5]" />
-          <p className="text-sm">Folder is empty</p>
-          <p className="text-xs text-gray-400 mt-1">Drag and drop files here to start sharing</p>
+        <div className="flex flex-col items-center justify-center py-24 text-gray-400">
+          <UploadCloud className="w-12 h-12 mb-3 text-gray-300 stroke-[1.5]" />
+          <p className="text-base font-medium text-gray-600">Workspace is empty</p>
+          <p className="text-xs text-gray-400 mt-1 max-w-sm text-center">
+            Upload files to share them with the P2P cloud. Anyone in the network can access them, and only you can delete files you uploaded.
+          </p>
+          {onTriggerUpload && (
+            <button
+              onClick={onTriggerUpload}
+              className="mt-4 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-semibold flex items-center gap-2 shadow-xs transition-colors"
+            >
+              <Plus className="w-4 h-4" />
+              Upload First File
+            </button>
+          )}
         </div>
       ) : (
         <div className="divide-y divide-gray-100">
@@ -89,6 +107,7 @@ export const FileTree: React.FC<FileTreeProps> = ({
               key={file.hash || file.name}
               file={file}
               isSelected={selectedHash === file.hash}
+              currentUserId={currentUserId}
               onClick={() => {
                 if (file.is_dir) {
                   onNavigateFolder(file.name);
@@ -100,6 +119,7 @@ export const FileTree: React.FC<FileTreeProps> = ({
               onUnpin={onUnpin}
               onDownload={onDownload}
               onPreview={onPreview}
+              onDelete={onDelete}
             />
           ))}
         </div>
@@ -107,4 +127,3 @@ export const FileTree: React.FC<FileTreeProps> = ({
     </div>
   );
 };
-

@@ -78,6 +78,8 @@ pub fn run() {
             commands::file_cmds::list_files,
             commands::file_cmds::read_file_bytes,
             commands::file_cmds::add_file,
+            commands::file_cmds::upload_file_bytes,
+            commands::file_cmds::delete_file,
             commands::peer_cmds::list_peers,
             commands::peer_cmds::get_node_id,
         ])

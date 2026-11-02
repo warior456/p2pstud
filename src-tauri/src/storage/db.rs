@@ -36,6 +36,11 @@ const MIGRATIONS: &[&str] = &[
     INSERT OR IGNORE INTO settings(key, value)
         VALUES ('relay_url', '');
     "#,
+    // Migration 0002 — add file name and owner node id for ownership and permission control
+    r#"
+    ALTER TABLE local_blobs ADD COLUMN name TEXT;
+    ALTER TABLE local_blobs ADD COLUMN owner_node_id TEXT;
+    "#,
 ];
 
 /// Thread-safe SQLite database wrapper.

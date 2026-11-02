@@ -5,6 +5,8 @@ export interface FileEntry {
   is_dir: boolean;
   sync_state: 'cloud_only' | 'cached' | 'pinned' | 'downloading';
   download_progress?: number; // 0-100 when downloading
+  owner_node_id?: string;
+  last_accessed_at?: number;
 }
 
 export interface StorageStats {
@@ -20,4 +22,3 @@ export interface PeerInfo {
   relay_url?: string;
   latency_ms?: number;
 }
-

@@ -174,7 +174,7 @@ mod tests {
         db.set_setting("full_mirror", "false").unwrap();
         for i in 0..n {
             let hash = format!("{:064x}", i); // fake 64-char hex hash
-            upsert_blob(db, &hash, blob_size, false).unwrap();
+            upsert_blob(db, &hash, None, blob_size, false, None).unwrap();
             // Ensure strictly increasing last_accessed_at by sleeping 10ms.
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
@@ -211,14 +211,16 @@ mod tests {
         upsert_blob(
             &db,
             "pinned_hash_000000000000000000000000000000000000000000000000000000",
+            None,
             500,
             true,
+            None,
         )
         .unwrap();
         // Insert enough unpinned to trigger eviction.
         for i in 1..=6 {
             let hash = format!("{:064}", i);
-            upsert_blob(&db, &hash, 100, false).unwrap();
+            upsert_blob(&db, &hash, None, 100, false, None).unwrap();
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
 
