@@ -70,6 +70,7 @@ At the end of every session (or when interrupted), update the `## Progress Track
 | 18 | CI workflow (GitHub Actions) | ✅ | `.github/workflows/build.yml` and `test.yml` created |
 | 19 | README + deployment guide | ✅ | Comprehensive `README.md` and `.gitignore` created |
 | 20 | Production Readiness Polish & Background Tray | ✅ | System tray icon, window close interception, network & peer configuration, purge cache, installer & portable ZIP |
+| 21 | Cross-Platform Linux & Windows Parity | ✅ | `xdg-open` on Linux, `0o600` secret key permissions, bundled SQLite, `.deb` & `.AppImage` bundle config in Tauri, CI matrix for Windows & Ubuntu |
 
 ---
 
