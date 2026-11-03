@@ -11,6 +11,8 @@ describe('FileRow Component', () => {
     onUnpin: vi.fn(),
     onDownload: vi.fn(),
     onPreview: vi.fn(),
+    onVoteDelete: vi.fn(),
+    onUnvoteDelete: vi.fn(),
   };
 
   it('renders pinned badge correctly', () => {
@@ -57,5 +59,51 @@ describe('FileRow Component', () => {
     expect(screen.getByText('Shared-Notes.md')).toBeInTheDocument();
     expect(screen.getByText('Seeding')).toBeInTheDocument();
   });
-});
 
+  it('renders delete vote count badge when marked for deletion', () => {
+    const votedFile: FileEntry = {
+      name: 'Old-Exam.pdf',
+      hash: 'jkl3456',
+      size_bytes: 524288,
+      is_dir: false,
+      sync_state: 'cached',
+      delete_votes: ['peer1', 'peer2'],
+    };
+
+    render(<FileRow file={votedFile} {...dummyProps} />);
+
+    expect(screen.getByText(/2\/3 delete votes/i)).toBeInTheDocument();
+  });
+
+  it('renders seed count badge with rare indicator when seeds <= 1', () => {
+    const rareFile: FileEntry = {
+      name: 'Rare-Manuscript.pdf',
+      hash: 'rare123',
+      size_bytes: 1048576,
+      is_dir: false,
+      sync_state: 'cloud_only',
+      seeds_count: 1,
+    };
+
+    render(<FileRow file={rareFile} {...dummyProps} />);
+
+    expect(screen.getByText(/1 seed \(rare\)/i)).toBeInTheDocument();
+  });
+
+  it('renders folder row with item count and folder badge', () => {
+    const folderEntry: FileEntry = {
+      name: 'ComputerScience',
+      hash: 'folder-cs',
+      size_bytes: 4194304,
+      is_dir: true,
+      sync_state: 'cached',
+      item_count: 5,
+    };
+
+    render(<FileRow file={folderEntry} {...dummyProps} />);
+
+    expect(screen.getByText('ComputerScience')).toBeInTheDocument();
+    expect(screen.getByText(/5 items/i)).toBeInTheDocument();
+    expect(screen.getByText('Folder')).toBeInTheDocument();
+  });
+});

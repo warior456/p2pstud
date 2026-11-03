@@ -11,6 +11,14 @@ function formatGigabytes(bytes: number): string {
   return (bytes / (1024 * 1024 * 1024)).toFixed(1);
 }
 
+function formatSpeed(bytesPerSec: number): string {
+  if (!bytesPerSec || bytesPerSec <= 0) return '0.0 KB/s';
+  if (bytesPerSec < 1024 * 1024) {
+    return `${(bytesPerSec / 1024).toFixed(1)} KB/s`;
+  }
+  return `${(bytesPerSec / (1024 * 1024)).toFixed(1)} MB/s`;
+}
+
 export const TelemetryBar: React.FC<TelemetryBarProps> = ({ stats, onOpenSettings }) => {
   const isConnected = stats ? stats.peer_count > 0 : false;
   const peerCount = stats?.peer_count ?? 0;
@@ -21,6 +29,9 @@ export const TelemetryBar: React.FC<TelemetryBarProps> = ({ stats, onOpenSetting
       ? 'Mirror'
       : `${formatGigabytes(stats.quota_bytes)} GB`
     : '5.0 GB';
+
+  const upSpeed = formatSpeed(stats?.upload_bytes_per_sec ?? 0);
+  const downSpeed = formatSpeed(stats?.download_bytes_per_sec ?? 0);
 
   return (
     <footer className="h-9 bg-gray-900 text-gray-300 text-xs px-4 flex items-center justify-between border-t border-gray-800 select-none">
@@ -45,15 +56,15 @@ export const TelemetryBar: React.FC<TelemetryBarProps> = ({ stats, onOpenSetting
         </div>
       </div>
 
-      {/* Center: Live speeds (swarming simulation) */}
+      {/* Center: Live dynamic network speeds */}
       <div className="flex items-center gap-4 text-gray-400 font-mono">
         <div className="flex items-center gap-1">
           <ArrowUp className="w-3.5 h-3.5 text-blue-400" />
-          <span>{isConnected ? '1.2 MB/s' : '0.0 KB/s'}</span>
+          <span>{upSpeed}</span>
         </div>
         <div className="flex items-center gap-1">
           <ArrowDown className="w-3.5 h-3.5 text-emerald-400" />
-          <span>{isConnected ? '4.5 MB/s' : '0.0 KB/s'}</span>
+          <span>{downSpeed}</span>
         </div>
       </div>
 
@@ -61,16 +72,13 @@ export const TelemetryBar: React.FC<TelemetryBarProps> = ({ stats, onOpenSetting
       <div className="flex items-center gap-3">
         <button
           onClick={onOpenSettings}
-          className="flex items-center gap-1.5 text-gray-300 hover:text-white transition-colors"
-          title="Click to adjust cache quota slider"
+          className="flex items-center gap-1.5 text-gray-400 hover:text-gray-200 transition-colors cursor-pointer"
+          title="Click to view host cache settings"
         >
-          <Database className="w-3.5 h-3.5 text-sky-400" />
-          <span>
-            Cache: {usedGb} / {quotaDisplay}
-          </span>
+          <Database className="w-3.5 h-3.5 text-blue-400" />
+          <span>Cache: {usedGb} / {quotaDisplay}</span>
         </button>
       </div>
     </footer>
   );
 };
-

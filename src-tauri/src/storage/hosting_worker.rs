@@ -11,8 +11,9 @@ use iroh::endpoint::NodeAddr;
 use iroh_blobs::store::Map;
 use tokio::sync::RwLock;
 
+use crate::p2p::bandwidth::BandwidthTracker;
 use crate::p2p::engine::IrohEngine;
-use crate::storage::blob_tracker::{list_all_blobs, touch_blob};
+use crate::storage::blob_tracker::{get_seed_count, list_all_blobs, touch_blob, BlobRecord};
 use crate::storage::db::Database;
 
 /// Interval between cache fill evaluations.
@@ -51,7 +52,11 @@ pub fn get_target_hosting_bytes(db: &Database) -> Result<u64> {
 
 /// Perform one auto-fill pass. Downloads un-cached workspace files from connected peers
 /// until the local cache reaches ~80% of quota.
-pub async fn run_hosting_fill_pass(db: &Arc<Database>, engine: &IrohEngine) -> Result<usize> {
+pub async fn run_hosting_fill_pass(
+    db: &Arc<Database>,
+    engine: &IrohEngine,
+    bandwidth: Option<&Arc<BandwidthTracker>>,
+) -> Result<usize> {
     let target_bytes = get_target_hosting_bytes(db)?;
     let all_records = list_all_blobs(db)?;
 
@@ -59,39 +64,52 @@ pub async fn run_hosting_fill_pass(db: &Arc<Database>, engine: &IrohEngine) -> R
     let mut current_cached_bytes = 0u64;
     let mut missing_blobs = Vec::new();
 
-    for r in &all_records {
-        if let Ok(hash) = r.hash.parse::<iroh_blobs::Hash>() {
-            if is_blob_cached(&engine.store, &hash).await {
-                current_cached_bytes = current_cached_bytes.saturating_add(r.size_bytes);
+    for record in &all_records {
+        if let Ok(parsed_hash) = record.hash.parse::<iroh_blobs::Hash>() {
+            if is_blob_cached(&engine.store, &parsed_hash).await {
+                current_cached_bytes = current_cached_bytes.saturating_add(record.size_bytes);
             } else {
-                missing_blobs.push(r.clone());
+                missing_blobs.push(record.clone());
             }
         }
     }
 
+    // If cache is already at or above target quota (80% or 100% in mirror), nothing to fetch
     if current_cached_bytes >= target_bytes || missing_blobs.is_empty() {
         return Ok(0);
     }
 
-    // Collect available remote peers
     let remotes: Vec<_> = engine.endpoint.remote_info_iter().collect();
     if remotes.is_empty() {
-        return Ok(0);
+        return Ok(0); // No peers currently reachable to fetch from
     }
+
+    // Smart Cache Prioritization: Sort missing files by least seeds first!
+    // Rare/endangered files with fewest seeders across the swarm are replicated first,
+    // ensuring files with only 1 seed never disappear from the campus network.
+    let mut missing_with_seeds: Vec<(BlobRecord, usize)> = Vec::with_capacity(missing_blobs.len());
+    for missing in missing_blobs {
+        let seeds = get_seed_count(db, &missing.hash, false).unwrap_or(1);
+        missing_with_seeds.push((missing, seeds));
+    }
+
+    missing_with_seeds.sort_by(|a, b| {
+        a.1.cmp(&b.1)
+            .then_with(|| a.0.size_bytes.cmp(&b.0.size_bytes))
+    });
 
     let mut downloaded_count = 0;
 
-    for missing in missing_blobs {
-        if current_cached_bytes.saturating_add(missing.size_bytes) > target_bytes {
-            // Reached target fill level (~80%)
+    for (missing, seeds) in missing_with_seeds {
+        if current_cached_bytes >= target_bytes {
             break;
         }
 
-        let Ok(parsed_hash) = missing.hash.parse::<iroh_blobs::Hash>() else {
-            continue;
+        let parsed_hash = match missing.hash.parse::<iroh_blobs::Hash>() {
+            Ok(h) => h,
+            Err(_) => continue,
         };
 
-        // Try downloading from owner or connected peers
         let mut success = false;
 
         // Try owner first
@@ -125,11 +143,15 @@ pub async fn run_hosting_fill_pass(db: &Arc<Database>, engine: &IrohEngine) -> R
             current_cached_bytes = current_cached_bytes.saturating_add(missing.size_bytes);
             downloaded_count += 1;
             let _ = touch_blob(db, &missing.hash);
+            if let Some(bw) = bandwidth {
+                bw.record_download(missing.size_bytes);
+            }
             tracing::info!(
                 hash = %missing.hash,
                 name = ?missing.name,
                 size = missing.size_bytes,
-                "Pre-fetched workspace file to actively host in P2P swarm (~80% target)"
+                seeds = seeds,
+                "Pre-fetched rare workspace file (least seeds first) to actively host in P2P swarm"
             );
         }
     }
@@ -138,7 +160,11 @@ pub async fn run_hosting_fill_pass(db: &Arc<Database>, engine: &IrohEngine) -> R
 }
 
 /// Background worker loop that periodically keeps the cache filled to ~80% for swarm hosting.
-pub fn spawn_hosting_worker(db: Arc<Database>, engine_lock: Arc<RwLock<Option<IrohEngine>>>) {
+pub fn spawn_hosting_worker(
+    db: Arc<Database>,
+    engine_lock: Arc<RwLock<Option<IrohEngine>>>,
+    bandwidth: Arc<BandwidthTracker>,
+) {
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(HOSTING_CHECK_INTERVAL_SECS));
         loop {
@@ -146,7 +172,7 @@ pub fn spawn_hosting_worker(db: Arc<Database>, engine_lock: Arc<RwLock<Option<Ir
 
             let guard = engine_lock.read().await;
             if let Some(engine) = guard.as_ref() {
-                if let Err(e) = run_hosting_fill_pass(&db, engine).await {
+                if let Err(e) = run_hosting_fill_pass(&db, engine, Some(&bandwidth)).await {
                     tracing::debug!("Hosting worker pass note: {:#}", e);
                 }
             }

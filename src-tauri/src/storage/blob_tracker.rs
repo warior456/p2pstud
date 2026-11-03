@@ -1,7 +1,6 @@
 // src-tauri/src/storage/blob_tracker.rs
-// CRUD operations on the local_blobs SQLite table.
+// CRUD operations on the local_blobs SQLite table and file_delete_votes table.
 
-// tracking local blobs
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Result;
@@ -10,7 +9,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::storage::db::Database;
 
-/// A row from the local_blobs table.
+/// Number of community delete votes required to purge an unwanted/orphaned file.
+pub const DELETE_VOTE_QUORUM: usize = 3;
+
+/// A row from the local_blobs table with associated community delete votes and seed count.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BlobRecord {
     pub hash: String,
@@ -19,6 +21,15 @@ pub struct BlobRecord {
     pub last_accessed_at: i64,
     pub is_pinned: bool,
     pub owner_node_id: Option<String>,
+    pub delete_votes: Vec<String>,
+    #[serde(default = "default_seed_count")]
+    pub seed_count: usize,
+    #[serde(default)]
+    pub is_cached: bool,
+}
+
+fn default_seed_count() -> usize {
+    1
 }
 
 fn now_unix() -> i64 {
@@ -26,6 +37,92 @@ fn now_unix() -> i64 {
         .duration_since(UNIX_EPOCH)
         .expect("system clock before UNIX_EPOCH")
         .as_secs() as i64
+}
+
+/// Retrieve all voter Node IDs who marked this file for deletion.
+pub fn get_delete_votes(db: &Database, hash: &str) -> Result<Vec<String>> {
+    let conn = db.lock();
+    let mut stmt = conn.prepare("SELECT voter_node_id FROM file_delete_votes WHERE hash = ?1")?;
+    let rows = stmt.query_map(params![hash], |r| r.get(0))?;
+    let mut votes = Vec::new();
+    for v in rows {
+        votes.push(v?);
+    }
+    Ok(votes)
+}
+
+/// Cast a vote to delete a file. Returns the new total vote count for this file.
+pub fn cast_delete_vote(db: &Database, hash: &str, voter_node_id: &str) -> Result<usize> {
+    let conn = db.lock();
+    conn.execute(
+        "INSERT OR IGNORE INTO file_delete_votes(hash, voter_node_id, voted_at) VALUES(?1, ?2, ?3)",
+        params![hash, voter_node_id, now_unix()],
+    )?;
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM file_delete_votes WHERE hash = ?1",
+        params![hash],
+        |r| r.get(0),
+    )?;
+    Ok(count as usize)
+}
+
+/// Retract a delete vote. Returns the new total vote count for this file.
+pub fn remove_delete_vote(db: &Database, hash: &str, voter_node_id: &str) -> Result<usize> {
+    let conn = db.lock();
+    conn.execute(
+        "DELETE FROM file_delete_votes WHERE hash = ?1 AND voter_node_id = ?2",
+        params![hash, voter_node_id],
+    )?;
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM file_delete_votes WHERE hash = ?1",
+        params![hash],
+        |r| r.get(0),
+    )?;
+    Ok(count as usize)
+}
+
+/// Record that a peer node holds / is actively seeding a blob.
+pub fn record_peer_seed(db: &Database, hash: &str, peer_node_id: &str) -> Result<()> {
+    let conn = db.lock();
+    conn.execute(
+        "INSERT OR REPLACE INTO file_seeds(hash, peer_node_id, last_seen_at) VALUES(?1, ?2, ?3)",
+        params![hash, peer_node_id, now_unix()],
+    )?;
+    Ok(())
+}
+
+/// Remove a peer seed entry (e.g. if peer evicted or deleted the file).
+pub fn remove_peer_seed(db: &Database, hash: &str, peer_node_id: &str) -> Result<()> {
+    let conn = db.lock();
+    conn.execute(
+        "DELETE FROM file_seeds WHERE hash = ?1 AND peer_node_id = ?2",
+        params![hash, peer_node_id],
+    )?;
+    Ok(())
+}
+
+/// Calculate active seed count for a blob across the swarm.
+/// Peers seen within the last 30 minutes are considered active seeders.
+pub fn get_seed_count(db: &Database, hash: &str, is_locally_cached: bool) -> Result<usize> {
+    let conn = db.lock();
+    let threshold = now_unix() - 1800; // 30 minutes
+    let peer_seeds: i64 = conn
+        .query_row(
+            "SELECT COUNT(DISTINCT peer_node_id) FROM file_seeds WHERE hash = ?1 AND last_seen_at >= ?2",
+            params![hash, threshold],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+
+    let mut total = peer_seeds as usize;
+    if is_locally_cached {
+        total += 1;
+    }
+    // Every existing file has at least 1 seed (the uploader/origin node)
+    if total == 0 {
+        total = 1;
+    }
+    Ok(total)
 }
 
 /// Insert or replace a blob record (upsert).
@@ -78,9 +175,11 @@ pub fn set_pinned(db: &Database, hash: &str, pinned: bool) -> Result<()> {
     Ok(())
 }
 
-/// Delete a blob record (called by the eviction worker after removing from store).
+/// Delete a blob record and all its associated delete votes and seed records.
 pub fn delete_blob(db: &Database, hash: &str) -> Result<()> {
     let conn = db.lock();
+    let _ = conn.execute("DELETE FROM file_delete_votes WHERE hash = ?1", params![hash]);
+    let _ = conn.execute("DELETE FROM file_seeds WHERE hash = ?1", params![hash]);
     conn.execute("DELETE FROM local_blobs WHERE hash = ?1", params![hash])?;
     Ok(())
 }
@@ -120,76 +219,139 @@ pub fn total_pinned_bytes(db: &Database) -> Result<u64> {
 
 /// Return unpinned blobs ordered oldest-first (for eviction).
 pub fn oldest_unpinned(db: &Database, limit: usize) -> Result<Vec<BlobRecord>> {
-    let conn = db.lock();
-    let mut stmt = conn.prepare(
-        "SELECT hash, name, size_bytes, last_accessed_at, is_pinned, owner_node_id
-         FROM local_blobs
-         WHERE is_pinned = 0
-         ORDER BY last_accessed_at ASC
-         LIMIT ?1",
-    )?;
-    let rows = stmt.query_map(params![limit as i64], |row| {
-        Ok(BlobRecord {
-            hash: row.get(0)?,
-            name: row.get(1)?,
-            size_bytes: row.get::<_, i64>(2)? as u64,
-            last_accessed_at: row.get(3)?,
-            is_pinned: row.get::<_, i64>(4)? != 0,
-            owner_node_id: row.get(5)?,
-        })
-    })?;
-    rows.collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(Into::into)
+    let mut records = {
+        let conn = db.lock();
+        let mut stmt = conn.prepare(
+            "SELECT hash, name, size_bytes, last_accessed_at, is_pinned, owner_node_id
+             FROM local_blobs
+             WHERE is_pinned = 0
+             ORDER BY last_accessed_at ASC
+             LIMIT ?1",
+        )?;
+        let raw_rows = stmt.query_map(params![limit as i64], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, Option<String>>(1)?,
+                row.get::<_, i64>(2)? as u64,
+                row.get::<_, i64>(3)?,
+                row.get::<_, i64>(4)? != 0,
+                row.get::<_, Option<String>>(5)?,
+            ))
+        })?;
+
+        let mut list = Vec::new();
+        for r in raw_rows {
+            let (hash, name, size_bytes, last_accessed_at, is_pinned, owner_node_id) = r?;
+            list.push(BlobRecord {
+                hash,
+                name,
+                size_bytes,
+                last_accessed_at,
+                is_pinned,
+                owner_node_id,
+                delete_votes: Vec::new(),
+                seed_count: 1,
+                is_cached: false,
+            });
+        }
+        list
+    };
+
+    for r in &mut records {
+        r.delete_votes = get_delete_votes(db, &r.hash).unwrap_or_default();
+        r.seed_count = get_seed_count(db, &r.hash, false).unwrap_or(1);
+    }
+
+    Ok(records)
 }
 
 /// Look up a single blob by hash.
 pub fn get_blob(db: &Database, hash: &str) -> Result<Option<BlobRecord>> {
-    let conn = db.lock();
-    let result = conn.query_row(
-        "SELECT hash, name, size_bytes, last_accessed_at, is_pinned, owner_node_id
-         FROM local_blobs WHERE hash = ?1",
-        params![hash],
-        |row| {
-            Ok(BlobRecord {
-                hash: row.get(0)?,
-                name: row.get(1)?,
-                size_bytes: row.get::<_, i64>(2)? as u64,
-                last_accessed_at: row.get(3)?,
-                is_pinned: row.get::<_, i64>(4)? != 0,
-                owner_node_id: row.get(5)?,
-            })
-        },
-    );
-    match result {
-        Ok(r) => Ok(Some(r)),
-        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-        Err(e) => Err(e.into()),
-    }
+    let result = {
+        let conn = db.lock();
+        conn.query_row(
+            "SELECT hash, name, size_bytes, last_accessed_at, is_pinned, owner_node_id
+             FROM local_blobs WHERE hash = ?1",
+            params![hash],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, i64>(2)? as u64,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, i64>(4)? != 0,
+                    row.get::<_, Option<String>>(5)?,
+                ))
+            },
+        )
+    };
+
+    let (hash_val, name, size_bytes, last_accessed_at, is_pinned, owner_node_id) = match result {
+        Ok(vals) => vals,
+        Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(None),
+        Err(e) => return Err(e.into()),
+    };
+
+    let delete_votes = get_delete_votes(db, &hash_val).unwrap_or_default();
+    let seed_count = get_seed_count(db, &hash_val, false).unwrap_or(1);
+
+    Ok(Some(BlobRecord {
+        hash: hash_val,
+        name,
+        size_bytes,
+        last_accessed_at,
+        is_pinned,
+        owner_node_id,
+        delete_votes,
+        seed_count,
+        is_cached: false,
+    }))
 }
 
 /// Return all blobs in the database ordered by last_accessed_at descending.
 pub fn list_all_blobs(db: &Database) -> Result<Vec<BlobRecord>> {
-    let conn = db.lock();
-    let mut stmt = conn.prepare(
-        "SELECT hash, name, size_bytes, last_accessed_at, is_pinned, owner_node_id
-         FROM local_blobs
-         ORDER BY last_accessed_at DESC",
-    )?;
-    let rows = stmt.query_map([], |row| {
-        Ok(BlobRecord {
-            hash: row.get(0)?,
-            name: row.get(1)?,
-            size_bytes: row.get::<_, i64>(2)? as u64,
-            last_accessed_at: row.get(3)?,
-            is_pinned: row.get::<_, i64>(4)? != 0,
-            owner_node_id: row.get(5)?,
-        })
-    })?;
-    let mut results = Vec::new();
-    for row in rows {
-        results.push(row?);
+    let mut records = {
+        let conn = db.lock();
+        let mut stmt = conn.prepare(
+            "SELECT hash, name, size_bytes, last_accessed_at, is_pinned, owner_node_id
+             FROM local_blobs
+             ORDER BY last_accessed_at DESC",
+        )?;
+        let raw_rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, Option<String>>(1)?,
+                row.get::<_, i64>(2)? as u64,
+                row.get::<_, i64>(3)?,
+                row.get::<_, i64>(4)? != 0,
+                row.get::<_, Option<String>>(5)?,
+            ))
+        })?;
+
+        let mut list = Vec::new();
+        for r in raw_rows {
+            let (hash, name, size_bytes, last_accessed_at, is_pinned, owner_node_id) = r?;
+            list.push(BlobRecord {
+                hash,
+                name,
+                size_bytes,
+                last_accessed_at,
+                is_pinned,
+                owner_node_id,
+                delete_votes: Vec::new(),
+                seed_count: 1,
+                is_cached: false,
+            });
+        }
+        list
+    };
+
+    for r in &mut records {
+        r.delete_votes = get_delete_votes(db, &r.hash).unwrap_or_default();
+        r.seed_count = get_seed_count(db, &r.hash, false).unwrap_or(1);
     }
-    Ok(results)
+
+    Ok(records)
 }
 
 #[cfg(test)]
@@ -212,10 +374,31 @@ mod tests {
         let before = get_blob(&db, "hash1").unwrap().unwrap();
         assert_eq!(before.name.as_deref(), Some("test.pdf"));
         assert_eq!(before.owner_node_id.as_deref(), Some("node1"));
+        assert!(before.delete_votes.is_empty());
         std::thread::sleep(std::time::Duration::from_secs(1));
         touch_blob(&db, "hash1").unwrap();
         let after = get_blob(&db, "hash1").unwrap().unwrap();
         assert!(after.last_accessed_at >= before.last_accessed_at);
+    }
+
+    #[test]
+    fn voting_to_delete_accumulates() {
+        let (_dir, db) = make_db();
+        upsert_blob(&db, "target_file", Some("file.pdf"), 100, false, Some("creator")).unwrap();
+        assert_eq!(cast_delete_vote(&db, "target_file", "peer1").unwrap(), 1);
+        assert_eq!(cast_delete_vote(&db, "target_file", "peer2").unwrap(), 2);
+        // Duplicate vote from peer2 shouldn't increment
+        assert_eq!(cast_delete_vote(&db, "target_file", "peer2").unwrap(), 2);
+
+        let votes = get_delete_votes(&db, "target_file").unwrap();
+        assert_eq!(votes.len(), 2);
+        assert!(votes.contains(&"peer1".to_string()));
+        assert!(votes.contains(&"peer2".to_string()));
+
+        // Remove vote
+        assert_eq!(remove_delete_vote(&db, "target_file", "peer1").unwrap(), 1);
+        let votes_after = get_delete_votes(&db, "target_file").unwrap();
+        assert_eq!(votes_after.len(), 1);
     }
 
     #[test]

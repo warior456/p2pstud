@@ -41,6 +41,26 @@ const MIGRATIONS: &[&str] = &[
     ALTER TABLE local_blobs ADD COLUMN name TEXT;
     ALTER TABLE local_blobs ADD COLUMN owner_node_id TEXT;
     "#,
+    // Migration 0003 — community delete voting & moderation
+    r#"
+    CREATE TABLE IF NOT EXISTS file_delete_votes (
+        hash          TEXT NOT NULL,
+        voter_node_id TEXT NOT NULL,
+        voted_at      INTEGER NOT NULL,
+        PRIMARY KEY (hash, voter_node_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_delete_votes_hash ON file_delete_votes(hash);
+    "#,
+    // Migration 0004 — track active file seeds across the peer swarm
+    r#"
+    CREATE TABLE IF NOT EXISTS file_seeds (
+        hash          TEXT NOT NULL,
+        peer_node_id  TEXT NOT NULL,
+        last_seen_at  INTEGER NOT NULL,
+        PRIMARY KEY (hash, peer_node_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_file_seeds_hash ON file_seeds(hash);
+    "#,
 ];
 
 /// Thread-safe SQLite database wrapper.

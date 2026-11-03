@@ -14,6 +14,8 @@ describe('CacheSlider Component', () => {
     pinned_bytes: 536870912, // 512 MB
     peer_count: 2,
     full_mirror: false,
+    upload_bytes_per_sec: 0,
+    download_bytes_per_sec: 0,
   };
 
   it('renders quota and used storage correctly', () => {
@@ -28,7 +30,7 @@ describe('CacheSlider Component', () => {
     const { invoke } = await import('@tauri-apps/api/core');
     render(<CacheSlider stats={mockStats} />);
 
-    const slider = screen.getByLabelText(/Cache Quota Limit/i);
+    const slider = screen.getByRole('slider');
     fireEvent.change(slider, { target: { value: '10' } });
 
     expect(invoke).toHaveBeenCalledWith('set_cache_limit', {
@@ -41,7 +43,7 @@ describe('CacheSlider Component', () => {
     const { invoke } = await import('@tauri-apps/api/core');
     render(<CacheSlider stats={mockStats} />);
 
-    const checkbox = screen.getByLabelText(/Enable Full Mirror Mode/i);
+    const checkbox = screen.getByRole('checkbox');
     fireEvent.click(checkbox);
 
     expect(invoke).toHaveBeenCalledWith('set_cache_limit', {

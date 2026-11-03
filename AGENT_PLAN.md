@@ -74,6 +74,9 @@ At the end of every session (or when interrupted), update the `## Progress Track
 | 22 | Multi-Layer Discovery & Smart Peer Dialing | ✅ | `LocalSwarmDiscovery` on LAN, `n0_dns` and `pkarr_dht` on WAN, auto background discovery connect, `NodeTicket` parsing |
 | 23 | Workspace Catalog Synchronization & Remote Fetch | ✅ | Real-time QUIC catalog exchange (`/p2pstud/sync/1`), broadcast on upload/delete, on-demand remote blob download |
 | 24 | Active Swarm Hosting (~80%) & Orphaned File Management | ✅ | Worker actively fills cache to 80% to seed course files; orphaned file force-cleanup for departed owners |
+| 25 | Live Bandwidth Telemetry & Community Deletion Consensus Voting | ✅ | Real-time byte-rate tracker replaces static mock speeds; community vote-to-delete with 3-vote quorum |
+| 26 | Upload Queue Visual Indicator & Smart Least-Seeds Cache Auto-Fill | ✅ | Live upload queue drawer & file row progress; smart auto-fill prioritizing lowest seed counts |
+| 27 | Hierarchical Folder Support & Organization | ✅ | Virtual folder tree, directory navigation, "New Folder", folder-aware uploads & breadcrumb deep-linking |
 
 ---
 

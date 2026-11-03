@@ -13,7 +13,9 @@ import {
   Trash2,
   HardDriveDownload,
   AlertTriangle,
-  User
+  User,
+  Vote,
+  Sprout
 } from 'lucide-react';
 import { FileEntry } from '../../types';
 
@@ -27,7 +29,8 @@ interface FileRowProps {
   onDownload: (hash: string) => void;
   onPreview: (hash: string) => void;
   onDelete?: (hash: string) => void;
-  onDeleteOrphan?: (hash: string) => void;
+  onVoteDelete?: (hash: string) => void;
+  onUnvoteDelete?: (hash: string) => void;
   onEvictLocal?: (hash: string) => void;
 }
 
@@ -49,12 +52,17 @@ export const FileRow: React.FC<FileRowProps> = ({
   onDownload,
   onPreview,
   onDelete,
-  onDeleteOrphan,
+  onVoteDelete,
+  onUnvoteDelete,
   onEvictLocal,
 }) => {
   const [menuOpen, setMenuOpen] = useState(false);
 
-  const isOwner = !file.owner_node_id || (currentUserId && file.owner_node_id === currentUserId);
+  const isOwner = Boolean(
+    file.owner_node_id && currentUserId && file.owner_node_id === currentUserId
+  );
+  const deleteVotes = file.delete_votes || [];
+  const hasVotedDelete = Boolean(currentUserId && deleteVotes.includes(currentUserId));
 
   const handleContextMenu = (e: React.MouseEvent) => {
     e.preventDefault();
@@ -115,27 +123,69 @@ export const FileRow: React.FC<FileRowProps> = ({
           <FileText className="w-5 h-5 text-gray-400 shrink-0" />
         )}
         <div className="flex flex-col truncate">
-          <span className="text-sm font-medium text-gray-800 truncate">{file.name}</span>
-          <div className="flex items-center gap-2 text-[10px] text-gray-400 mt-0.5">
-            {file.owner_node_id && (
-              <span className="flex items-center gap-1 font-mono">
-                <User className="w-2.5 h-2.5" />
-                {isOwner ? 'You (Owner)' : `Owner: ${file.owner_node_id.slice(0, 8)}...`}
+          <div className="flex items-center gap-2 truncate">
+            <span className="text-sm font-medium text-gray-800 truncate">{file.name}</span>
+            {deleteVotes.length > 0 && (
+              <span
+                className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-amber-100 text-amber-800 border border-amber-300"
+                title={`${deleteVotes.length} student(s) voted to delete this file. Requires 3 votes for consensus deletion.`}
+              >
+                <AlertTriangle className="w-3 h-3 text-amber-600" />
+                {deleteVotes.length}/3 delete votes
               </span>
             )}
-            <span className="font-mono">{file.hash.slice(0, 10)}...</span>
+            {!file.is_dir && file.seeds_count !== undefined && (
+              <span
+                className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium border ${
+                  file.seeds_count <= 1
+                    ? 'bg-amber-50 text-amber-700 border-amber-200'
+                    : 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                }`}
+                title={
+                  file.seeds_count <= 1
+                    ? 'Only 1 active seed in swarm! The smart cache automatically prioritizes caching and seeding this file.'
+                    : `${file.seeds_count} active seeds across the swarm`
+                }
+              >
+                <Sprout className="w-3 h-3" />
+                {file.seeds_count} {file.seeds_count === 1 ? 'seed (rare)' : 'seeds'}
+              </span>
+            )}
+          </div>
+          <div className="flex items-center gap-2 text-[10px] text-gray-400 mt-0.5">
+            {file.is_dir ? (
+              <span className="font-medium text-blue-600">
+                {file.item_count ?? 0} {file.item_count === 1 ? 'item' : 'items'}
+              </span>
+            ) : (
+              <>
+                {file.owner_node_id && (
+                  <span className="flex items-center gap-1 font-mono">
+                    <User className="w-2.5 h-2.5" />
+                    {isOwner ? 'You (Owner)' : `Owner: ${file.owner_node_id.slice(0, 8)}...`}
+                  </span>
+                )}
+                <span className="font-mono">{file.hash.slice(0, 10)}...</span>
+              </>
+            )}
           </div>
         </div>
       </div>
 
       <div className="flex items-center gap-4">
-        {!file.is_dir && (
-          <span className="text-xs text-gray-400 font-mono w-16 text-right">
-            {formatBytes(file.size_bytes)}
-          </span>
-        )}
+        <span className="text-xs text-gray-400 font-mono w-16 text-right">
+          {formatBytes(file.size_bytes)}
+        </span>
 
-        <div className="w-24 flex justify-end">{renderBadge()}</div>
+        <div className="w-24 flex justify-end">
+          {file.is_dir ? (
+            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-600">
+              Folder
+            </span>
+          ) : (
+            renderBadge()
+          )}
+        </div>
 
         <button
           onClick={(e) => {
@@ -152,7 +202,7 @@ export const FileRow: React.FC<FileRowProps> = ({
       {menuOpen && (
         <div
           onMouseLeave={() => setMenuOpen(false)}
-          className="absolute right-4 top-10 bg-white border border-gray-200 shadow-lg rounded-lg py-1 z-20 text-xs w-56 font-normal"
+          className="absolute right-4 top-10 bg-white border border-gray-200 shadow-lg rounded-lg py-1 z-20 text-xs w-60 font-normal"
         >
           {!file.is_dir && (
             <>
@@ -241,17 +291,33 @@ export const FileRow: React.FC<FileRowProps> = ({
                   <Trash2 className="w-3.5 h-3.5 text-red-600" /> Delete My File
                 </button>
               ) : (
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    if (onDeleteOrphan) onDeleteOrphan(file.hash);
-                    setMenuOpen(false);
-                  }}
-                  className="w-full text-left px-3 py-1.5 flex items-center gap-2 hover:bg-amber-50 text-amber-700 font-medium"
-                  title="Remove abandoned file whose owner no longer exists in workspace"
-                >
-                  <AlertTriangle className="w-3.5 h-3.5 text-amber-600" /> Clean Up Orphaned File
-                </button>
+                <>
+                  {hasVotedDelete ? (
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        if (onUnvoteDelete) onUnvoteDelete(file.hash);
+                        setMenuOpen(false);
+                      }}
+                      className="w-full text-left px-3 py-1.5 flex items-center gap-2 hover:bg-amber-50 text-amber-800 font-medium"
+                      title="Retract your vote to delete this file"
+                    >
+                      <Vote className="w-3.5 h-3.5 text-amber-600" /> Retract Delete Vote ({deleteVotes.length}/3)
+                    </button>
+                  ) : (
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        if (onVoteDelete) onVoteDelete(file.hash);
+                        setMenuOpen(false);
+                      }}
+                      className="w-full text-left px-3 py-1.5 flex items-center gap-2 hover:bg-amber-50 text-amber-800 font-medium"
+                      title="Vote to delete this file. Requires 3 community votes to purge."
+                    >
+                      <Vote className="w-3.5 h-3.5 text-amber-600" /> Vote to Delete ({deleteVotes.length}/3)
+                    </button>
+                  )}
+                </>
               )}
             </>
           )}

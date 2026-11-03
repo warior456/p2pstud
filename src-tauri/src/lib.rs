@@ -11,6 +11,7 @@ use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent}
 use tauri::Manager;
 use tokio::sync::RwLock;
 
+use crate::p2p::bandwidth::BandwidthTracker;
 use crate::p2p::engine::IrohEngine;
 use crate::storage::db::Database;
 
@@ -18,6 +19,7 @@ use crate::storage::db::Database;
 pub struct AppState {
     pub engine: Arc<RwLock<Option<IrohEngine>>>,
     pub db: Arc<Database>,
+    pub bandwidth: Arc<BandwidthTracker>,
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -48,10 +50,12 @@ pub fn run() {
 
             // Store state; Iroh engine is started asynchronously after setup.
             let engine: Arc<RwLock<Option<IrohEngine>>> = Arc::new(RwLock::new(None));
+            let bandwidth = Arc::new(BandwidthTracker::new());
 
             let state = AppState {
                 engine: engine.clone(),
                 db: db.clone(),
+                bandwidth: bandwidth.clone(),
             };
             app.manage(state);
 
@@ -108,6 +112,7 @@ pub fn run() {
             let data_dir_clone = data_dir.clone();
             let db_clone = db.clone();
             let engine_clone = engine.clone();
+            let bw_clone = bandwidth.clone();
             tauri::async_runtime::spawn(async move {
                 match p2p::engine::IrohEngine::start(&data_dir_clone, db_clone.clone()).await {
                     Ok(e) => {
@@ -115,7 +120,7 @@ pub fn run() {
                         *engine_clone.write().await = Some(e);
                         // Start background eviction worker and cooperative swarm hosting worker (~80% fill)
                         storage::eviction::spawn_eviction_worker(db_clone.clone(), engine_clone.clone());
-                        storage::hosting_worker::spawn_hosting_worker(db_clone, engine_clone);
+                        storage::hosting_worker::spawn_hosting_worker(db_clone, engine_clone, bw_clone);
                     }
                     Err(err) => {
                         tracing::error!("Failed to start Iroh node: {:#}", err);
@@ -136,9 +141,10 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::storage_cmds::get_storage_stats,
             commands::storage_cmds::get_app_settings,
-            commands::storage_cmds::set_relay_url,
+            commands::storage_cmds::update_app_settings,
             commands::storage_cmds::set_cache_limit,
-            commands::storage_cmds::purge_unpinned_cache,
+            commands::storage_cmds::set_full_mirror,
+            commands::storage_cmds::purge_cache,
             commands::storage_cmds::open_data_dir,
             commands::file_cmds::pin_file,
             commands::file_cmds::unpin_file,
@@ -147,6 +153,8 @@ pub fn run() {
             commands::file_cmds::add_file,
             commands::file_cmds::upload_file_bytes,
             commands::file_cmds::delete_file,
+            commands::file_cmds::vote_delete_file,
+            commands::file_cmds::unvote_delete_file,
             commands::file_cmds::evict_local_file,
             commands::file_cmds::export_file,
             commands::peer_cmds::list_peers,

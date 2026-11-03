@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { 
   FolderGit2, 
   Settings, 
@@ -9,7 +9,7 @@ import {
   Search,
   Upload
 } from 'lucide-react';
-import { FileEntry } from './types';
+import { FileEntry, UploadItem } from './types';
 import { useStorageStats } from './hooks/useStorageStats';
 import { usePeerStatus } from './hooks/usePeerStatus';
 import { Breadcrumbs } from './components/Explorer/Breadcrumbs';
@@ -17,6 +17,7 @@ import { FileTree } from './components/Explorer/FileTree';
 import { PdfViewer } from './components/Viewers/PdfViewer';
 import { MarkdownEditor } from './components/Viewers/MarkdownEditor';
 import { CacheSlider } from './components/Settings/CacheSlider';
+import { UploadQueueDrawer } from './components/Explorer/UploadQueueDrawer';
 import { TelemetryBar } from './components/Footer/TelemetryBar';
 import { invoke } from '@tauri-apps/api/core';
 
@@ -27,11 +28,16 @@ interface BlobRecord {
   last_accessed_at: number;
   is_pinned: boolean;
   owner_node_id: string | null;
+  delete_votes?: string[];
+  seed_count?: number;
+  is_cached?: boolean;
 }
 
 export default function App() {
   const [paths, setPaths] = useState<string[]>(['Shared Cloud']);
   const [files, setFiles] = useState<FileEntry[]>([]);
+  const [customFolders, setCustomFolders] = useState<string[]>([]);
+  const [uploadQueue, setUploadQueue] = useState<UploadItem[]>([]);
   const [selectedHash, setSelectedHash] = useState<string | null>(null);
   const [currentView, setCurrentView] = useState<'explorer' | 'pdf' | 'markdown' | 'settings'>('explorer');
   const [searchQuery, setSearchQuery] = useState('');
@@ -52,9 +58,11 @@ export default function App() {
             hash: r.hash,
             size_bytes: r.size_bytes,
             is_dir: false,
-            sync_state: r.is_pinned ? 'pinned' : 'cached',
+            sync_state: r.is_pinned ? 'pinned' : r.is_cached ? 'cached' : 'cloud_only',
             owner_node_id: r.owner_node_id || undefined,
             last_accessed_at: r.last_accessed_at,
+            delete_votes: r.delete_votes || [],
+            seeds_count: r.seed_count ?? 1,
           }))
         );
       }
@@ -74,19 +82,51 @@ export default function App() {
     fileInputRef.current?.click();
   };
 
-  const handleFileInputChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const selectedFiles = e.target.files;
+  // Current directory relative prefix within workspace, e.g. "Math101/"
+  const currentPrefix = paths.length > 1 ? paths.slice(1).join('/') + '/' : '';
+
+  const handleUploadFiles = async (selectedFiles: FileList | File[]) => {
     if (!selectedFiles || selectedFiles.length === 0) return;
 
-    for (let i = 0; i < selectedFiles.length; i++) {
-      const file = selectedFiles[i];
+    const fileList = Array.from(selectedFiles);
+    const newItems: UploadItem[] = fileList.map((f) => ({
+      id: `${f.name}-${Date.now()}-${Math.random()}`,
+      name: currentPrefix ? `${currentPrefix}${f.name}` : f.name,
+      size_bytes: f.size,
+      progress: 10,
+      status: 'reading',
+    }));
+
+    setUploadQueue((prev) => [...prev, ...newItems]);
+
+    for (let i = 0; i < fileList.length; i++) {
+      const file = fileList[i];
+      const item = newItems[i];
+      const targetName = item.name;
+
       try {
+        setUploadQueue((prev) =>
+          prev.map((q) => (q.id === item.id ? { ...q, progress: 30, status: 'reading' } : q))
+        );
         const buffer = await file.arrayBuffer();
         const bytes = Array.from(new Uint8Array(buffer));
-        await invoke('upload_file_bytes', { name: file.name, data: bytes });
+
+        setUploadQueue((prev) =>
+          prev.map((q) => (q.id === item.id ? { ...q, progress: 65, status: 'uploading' } : q))
+        );
+
+        await invoke('upload_file_bytes', { name: targetName, data: bytes });
+
+        setUploadQueue((prev) =>
+          prev.map((q) => (q.id === item.id ? { ...q, progress: 100, status: 'completed' } : q))
+        );
       } catch (err) {
         console.error('Failed to upload file:', err);
-        alert(`Failed to upload ${file.name}: ${err}`);
+        setUploadQueue((prev) =>
+          prev.map((q) =>
+            q.id === item.id ? { ...q, progress: 100, status: 'error', error: String(err) } : q
+          )
+        );
       }
     }
 
@@ -98,9 +138,62 @@ export default function App() {
     refetchStats();
   };
 
-  const handleDelete = async (hash: string, forceOrphan = false) => {
+  const handleFileInputChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files.length > 0) {
+      await handleUploadFiles(e.target.files);
+    }
+  };
+
+  const handleCreateFolder = () => {
+    const folderName = prompt('Enter folder name:');
+    if (!folderName || !folderName.trim()) return;
+    const cleanName = folderName.trim().replace(/[\/\\]/g, '-');
+    const fullFolderPath = currentPrefix ? `${currentPrefix}${cleanName}` : cleanName;
+
+    if (!customFolders.includes(fullFolderPath)) {
+      setCustomFolders((prev) => [...prev, fullFolderPath]);
+    }
+  };
+
+  const handleNavigateFolder = (folderName: string) => {
+    setPaths((prev) => [...prev, folderName]);
+    setSelectedHash(null);
+  };
+
+  const handleNavigateBreadcrumbs = (index: number) => {
+    if (index === -1) {
+      setPaths(['Shared Cloud']);
+    } else {
+      setPaths(paths.slice(0, index + 1));
+    }
+    setSelectedHash(null);
+    setCurrentView('explorer');
+  };
+
+  const handleNavigateUp = () => {
+    if (paths.length > 1) {
+      setPaths((prev) => prev.slice(0, -1));
+      setSelectedHash(null);
+    }
+  };
+
+  const handleDismissUpload = (id: string) => {
+    setUploadQueue((prev) => prev.filter((item) => item.id !== id));
+  };
+
+  const handleClearUploadQueue = () => {
+    setUploadQueue([]);
+  };
+
+  const handleDelete = async (hash: string) => {
+    const file = files.find((f) => f.hash === hash);
+    const fileName = file?.name || hash.slice(0, 8);
+    if (!confirm(`Are you sure you want to delete your file "${fileName}"?\n\nThis will remove it from the workspace.`)) {
+      return;
+    }
+
     try {
-      await invoke('delete_file', { hash, forceOrphan });
+      await invoke('delete_file', { hash });
       setFiles((prev) => prev.filter((f) => f.hash !== hash));
       refetchStats();
     } catch (err) {
@@ -109,15 +202,40 @@ export default function App() {
     }
   };
 
-  const handleDeleteOrphan = async (hash: string) => {
+  const handleVoteDelete = async (hash: string) => {
     const file = files.find((f) => f.hash === hash);
     const fileName = file?.name || hash.slice(0, 8);
     if (
-      confirm(
-        `Are you sure you want to clean up "${fileName}"?\n\nThis will remove the file from the workspace for everyone because the original owner is no longer active in the swarm.`
+      !confirm(
+        `Vote to mark "${fileName}" for deletion?\n\nThis records your vote. When 3 community members vote to delete an orphaned or unwanted file, it is automatically purged from the workspace.`
       )
     ) {
-      await handleDelete(hash, true);
+      return;
+    }
+
+    try {
+      const remainingOrStatus = await invoke<number>('vote_delete_file', { hash });
+      if (remainingOrStatus === 0) {
+        alert(`Consensus reached! "${fileName}" has received 3 delete votes and was purged from the workspace.`);
+        setFiles((prev) => prev.filter((f) => f.hash !== hash));
+      } else {
+        await loadWorkspaceFiles();
+      }
+      refetchStats();
+    } catch (err) {
+      console.error('Vote delete error:', err);
+      alert(`Vote failed: ${err}`);
+    }
+  };
+
+  const handleUnvoteDelete = async (hash: string) => {
+    try {
+      await invoke<number>('unvote_delete_file', { hash });
+      await loadWorkspaceFiles();
+      refetchStats();
+    } catch (err) {
+      console.error('Unvote error:', err);
+      alert(`Unvote failed: ${err}`);
     }
   };
 
@@ -131,20 +249,6 @@ export default function App() {
     } catch (err) {
       alert(`Failed to free local space: ${err}`);
     }
-  };
-
-  const handleNavigate = (index: number) => {
-    if (index === -1) {
-      setPaths([]);
-    } else {
-      setPaths(paths.slice(0, index + 1));
-    }
-    setCurrentView('explorer');
-  };
-
-  const handleNavigateFolder = (folderName: string) => {
-    setPaths([...paths, folderName]);
-    setCurrentView('explorer');
   };
 
   const handleSelectFile = async (file: FileEntry) => {
@@ -227,9 +331,82 @@ export default function App() {
     }
   };
 
-  const filteredFiles = files.filter((f) =>
-    f.name.toLowerCase().includes(searchQuery.toLowerCase())
-  );
+  const currentDisplayFiles = useMemo(() => {
+    // If user is searching globally, search across all workspace files
+    if (searchQuery.trim()) {
+      const q = searchQuery.toLowerCase();
+      return files.filter(
+        (f) => f.name.toLowerCase().includes(q) || f.hash.toLowerCase().includes(q)
+      );
+    }
+
+    const dirMap = new Map<string, { size_bytes: number; count: number }>();
+    const fileEntries: FileEntry[] = [];
+
+    // Custom folders under current directory
+    for (const folder of customFolders) {
+      if (folder.startsWith(currentPrefix)) {
+        const rel = folder.slice(currentPrefix.length);
+        const parts = rel.split('/').filter(Boolean);
+        if (parts.length > 0) {
+          const directDir = parts[0];
+          if (!dirMap.has(directDir)) {
+            dirMap.set(directDir, { size_bytes: 0, count: 0 });
+          }
+        }
+      }
+    }
+
+    // Process files under current directory
+    for (const file of files) {
+      const fileName = file.name;
+      if (currentPrefix === '') {
+        // Root workspace
+        if (fileName.includes('/')) {
+          const dirName = fileName.split('/')[0];
+          const cur = dirMap.get(dirName) || { size_bytes: 0, count: 0 };
+          dirMap.set(dirName, {
+            size_bytes: cur.size_bytes + file.size_bytes,
+            count: cur.count + 1,
+          });
+        } else {
+          fileEntries.push(file);
+        }
+      } else {
+        // Inside subfolder
+        if (fileName.startsWith(currentPrefix)) {
+          const rel = fileName.slice(currentPrefix.length);
+          if (rel.includes('/')) {
+            const dirName = rel.split('/')[0];
+            const cur = dirMap.get(dirName) || { size_bytes: 0, count: 0 };
+            dirMap.set(dirName, {
+              size_bytes: cur.size_bytes + file.size_bytes,
+              count: cur.count + 1,
+            });
+          } else {
+            fileEntries.push({
+              ...file,
+              name: rel, // Basename within this folder
+            });
+          }
+        }
+      }
+    }
+
+    const folderEntries: FileEntry[] = Array.from(dirMap.entries()).map(([dirName, info]) => ({
+      name: dirName,
+      hash: `folder-${currentPrefix}${dirName}`,
+      size_bytes: info.size_bytes,
+      is_dir: true,
+      sync_state: 'cached',
+      item_count: info.count,
+    }));
+
+    folderEntries.sort((a, b) => a.name.localeCompare(b.name));
+    fileEntries.sort((a, b) => a.name.localeCompare(b.name));
+
+    return [...folderEntries, ...fileEntries];
+  }, [files, customFolders, currentPrefix, searchQuery]);
 
   return (
     <div className="flex flex-col h-screen w-screen overflow-hidden bg-gray-50 text-gray-900 select-none">
@@ -282,41 +459,37 @@ export default function App() {
               loadWorkspaceFiles();
               refetchStats();
             }}
-            className="p-1.5 rounded-md hover:bg-gray-100 text-gray-600 hover:text-gray-900 transition-colors"
-            title="Refresh Swarm Cache"
+            className="p-1.5 hover:bg-gray-100 rounded-lg text-gray-500 hover:text-gray-700 transition-colors"
+            title="Refresh Swarm Catalog"
           >
             <RefreshCw className="w-4 h-4" />
           </button>
           <button
             onClick={() => setCurrentView('settings')}
-            className={`p-1.5 rounded-md transition-colors ${
-              currentView === 'settings'
-                ? 'bg-blue-50 text-blue-600'
-                : 'text-gray-600 hover:text-gray-900 hover:bg-gray-100'
-            }`}
-            title="Settings & Host-to-Play Cache Allocation"
+            className="p-1.5 hover:bg-gray-100 rounded-lg text-gray-500 hover:text-gray-700 transition-colors"
+            title="Workspace Settings"
           >
             <Settings className="w-4 h-4" />
           </button>
         </div>
       </header>
 
-      {/* Main Workspace Body */}
+      {/* Main Body */}
       <div className="flex-1 flex overflow-hidden">
-        {/* Left Navigation Sidebar */}
-        <aside className="w-56 bg-white border-r border-gray-200 flex flex-col justify-between py-3">
-          <div className="space-y-4 px-2">
+        {/* Left Sidebar */}
+        <aside className="w-56 bg-gray-50 border-r border-gray-200 flex flex-col justify-between py-4 select-none shrink-0">
+          <div className="space-y-6">
             <div>
               <span className="px-3 text-[11px] font-semibold tracking-wider text-gray-400 uppercase">
                 Workspaces
               </span>
               <div className="mt-1.5 space-y-0.5">
                 <button
-                  onClick={() => setCurrentView('explorer')}
-                  className={`w-full flex items-center gap-2.5 px-3 py-2 text-xs rounded-lg font-medium transition-colors ${
+                  onClick={() => handleNavigateBreadcrumbs(0)}
+                  className={`w-full flex items-center gap-2.5 px-3 py-1.5 text-xs font-medium rounded-lg transition-colors ${
                     currentView === 'explorer'
                       ? 'bg-blue-50 text-blue-700'
-                      : 'text-gray-700 hover:bg-gray-100'
+                      : 'text-gray-600 hover:bg-gray-100'
                   }`}
                 >
                   <Share2 className="w-4 h-4 text-blue-500" />
@@ -368,13 +541,18 @@ export default function App() {
         <main className="flex-1 flex flex-col bg-white overflow-hidden">
           {currentView === 'explorer' && (
             <>
-              <Breadcrumbs paths={paths} onNavigate={handleNavigate} />
+              <Breadcrumbs paths={paths} onNavigate={handleNavigateBreadcrumbs} />
               <FileTree
-                files={filteredFiles}
+                files={currentDisplayFiles}
                 selectedHash={selectedHash}
                 currentUserId={nodeId}
+                uploadQueue={uploadQueue}
+                isRoot={paths.length <= 1}
                 onSelectFile={handleSelectFile}
                 onNavigateFolder={handleNavigateFolder}
+                onNavigateUp={handleNavigateUp}
+                onCreateFolder={handleCreateFolder}
+                onUploadFiles={handleUploadFiles}
                 onPin={handlePin}
                 onUnpin={handleUnpin}
                 onDownload={handleDownload}
@@ -382,8 +560,9 @@ export default function App() {
                   const f = files.find((item) => item.hash === hash);
                   if (f) handleSelectFile(f);
                 }}
-                onDelete={(hash) => handleDelete(hash, false)}
-                onDeleteOrphan={handleDeleteOrphan}
+                onDelete={handleDelete}
+                onVoteDelete={handleVoteDelete}
+                onUnvoteDelete={handleUnvoteDelete}
                 onEvictLocal={handleEvictLocal}
                 onFileUploaded={() => {
                   loadWorkspaceFiles();
@@ -403,21 +582,39 @@ export default function App() {
 
           {currentView === 'markdown' && (
             <MarkdownEditor
-              hash={selectedHash ?? undefined}
+              initialContent="# Notes & Markdown Preview\n\nEdit notes here or preview documents."
               onClose={() => setCurrentView('explorer')}
             />
           )}
 
           {currentView === 'settings' && (
-            <div className="flex-1 overflow-y-auto p-8">
-              <CacheSlider stats={stats} onStatsUpdated={refetchStats} />
+            <div className="flex-1 p-8 bg-gray-50 overflow-y-auto">
+              <div className="max-w-2xl mx-auto space-y-6">
+                <div className="flex items-center justify-between">
+                  <h2 className="text-lg font-bold text-gray-900">Workspace & Cache Settings</h2>
+                  <button
+                    onClick={() => setCurrentView('explorer')}
+                    className="text-xs text-blue-600 hover:underline"
+                  >
+                    ← Back to Files
+                  </button>
+                </div>
+                <CacheSlider stats={stats} onStatsUpdated={refetchStats} />
+              </div>
             </div>
           )}
         </main>
       </div>
 
-      {/* Persistent Bottom Telemetry Status Bar */}
-      <TelemetryBar stats={stats} />
+      {/* Floating Upload Queue Notification Drawer */}
+      <UploadQueueDrawer
+        queue={uploadQueue}
+        onDismiss={handleDismissUpload}
+        onClearAll={handleClearUploadQueue}
+      />
+
+      {/* Persistent Bottom Status & Telemetry Bar */}
+      <TelemetryBar stats={stats} onOpenSettings={() => setCurrentView('settings')} />
     </div>
   );
 }

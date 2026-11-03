@@ -20,6 +20,10 @@ pub struct StorageStats {
     pub peer_count: usize,
     /// Whether full-mirror mode is active.
     pub full_mirror: bool,
+    /// Instantaneous outbound network transfer rate (bytes per second).
+    pub upload_bytes_per_sec: u64,
+    /// Instantaneous inbound network transfer rate (bytes per second).
+    pub download_bytes_per_sec: u64,
 }
 
 /// Global application settings.
@@ -64,12 +68,16 @@ pub async fn get_storage_stats(state: State<'_, AppState>) -> Result<StorageStat
         }
     };
 
+    let (upload_bytes_per_sec, download_bytes_per_sec) = state.bandwidth.get_rates();
+
     Ok(StorageStats {
         used_bytes,
         quota_bytes,
         pinned_bytes,
         peer_count,
         full_mirror,
+        upload_bytes_per_sec,
+        download_bytes_per_sec,
     })
 }
 
@@ -80,15 +88,7 @@ pub async fn get_app_settings(state: State<'_, AppState>) -> Result<AppSettings,
         .db
         .get_setting("relay_url")
         .map_err(|e| e.to_string())?
-        .filter(|s| !s.trim().is_empty())
-        .unwrap_or_else(|| "https://use1-1.relay.iroh.network/".to_string());
-
-    let full_mirror = state
-        .db
-        .get_setting("full_mirror")
-        .map_err(|e| e.to_string())?
-        .unwrap_or_default()
-        .eq_ignore_ascii_case("true");
+        .unwrap_or_default();
 
     let cache_limit_bytes: u64 = state
         .db
@@ -97,6 +97,13 @@ pub async fn get_app_settings(state: State<'_, AppState>) -> Result<AppSettings,
         .unwrap_or_else(|| "5368709120".to_string())
         .parse()
         .unwrap_or(5_368_709_120);
+
+    let full_mirror = state
+        .db
+        .get_setting("full_mirror")
+        .map_err(|e| e.to_string())?
+        .unwrap_or_default()
+        .eq_ignore_ascii_case("true");
 
     let node_id = {
         let guard = state.engine.read().await;
@@ -111,86 +118,108 @@ pub async fn get_app_settings(state: State<'_, AppState>) -> Result<AppSettings,
     })
 }
 
-/// Update the custom relay URL in settings.
+/// Save updated application settings.
 #[tauri::command]
-pub async fn set_relay_url(relay_url: String, state: State<'_, AppState>) -> Result<(), String> {
-    state
-        .db
-        .set_setting("relay_url", relay_url.trim())
-        .map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-/// Update the cache quota.
-#[tauri::command]
-pub async fn set_cache_limit(
-    bytes: Option<u64>,
-    full_mirror: bool,
+pub async fn update_app_settings(
+    settings: AppSettings,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    if full_mirror {
-        state
-            .db
-            .set_setting("full_mirror", "true")
-            .map_err(|e| e.to_string())?;
-    } else {
-        let limit = bytes.unwrap_or(5_368_709_120); // default 5 GB
-        state
-            .db
-            .set_setting("cache_limit_bytes", &limit.to_string())
-            .map_err(|e| e.to_string())?;
-        state
-            .db
-            .set_setting("full_mirror", "false")
-            .map_err(|e| e.to_string())?;
-    }
+    state
+        .db
+        .set_setting("relay_url", &settings.relay_url)
+        .map_err(|e| e.to_string())?;
+
+    state
+        .db
+        .set_setting(
+            "cache_limit_bytes",
+            &settings.cache_limit_bytes.to_string(),
+        )
+        .map_err(|e| e.to_string())?;
+
+    state
+        .db
+        .set_setting("full_mirror", &settings.full_mirror.to_string())
+        .map_err(|e| e.to_string())?;
+
+    tracing::info!(?settings, "Updated application settings");
     Ok(())
 }
 
-/// Purge all unpinned cached blobs to instantly free up disk space.
+/// Update the cache limit quota.
 #[tauri::command]
-pub async fn purge_unpinned_cache(state: State<'_, AppState>) -> Result<u64, String> {
-    let unpinned = oldest_unpinned(&state.db, usize::MAX).map_err(|e| e.to_string())?;
-    let mut freed_bytes = 0u64;
+pub async fn set_cache_limit(limit_bytes: u64, state: State<'_, AppState>) -> Result<(), String> {
+    state
+        .db
+        .set_setting("cache_limit_bytes", &limit_bytes.to_string())
+        .map_err(|e| e.to_string())?;
+    tracing::info!(limit_bytes, "Updated cache limit bytes");
+    Ok(())
+}
 
+/// Toggle full-mirror mode.
+#[tauri::command]
+pub async fn set_full_mirror(enabled: bool, state: State<'_, AppState>) -> Result<(), String> {
+    state
+        .db
+        .set_setting("full_mirror", &enabled.to_string())
+        .map_err(|e| e.to_string())?;
+    tracing::info!(enabled, "Toggled full mirror mode");
+    Ok(())
+}
+
+/// Purge all unpinned cached blobs from disk to immediately free space.
+#[tauri::command]
+pub async fn purge_cache(state: State<'_, AppState>) -> Result<u64, String> {
+    let unpinned = oldest_unpinned(&state.db, 10_000).map_err(|e| e.to_string())?;
     let guard = state.engine.read().await;
-    let engine = guard.as_ref();
+    let engine = guard.as_ref().ok_or("Iroh engine not yet started")?;
 
+    let mut freed_bytes: u64 = 0;
     for blob in unpinned {
-        let _ = delete_blob(&state.db, &blob.hash);
-        if let Some(e) = engine {
-            if let Ok(parsed_hash) = blob.hash.parse::<iroh_blobs::Hash>() {
-                let _ = e.blobs.clone().client().delete_blob(parsed_hash).await;
-            }
+        if let Ok(hash) = blob.hash.parse::<iroh_blobs::Hash>() {
+            let _ = engine.blobs.clone().client().delete_blob(hash).await;
+            let _ = delete_blob(&state.db, &blob.hash);
+            freed_bytes += blob.size_bytes;
         }
-        freed_bytes += blob.size_bytes;
     }
 
+    tracing::info!(freed_bytes, "Purged unpinned cache");
     Ok(freed_bytes)
 }
 
-/// Open the app data folder on disk in the system file manager (Explorer / xdg-open / Finder).
+/// Open the local data storage folder in the system file manager.
 #[tauri::command]
 pub async fn open_data_dir(app: tauri::AppHandle) -> Result<(), String> {
     use tauri::Manager;
-    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("failed to resolve app data dir: {e}"))?;
+
     #[cfg(target_os = "windows")]
     {
-        let _ = std::process::Command::new("explorer")
-            .arg(&data_dir)
-            .spawn();
+        std::process::Command::new("explorer")
+            .arg(data_dir)
+            .spawn()
+            .map_err(|e| e.to_string())?;
     }
-    #[cfg(target_os = "linux")]
-    {
-        let _ = std::process::Command::new("xdg-open")
-            .arg(&data_dir)
-            .spawn();
-    }
+
     #[cfg(target_os = "macos")]
     {
-        let _ = std::process::Command::new("open")
-            .arg(&data_dir)
-            .spawn();
+        std::process::Command::new("open")
+            .arg(data_dir)
+            .spawn()
+            .map_err(|e| e.to_string())?;
     }
+
+    #[cfg(target_os = "linux")]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(data_dir)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+
     Ok(())
 }

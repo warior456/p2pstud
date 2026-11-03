@@ -1,5 +1,5 @@
 // src-tauri/src/commands/file_cmds.rs
-// Tauri IPC commands for file operations: pin/unpin, read, add, delete, and remote swarm download.
+// Tauri IPC commands for file operations: pin/unpin, read, add, delete, vote delete, and remote swarm download.
 
 use tauri::{AppHandle, Emitter, State};
 use iroh_blobs::store::Store;
@@ -7,14 +7,25 @@ use iroh_blobs::BlobFormat;
 
 use crate::p2p::sync::{broadcast_catalog_event, SyncMessage};
 use crate::storage::blob_tracker::{
-    delete_blob, get_blob, list_all_blobs, set_pinned, touch_blob, upsert_blob, BlobRecord,
+    cast_delete_vote, delete_blob, get_blob, list_all_blobs, record_peer_seed, remove_delete_vote,
+    set_pinned, touch_blob, upsert_blob, BlobRecord, DELETE_VOTE_QUORUM,
 };
+use crate::storage::hosting_worker::is_blob_cached;
 use crate::AppState;
 
-/// List all tracked files and blobs from the SQLite database.
+/// List all tracked files and blobs from the SQLite database with live cache status.
 #[tauri::command]
 pub async fn list_files(state: State<'_, AppState>) -> Result<Vec<BlobRecord>, String> {
-    list_all_blobs(&state.db).map_err(|e| e.to_string())
+    let mut blobs = list_all_blobs(&state.db).map_err(|e| e.to_string())?;
+    let guard = state.engine.read().await;
+    if let Some(engine) = guard.as_ref() {
+        for blob in &mut blobs {
+            if let Ok(parsed_hash) = blob.hash.parse::<iroh_blobs::Hash>() {
+                blob.is_cached = is_blob_cached(&engine.store, &parsed_hash).await;
+            }
+        }
+    }
+    Ok(blobs)
 }
 
 /// Set a blob's pinned state (true = protect from eviction).
@@ -100,13 +111,17 @@ pub async fn read_file_bytes(
                 ));
             }
 
-            engine
+            let downloaded = engine
                 .blobs
                 .clone()
                 .client()
                 .read_to_bytes(parsed_hash)
                 .await
-                .map_err(|e| format!("blob read failed after swarm download: {e}"))?
+                .map_err(|e| format!("blob read failed after swarm download: {e}"))?;
+
+            // Record dynamic network download throughput
+            state.bandwidth.record_download(downloaded.len() as u64);
+            downloaded
         }
     };
 
@@ -198,6 +213,12 @@ pub async fn add_file(local_path: String, state: State<'_, AppState>) -> Result<
     )
     .map_err(|e| e.to_string())?;
 
+    // Record initial seed for the local node
+    let _ = record_peer_seed(&state.db, &hash, &owner_node_id);
+
+    // Record bandwidth
+    state.bandwidth.record_upload(size_bytes);
+
     // Broadcast file addition to the swarm
     let record = BlobRecord {
         hash: hash.clone(),
@@ -209,6 +230,9 @@ pub async fn add_file(local_path: String, state: State<'_, AppState>) -> Result<
             .as_secs() as i64,
         is_pinned: false,
         owner_node_id: Some(owner_node_id.clone()),
+        delete_votes: Vec::new(),
+        seed_count: 1,
+        is_cached: true,
     };
     broadcast_catalog_event(&engine.endpoint, SyncMessage::FileAdded(record)).await;
 
@@ -246,6 +270,7 @@ pub async fn upload_file_bytes(
         )
         .await;
 
+    // Record in SQLite with filename and owner node ID.
     upsert_blob(
         &state.db,
         &hash,
@@ -255,6 +280,12 @@ pub async fn upload_file_bytes(
         Some(&owner_node_id),
     )
     .map_err(|e| e.to_string())?;
+
+    // Record initial seed for the local node
+    let _ = record_peer_seed(&state.db, &hash, &owner_node_id);
+
+    // Record upload bandwidth
+    state.bandwidth.record_upload(size_bytes);
 
     // Broadcast file addition to the swarm
     let record = BlobRecord {
@@ -267,6 +298,9 @@ pub async fn upload_file_bytes(
             .as_secs() as i64,
         is_pinned: false,
         owner_node_id: Some(owner_node_id.clone()),
+        delete_votes: Vec::new(),
+        seed_count: 1,
+        is_cached: true,
     };
     broadcast_catalog_event(&engine.endpoint, SyncMessage::FileAdded(record)).await;
 
@@ -275,12 +309,11 @@ pub async fn upload_file_bytes(
 }
 
 /// Delete a file by hash.
-/// The original uploader can delete their files.
-/// If the owner is inactive or no longer exists in the swarm, members can force-clean up the orphaned file.
+/// ONLY the original uploader who owns the file can delete it unilaterally.
+/// Non-owners are prevented from deleting other students' files.
 #[tauri::command]
 pub async fn delete_file(
     hash: String,
-    force_orphan: Option<bool>,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     let blob = get_blob(&state.db, &hash)
@@ -292,25 +325,10 @@ pub async fn delete_file(
     let my_node_id = engine.node_id().to_string();
 
     let is_owner = blob.owner_node_id.as_deref() == Some(&my_node_id);
-    let force = force_orphan.unwrap_or(false);
 
     if !is_owner {
-        let owner_str = blob.owner_node_id.as_deref().unwrap_or("unknown");
-        let owner_is_online = engine
-            .endpoint
-            .remote_info_iter()
-            .any(|r| r.node_id.to_string() == owner_str);
-
-        if owner_is_online && !force {
-            return Err(format!(
-                "Permission denied: This file belongs to active user '{owner_str}'. Only the owner can delete active files."
-            ));
-        }
-
-        tracing::info!(
-            hash = %hash,
-            owner = %owner_str,
-            "Force-cleaning orphaned file (owner is inactive/departed)"
+        return Err(
+            "Permission denied: You can only directly delete files you uploaded. For community or orphaned files, use 'Vote to Delete' to mark them for removal.".to_string(),
         );
     }
 
@@ -332,8 +350,89 @@ pub async fn delete_file(
     )
     .await;
 
-    tracing::info!(hash = %hash, "Deleted file from workspace");
+    tracing::info!(hash = %hash, "Deleted file from workspace (owner request)");
     Ok(())
+}
+
+/// Cast a vote to mark a file for deletion.
+/// Once quorum (3 community votes) is reached, the file is consensus-purged from the workspace.
+#[tauri::command]
+pub async fn vote_delete_file(
+    hash: String,
+    state: State<'_, AppState>,
+) -> Result<usize, String> {
+    let _blob = get_blob(&state.db, &hash)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("file '{hash}' not found in workspace"))?;
+
+    let guard = state.engine.read().await;
+    let engine = guard.as_ref().ok_or("Iroh engine not yet started")?;
+    let my_node_id = engine.node_id().to_string();
+
+    let votes = cast_delete_vote(&state.db, &hash, &my_node_id).map_err(|e| e.to_string())?;
+
+    // Broadcast vote to all connected swarm peers
+    broadcast_catalog_event(
+        &engine.endpoint,
+        SyncMessage::FileVoteDelete {
+            hash: hash.clone(),
+            voter_node_id: my_node_id.clone(),
+        },
+    )
+    .await;
+
+    tracing::info!(hash = %hash, voter = %my_node_id, total_votes = votes, "Voted to delete file");
+
+    if votes >= DELETE_VOTE_QUORUM {
+        tracing::info!(hash = %hash, "Quorum of {} votes reached: consensus purging file", DELETE_VOTE_QUORUM);
+
+        // Delete record from SQLite
+        delete_blob(&state.db, &hash).map_err(|e| e.to_string())?;
+
+        // Delete blob data from local Iroh store
+        if let Ok(parsed_hash) = hash.parse::<iroh_blobs::Hash>() {
+            let _ = engine.blobs.clone().client().delete_blob(parsed_hash).await;
+        }
+
+        // Broadcast deletion event to the swarm
+        broadcast_catalog_event(
+            &engine.endpoint,
+            SyncMessage::FileDeleted {
+                hash: hash.clone(),
+                deleter_node_id: format!("consensus:{votes}_votes"),
+            },
+        )
+        .await;
+
+        return Ok(0); // 0 indicates the file was purged by reaching quorum
+    }
+
+    Ok(votes)
+}
+
+/// Retract a previously cast delete vote.
+#[tauri::command]
+pub async fn unvote_delete_file(
+    hash: String,
+    state: State<'_, AppState>,
+) -> Result<usize, String> {
+    let guard = state.engine.read().await;
+    let engine = guard.as_ref().ok_or("Iroh engine not yet started")?;
+    let my_node_id = engine.node_id().to_string();
+
+    let votes = remove_delete_vote(&state.db, &hash, &my_node_id).map_err(|e| e.to_string())?;
+
+    // Broadcast unvote to all swarm peers
+    broadcast_catalog_event(
+        &engine.endpoint,
+        SyncMessage::FileUnvoteDelete {
+            hash: hash.clone(),
+            voter_node_id: my_node_id,
+        },
+    )
+    .await;
+
+    Ok(votes)
 }
 
 /// Evict a blob from the local device's cache without deleting it from the cloud catalog.

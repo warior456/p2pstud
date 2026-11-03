@@ -24,6 +24,12 @@
 | 2026-11-03 | Real-time workspace catalog sync over QUIC (`/p2pstud/sync/1`) & on-demand download | User feedback |
 | 2026-11-03 | Orphaned file management & force cleanup when owner no longer exists | User requirement |
 | 2026-11-03 | **Active Swarm Hosting Auto-Fill**: Cache actively fills to ~80% to host and seed unpinned course files | User requirement |
+| 2026-11-03 | **Target Disk Bloat Elimination**: Stripped dependency debug symbols; added auto-pruning script | User requirement |
+| 2026-11-03 | **Real-Time Bandwidth Telemetry**: Replaced static mock speeds with dynamic byte-rate meter | User bug report |
+| 2026-11-03 | **Community Delete Voting / Consensus Moderation**: Prohibited non-owner deletion; added 3-vote quorum | User requirement |
+| 2026-11-03 | **Upload Processing Indication**: Added live upload queue drawer & file row progress tracking | User requirement |
+| 2026-11-03 | **Smart Least-Seeds Cache**: Auto-fill prioritizes replicating rare/endangered files with lowest seed count | User requirement |
+| 2026-11-03 | **Hierarchical Folder Support**: Virtual folder tree, directory navigation, "New Folder", folder-aware uploads | User requirement |
 
 ---
 
@@ -127,6 +133,44 @@
 | R6.6 | CI workflow matrix testing and bundling on Windows and Ubuntu | Must | ✅ |
 
 ---
+
+
+---
+
+## R8 — Moderation, Ownership & Consensus Deletion
+
+| ID | Requirement | Priority | Status |
+|---|---|---|---|
+| R8.1 | Only the original file uploader can directly delete a file unilaterally | Must | ✅ |
+| R8.2 | Non-owners CANNOT unilaterally delete files from the workspace | Must | ✅ |
+| R8.3 | Non-owners can cast a vote to delete (vote_delete_file) or retract their vote (unvvote_delete_file) | Must | ✅ |
+| R8.4 | Consensus quorum: files require 3 community votes before being purged automatically | Must | ✅ |
+| R8.5 | Delete votes sync across all connected swarm peers over QUIC (FileVoteDelete, FileUnvoteDelete) | Must | ✅ |
+| R8.6 | Non-owners can always free their own local disk space (evict_local_file) without touching cloud catalog | Must | ✅ |
+| R8.7 | Dynamic bandwidth meter (BandwidthTracker) computes live instantaneous upload & download speeds | Must | ✅ |
+
+---
+
+## R9 — Upload Queue Visualization & Smart Least-Seeds Cache
+
+| ID | Requirement | Priority | Status |
+|---|---|---|---|
+| R9.1 | Live upload queue tracking: Display uploading files with progress, status indicator, and spinner in UI | Must | ✅ |
+| R9.2 | Smart Cache Seed Prioritization: Auto-fill background worker prioritizes fetching files with the least number of seeds | Must | ✅ |
+| R9.3 | Seed Count Visibility: Show active seed count on each file entry (`🌱 X seeds`) with swarm health indicators | Should | ✅ |
+| R9.4 | Drag-and-drop & file picker integration: Seamlessly enqueue multiple files and update state live | Must | ✅ |
+
+---
+
+## R10 — Hierarchical Folder Support & Organization
+
+| ID | Requirement | Priority | Status |
+|---|---|---|---|
+| R10.1 | Virtual directory hierarchy: Parse file paths (e.g. `Course/Week1/notes.pdf`) into nested folder view | Must | ✅ |
+| R10.2 | Breadcrumb navigation: Clickable breadcrumbs (`Shared Cloud > Course > Week 1`) to navigate depth | Must | ✅ |
+| R10.3 | Create Folder: "New Folder" action in toolbar allowing users to create directory groupings | Should | ✅ |
+| R10.4 | Folder-aware uploads: Dropping or selecting files while inside a folder places them inside that directory | Must | ✅ |
+| R10.5 | Folder statistics: Display folder item count and aggregated size in the folder row | Should | ✅ |
 
 ## R7 — Dependency Matrix
 

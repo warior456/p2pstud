@@ -25,8 +25,12 @@ function getDirSizeBytes(dirPath) {
 
 function safeRemove(targetPath) {
   if (fs.existsSync(targetPath)) {
-    console.log(`[prune-target] Removing ${path.relative(process.cwd(), targetPath)}...`);
-    fs.rmSync(targetPath, { recursive: true, force: true });
+    try {
+      console.log(`[prune-target] Removing ${path.relative(process.cwd(), targetPath)}...`);
+      fs.rmSync(targetPath, { recursive: true, force: true });
+    } catch (err) {
+      console.warn(`[prune-target] Notice: Could not remove ${path.relative(process.cwd(), targetPath)} (${err.message}). Skipping.`);
+    }
   }
 }
 
@@ -60,3 +64,4 @@ export function pruneTargetIfBloated(force = false) {
 // Run CLI
 const isForce = process.argv.includes('--force');
 pruneTargetIfBloated(isForce);
+
