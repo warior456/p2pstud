@@ -5,11 +5,33 @@ resolver = "2"
 [profile.dev]
 opt-level = 0
 debug = 1
+incremental = false
+debug = 1
+incremental = false
+
+# Strip debug symbols and optimize all 3rd-party dependencies in dev builds
+# This eliminates >90% of disk bloat from iroh/tokio/tauri/quinn
+[profile.dev.package."*"]
+opt-level = 2
+debug = 0
 
 [profile.test]
 debug = 1
+incremental = false
+
+[profile.test.package."*"]
+opt-level = 2
+debug = 0
+
+[profile.test]
+debug = 1
+
+[profile.test.package."*"]
+opt-level = 2
+debug = 0
 
 [profile.release]
 opt-level  = 3
 lto        = true
 strip      = true
+debug      = 0
