@@ -3,10 +3,21 @@ import { invoke } from '@tauri-apps/api/core';
 import { PeerInfo } from '../types';
 import { useInterval } from './useInterval';
 
-export function usePeerStatus(intervalMs = 5000) {
+export function usePeerStatus(intervalMs = 3000) {
   const [peers, setPeers] = useState<PeerInfo[]>([]);
   const [nodeId, setNodeId] = useState<string>('');
   const [error, setError] = useState<string | null>(null);
+
+  const fetchNodeId = useCallback(async () => {
+    try {
+      const id = await invoke<string>('get_node_id');
+      if (id) {
+        setNodeId(id);
+      }
+    } catch {
+      // Node may still be booting up
+    }
+  }, []);
 
   const fetchPeers = useCallback(async () => {
     try {
@@ -18,22 +29,16 @@ export function usePeerStatus(intervalMs = 5000) {
     }
   }, []);
 
-  const fetchNodeId = useCallback(async () => {
-    try {
-      const id = await invoke<string>('get_node_id');
-      setNodeId(id);
-    } catch (err: any) {
-      // Node may still be starting
-    }
-  }, []);
-
   useEffect(() => {
     fetchNodeId();
     fetchPeers();
   }, [fetchNodeId, fetchPeers]);
 
-  useInterval(fetchPeers, intervalMs);
+  // Keep polling until nodeId is resolved AND periodically refresh peers
+  useInterval(() => {
+    fetchNodeId();
+    fetchPeers();
+  }, intervalMs);
 
-  return { peers, nodeId, error, refetch: fetchPeers };
+  return { peers, nodeId, error, refetch: fetchPeers, refetchNodeId: fetchNodeId };
 }
-

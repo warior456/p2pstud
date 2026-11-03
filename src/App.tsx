@@ -163,18 +163,41 @@ export function App() {
     }
   };
 
-  const handleDownload = (hash: string) => {
+  const handleDownload = async (hash: string) => {
+    const file = files.find((f) => f.hash === hash);
+    if (!file) return;
+
     setFiles((prev) =>
       prev.map((f) =>
-        f.hash === hash ? { ...f, sync_state: 'downloading', download_progress: 15 } : f
+        f.hash === hash ? { ...f, sync_state: 'downloading', download_progress: 25 } : f
       )
     );
-    setTimeout(() => {
+
+    try {
+      const bytes = await invoke<number[]>('read_file_bytes', { hash });
+      if (bytes && bytes.length > 0) {
+        const blob = new Blob([new Uint8Array(bytes)], { type: 'application/octet-stream' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = file.name;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      }
+
       setFiles((prev) =>
         prev.map((f) => (f.hash === hash ? { ...f, sync_state: 'cached' } : f))
       );
       refetchStats();
-    }, 1500);
+    } catch (err) {
+      console.error('Download error:', err);
+      alert(`Download failed: ${err}`);
+      setFiles((prev) =>
+        prev.map((f) => (f.hash === hash ? { ...f, sync_state: 'cached' } : f))
+      );
+    }
   };
 
   const filteredFiles = files.filter((f) =>

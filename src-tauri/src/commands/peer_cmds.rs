@@ -1,5 +1,5 @@
 // src-tauri/src/commands/peer_cmds.rs
-// Tauri IPC commands exposing peer connectivity information.
+// Tauri IPC commands exposing peer connectivity and swarm management.
 
 use serde::{Deserialize, Serialize};
 use tauri::State;
@@ -36,7 +36,6 @@ pub async fn list_peers(state: State<'_, AppState>) -> Result<Vec<PeerInfo>, Str
 }
 
 /// Return this node's public NodeId (hex-encoded Ed25519 public key).
-/// The frontend displays this in Settings so users can share their node address.
 #[tauri::command]
 pub async fn get_node_id(state: State<'_, AppState>) -> Result<String, String> {
     let guard = state.engine.read().await;
@@ -44,4 +43,49 @@ pub async fn get_node_id(state: State<'_, AppState>) -> Result<String, String> {
         Some(engine) => Ok(engine.node_id().to_string()),
         None => Err("Iroh engine not yet started".to_string()),
     }
+}
+
+/// Return this node's complete NodeAddr (direct socket addresses + relay URL) as a JSON string.
+#[tauri::command]
+pub async fn get_node_addr(state: State<'_, AppState>) -> Result<String, String> {
+    let guard = state.engine.read().await;
+    let engine = guard.as_ref().ok_or("Iroh engine not yet started")?;
+    let addr = engine.endpoint.node_addr().await.map_err(|e| e.to_string())?;
+    serde_json::to_string(&addr).map_err(|e| e.to_string())
+}
+
+/// Connect to a remote peer or anchor node by NodeId and optional RelayUrl.
+#[tauri::command]
+pub async fn connect_peer(
+    node_id: String,
+    relay_url: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let parsed_id = node_id
+        .trim()
+        .parse::<iroh::NodeId>()
+        .map_err(|e| format!("Invalid Node ID: {e}"))?;
+
+    let guard = state.engine.read().await;
+    let engine = guard.as_ref().ok_or("Iroh engine not yet started")?;
+
+    let mut addr = iroh::NodeAddr::new(parsed_id);
+    if let Some(r) = relay_url {
+        let trimmed = r.trim();
+        if !trimmed.is_empty() {
+            if let Ok(relay) = trimmed.parse::<iroh::RelayUrl>() {
+                addr = addr.with_relay_url(relay);
+            }
+        }
+    }
+
+    // Connect using Iroh Blobs ALPN
+    engine
+        .endpoint
+        .connect(addr, iroh_blobs::ALPN)
+        .await
+        .map_err(|e| format!("Connection to peer failed: {e}"))?;
+
+    tracing::info!(node_id = %node_id, "Connected to peer successfully");
+    Ok(())
 }

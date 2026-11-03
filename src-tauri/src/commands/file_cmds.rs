@@ -2,6 +2,8 @@
 // Tauri IPC commands for file operations: pin/unpin, read, add.
 
 use tauri::{AppHandle, Emitter, State};
+use iroh_blobs::store::Store;
+use iroh_blobs::BlobFormat;
 
 use crate::storage::blob_tracker::{
     delete_blob, get_blob, list_all_blobs, set_pinned, touch_blob, upsert_blob, BlobRecord,
@@ -125,16 +127,22 @@ pub async fn add_file(local_path: String, state: State<'_, AppState>) -> Result<
     let engine = guard.as_ref().ok_or("Iroh engine not yet started")?;
     let owner_node_id = engine.node_id().to_string();
 
-    // Import into iroh-blobs; this computes the BLAKE3 hash and writes chunks.
-    let outcome = engine
-        .blobs
-        .clone()
-        .client()
-        .add_bytes(bytes::Bytes::from(data))
+    let tag = engine
+        .store
+        .import_bytes(bytes::Bytes::from(data), BlobFormat::Raw)
         .await
         .map_err(|e| format!("blob import failed: {e}"))?;
 
-    let hash = outcome.hash.to_hex().to_string();
+    let hash_and_format = *tag.inner();
+    let hash = hash_and_format.hash.to_hex().to_string();
+
+    let _ = engine
+        .store
+        .set_tag(
+            iroh_blobs::Tag::from(file_name.as_deref().unwrap_or(&hash)),
+            Some(hash_and_format),
+        )
+        .await;
 
     // Record in SQLite with filename and owner node ID.
     upsert_blob(
@@ -164,15 +172,22 @@ pub async fn upload_file_bytes(
     let engine = guard.as_ref().ok_or("Iroh engine not yet started")?;
     let owner_node_id = engine.node_id().to_string();
 
-    let outcome = engine
-        .blobs
-        .clone()
-        .client()
-        .add_bytes(bytes::Bytes::from(data))
+    let tag = engine
+        .store
+        .import_bytes(bytes::Bytes::from(data), BlobFormat::Raw)
         .await
         .map_err(|e| format!("blob import failed: {e}"))?;
 
-    let hash = outcome.hash.to_hex().to_string();
+    let hash_and_format = *tag.inner();
+    let hash = hash_and_format.hash.to_hex().to_string();
+
+    let _ = engine
+        .store
+        .set_tag(
+            iroh_blobs::Tag::from(name.as_str()),
+            Some(hash_and_format),
+        )
+        .await;
 
     upsert_blob(
         &state.db,
@@ -216,5 +231,33 @@ pub async fn delete_file(hash: String, state: State<'_, AppState>) -> Result<(),
     }
 
     tracing::info!(hash = %hash, "Deleted file from workspace");
+    Ok(())
+}
+
+/// Save a blob to a specified local destination file path.
+#[tauri::command]
+pub async fn export_file(
+    hash: String,
+    dest_path: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let parsed_hash = hash
+        .parse::<iroh_blobs::Hash>()
+        .map_err(|e| format!("invalid hash '{hash}': {e}"))?;
+
+    let guard = state.engine.read().await;
+    let engine = guard.as_ref().ok_or("Iroh engine not yet started")?;
+
+    let data = engine
+        .blobs
+        .clone()
+        .client()
+        .read_to_bytes(parsed_hash)
+        .await
+        .map_err(|e| format!("blob read failed: {e}"))?;
+
+    std::fs::write(&dest_path, data)
+        .map_err(|e| format!("failed to write destination file '{dest_path}': {e}"))?;
+
     Ok(())
 }

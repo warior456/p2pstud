@@ -23,6 +23,7 @@ use crate::storage::db::Database;
 pub struct IrohEngine {
     pub endpoint: Endpoint,
     pub blobs: Arc<Blobs<BlobStore>>,
+    pub store: BlobStore,
     _router: Arc<Router>,
     _pool: Arc<LocalPool>,
 }
@@ -58,7 +59,7 @@ impl IrohEngine {
             .await?;
 
         let router = Router::builder(endpoint);
-        let blobs = Blobs::builder(store).build(pool.handle(), router.endpoint());
+        let blobs = Blobs::builder(store.clone()).build(pool.handle(), router.endpoint());
         let router = router.accept(iroh_blobs::ALPN, blobs.clone());
         let endpoint = router.endpoint().clone();
         let running_router = router.spawn().await?;
@@ -68,6 +69,7 @@ impl IrohEngine {
         Ok(IrohEngine {
             endpoint,
             blobs,
+            store,
             _router: Arc::new(running_router),
             _pool: Arc::new(pool),
         })

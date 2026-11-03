@@ -69,6 +69,7 @@ At the end of every session (or when interrupted), update the `## Progress Track
 | 17 | Security audit (path sanitization, no open RPC) | ✅ | `path_utils.rs` (`safe_join`), owner-only key permissions, in-process IPC |
 | 18 | CI workflow (GitHub Actions) | ✅ | `.github/workflows/build.yml` and `test.yml` created |
 | 19 | README + deployment guide | ✅ | Comprehensive `README.md` and `.gitignore` created |
+| 20 | Production Readiness Polish & Background Tray | ✅ | System tray icon, window close interception, network & peer configuration, purge cache, installer & portable ZIP |
 
 ---
 
