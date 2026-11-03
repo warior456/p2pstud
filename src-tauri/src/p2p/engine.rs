@@ -15,6 +15,7 @@ use iroh_blobs::util::local_pool::LocalPool;
 
 use crate::p2p::identity::load_or_create_secret_key;
 use crate::p2p::relay::parse_relay_url;
+use crate::p2p::sync::{sync_catalog_with_peer, CatalogSyncHandler, SYNC_ALPN};
 use crate::storage::db::Database;
 
 /// A running Iroh node with its blob store.
@@ -51,20 +52,57 @@ impl IrohEngine {
         let pool = LocalPool::default();
         let store = BlobStore::load(&blob_dir).await?;
 
-        // 4. Build QUIC endpoint with relay fallback.
+        // 4. Build QUIC endpoint with relay fallback and multi-layer discovery
+        // (Local Swarm / mDNS for campus LAN, PKARR DHT & n0 DNS for WAN).
         let endpoint = Endpoint::builder()
             .secret_key(secret_key)
             .relay_mode(RelayMode::Custom(RelayMap::from_url(relay)))
+            .discovery_local_network()
+            .discovery_n0()
+            .discovery_dht()
             .bind()
             .await?;
 
         let router = Router::builder(endpoint);
         let blobs = Blobs::builder(store.clone()).build(pool.handle(), router.endpoint());
         let router = router.accept(iroh_blobs::ALPN, blobs.clone());
+        let sync_handler = Arc::new(CatalogSyncHandler::new(db.clone()));
+        let router = router.accept(SYNC_ALPN, sync_handler);
         let endpoint = router.endpoint().clone();
         let running_router = router.spawn().await?;
 
-        // done
+        // 5. Spawn background swarm maintenance loop
+        // Periodically connects to discovered nodes and synchronizes workspace catalogs.
+        let bg_endpoint = endpoint.clone();
+        let bg_db = db.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
+            loop {
+                interval.tick().await;
+
+                // Sync with any configured bootstrap/anchor peer
+                if let Ok(Some(bootstrap)) = bg_db.get_setting("bootstrap_peer") {
+                    let trimmed = bootstrap.trim();
+                    if !trimmed.is_empty() {
+                        if let Ok(ticket) = trimmed.parse::<iroh::ticket::NodeTicket>() {
+                            let _ = bg_endpoint.connect(ticket.node_addr().clone(), iroh_blobs::ALPN).await;
+                            let _ = sync_catalog_with_peer(&bg_endpoint, &bg_db, ticket.node_addr().clone()).await;
+                        } else if let Ok(id) = trimmed.parse::<NodeId>() {
+                            let _ = bg_endpoint.connect(iroh::NodeAddr::new(id), iroh_blobs::ALPN).await;
+                            let _ = sync_catalog_with_peer(&bg_endpoint, &bg_db, iroh::NodeAddr::new(id)).await;
+                        }
+                    }
+                }
+
+                // Discovered remotes from local LAN (mDNS) or WAN
+                let remotes: Vec<_> = bg_endpoint.remote_info_iter().collect();
+                for remote in remotes {
+                    let addr = iroh::NodeAddr::new(remote.node_id);
+                    let _ = bg_endpoint.connect(addr.clone(), iroh_blobs::ALPN).await;
+                    let _ = sync_catalog_with_peer(&bg_endpoint, &bg_db, addr).await;
+                }
+            }
+        });
 
         Ok(IrohEngine {
             endpoint,

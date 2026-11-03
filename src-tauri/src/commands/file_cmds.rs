@@ -1,10 +1,11 @@
 // src-tauri/src/commands/file_cmds.rs
-// Tauri IPC commands for file operations: pin/unpin, read, add.
+// Tauri IPC commands for file operations: pin/unpin, read, add, delete, and remote swarm download.
 
 use tauri::{AppHandle, Emitter, State};
 use iroh_blobs::store::Store;
 use iroh_blobs::BlobFormat;
 
+use crate::p2p::sync::{broadcast_catalog_event, SyncMessage};
 use crate::storage::blob_tracker::{
     delete_blob, get_blob, list_all_blobs, set_pinned, touch_blob, upsert_blob, BlobRecord,
 };
@@ -28,13 +29,8 @@ pub async fn unpin_file(hash: String, state: State<'_, AppState>) -> Result<(), 
     set_pinned(&state.db, &hash, false).map_err(|e| e.to_string())
 }
 
-/// Read a file's bytes from the local iroh-blobs store.
-///
-/// For files ≤ 8 MB: returns all bytes directly.
-/// For files > 8 MB: streams chunks as Tauri events `file-chunk` and returns Ok(vec![]).
-/// The frontend must listen for `file-chunk` events when expecting large files.
-///
-/// Event payload: `{ hash: string, offset: number, data: number[] }`
+/// Read a file's bytes from the local iroh-blobs store, automatically downloading
+/// on-demand from connected peers/swarm if not currently cached on disk.
 #[tauri::command]
 pub async fn read_file_bytes(
     hash: String,
@@ -44,7 +40,7 @@ pub async fn read_file_bytes(
     const INLINE_LIMIT: u64 = 8 * 1024 * 1024; // 8 MB
 
     // Update access timestamp (LRU tracking).
-    touch_blob(&state.db, &hash).map_err(|e| e.to_string())?;
+    let _ = touch_blob(&state.db, &hash);
 
     let parsed_hash = hash
         .parse::<iroh_blobs::Hash>()
@@ -53,14 +49,66 @@ pub async fn read_file_bytes(
     let guard = state.engine.read().await;
     let engine = guard.as_ref().ok_or("Iroh engine not yet started")?;
 
-    // Fetch bytes from the local blob store.
-    let data = engine
+    // 1. Try reading from local blob store first
+    let local_res = engine
         .blobs
         .clone()
         .client()
         .read_to_bytes(parsed_hash)
-        .await
-        .map_err(|e| format!("blob read failed: {e}"))?;
+        .await;
+
+    let data = match local_res {
+        Ok(d) => d,
+        Err(_) => {
+            // Blob is not locally stored yet: fetch on-demand from the swarm!
+            let blob_rec = get_blob(&state.db, &hash).ok().flatten();
+            let remotes: Vec<_> = engine.endpoint.remote_info_iter().collect();
+            let mut download_ok = false;
+
+            // Try the owner node first if known
+            if let Some(rec) = &blob_rec {
+                if let Some(owner) = &rec.owner_node_id {
+                    if let Ok(owner_id) = owner.parse::<iroh::NodeId>() {
+                        let addr = iroh::endpoint::NodeAddr::new(owner_id);
+                        if let Ok(progress) = engine.blobs.clone().client().download(parsed_hash, addr).await {
+                            let _ = progress.finish().await;
+                            if engine.blobs.clone().client().read_to_bytes(parsed_hash).await.is_ok() {
+                                download_ok = true;
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Fallback: try all other connected swarm peers
+            if !download_ok {
+                for remote in remotes {
+                    let addr = iroh::endpoint::NodeAddr::new(remote.node_id);
+                    if let Ok(progress) = engine.blobs.clone().client().download(parsed_hash, addr).await {
+                        let _ = progress.finish().await;
+                        if engine.blobs.clone().client().read_to_bytes(parsed_hash).await.is_ok() {
+                            download_ok = true;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if !download_ok {
+                return Err(format!(
+                    "Blob '{hash}' is not cached locally and no connected peers are currently hosting it."
+                ));
+            }
+
+            engine
+                .blobs
+                .clone()
+                .client()
+                .read_to_bytes(parsed_hash)
+                .await
+                .map_err(|e| format!("blob read failed after swarm download: {e}"))?
+        }
+    };
 
     if data.len() as u64 <= INLINE_LIMIT {
         // Small enough to return inline.
@@ -97,20 +145,15 @@ pub async fn read_file_bytes(
     )
     .map_err(|e| format!("event emit failed: {e}"))?;
 
-    Ok(vec![]) // Frontend reconstructs from events.
+    Ok(vec![])
 }
 
 /// Add a local file to the workspace blob store.
-///
-/// Reads `local_path` from disk, imports it into iroh-blobs (computing the BLAKE3 hash),
-/// records it in SQLite with ownership and filename, and returns the BLAKE3 hex hash.
 #[tauri::command]
 pub async fn add_file(local_path: String, state: State<'_, AppState>) -> Result<String, String> {
     let path = std::path::Path::new(&local_path);
 
-    // Security: verify the file actually exists and is a file (not a symlink to /dev/mem etc.).
     let meta = std::fs::metadata(path).map_err(|e| format!("cannot stat '{}': {e}", local_path))?;
-
     if !meta.is_file() {
         return Err(format!("'{}' is not a regular file", local_path));
     }
@@ -154,6 +197,20 @@ pub async fn add_file(local_path: String, state: State<'_, AppState>) -> Result<
         Some(&owner_node_id),
     )
     .map_err(|e| e.to_string())?;
+
+    // Broadcast file addition to the swarm
+    let record = BlobRecord {
+        hash: hash.clone(),
+        name: file_name.clone(),
+        size_bytes,
+        last_accessed_at: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64,
+        is_pinned: false,
+        owner_node_id: Some(owner_node_id.clone()),
+    };
+    broadcast_catalog_event(&engine.endpoint, SyncMessage::FileAdded(record)).await;
 
     tracing::info!(hash = %hash, name = ?file_name, owner = %owner_node_id, bytes = size_bytes, "Added file to workspace");
     Ok(hash)
@@ -199,14 +256,33 @@ pub async fn upload_file_bytes(
     )
     .map_err(|e| e.to_string())?;
 
+    // Broadcast file addition to the swarm
+    let record = BlobRecord {
+        hash: hash.clone(),
+        name: Some(name.clone()),
+        size_bytes,
+        last_accessed_at: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64,
+        is_pinned: false,
+        owner_node_id: Some(owner_node_id.clone()),
+    };
+    broadcast_catalog_event(&engine.endpoint, SyncMessage::FileAdded(record)).await;
+
     tracing::info!(hash = %hash, name = %name, owner = %owner_node_id, bytes = size_bytes, "Uploaded file to workspace");
     Ok(hash)
 }
 
 /// Delete a file by hash.
-/// ONLY the node that originally uploaded the file is permitted to delete it.
+/// The original uploader can delete their files.
+/// If the owner is inactive or no longer exists in the swarm, members can force-clean up the orphaned file.
 #[tauri::command]
-pub async fn delete_file(hash: String, state: State<'_, AppState>) -> Result<(), String> {
+pub async fn delete_file(
+    hash: String,
+    force_orphan: Option<bool>,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
     let blob = get_blob(&state.db, &hash)
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("file '{hash}' not found in workspace"))?;
@@ -215,11 +291,27 @@ pub async fn delete_file(hash: String, state: State<'_, AppState>) -> Result<(),
     let engine = guard.as_ref().ok_or("Iroh engine not yet started")?;
     let my_node_id = engine.node_id().to_string();
 
-    // Check ownership: only the uploader can delete
-    if let Some(owner) = &blob.owner_node_id {
-        if owner != &my_node_id {
-            return Err("Permission denied: You can only delete files that you uploaded.".to_string());
+    let is_owner = blob.owner_node_id.as_deref() == Some(&my_node_id);
+    let force = force_orphan.unwrap_or(false);
+
+    if !is_owner {
+        let owner_str = blob.owner_node_id.as_deref().unwrap_or("unknown");
+        let owner_is_online = engine
+            .endpoint
+            .remote_info_iter()
+            .any(|r| r.node_id.to_string() == owner_str);
+
+        if owner_is_online && !force {
+            return Err(format!(
+                "Permission denied: This file belongs to active user '{owner_str}'. Only the owner can delete active files."
+            ));
         }
+
+        tracing::info!(
+            hash = %hash,
+            owner = %owner_str,
+            "Force-cleaning orphaned file (owner is inactive/departed)"
+        );
     }
 
     // Delete record from SQLite
@@ -230,7 +322,30 @@ pub async fn delete_file(hash: String, state: State<'_, AppState>) -> Result<(),
         let _ = engine.blobs.clone().client().delete_blob(parsed_hash).await;
     }
 
+    // Broadcast deletion event to the swarm
+    broadcast_catalog_event(
+        &engine.endpoint,
+        SyncMessage::FileDeleted {
+            hash: hash.clone(),
+            deleter_node_id: my_node_id,
+        },
+    )
+    .await;
+
     tracing::info!(hash = %hash, "Deleted file from workspace");
+    Ok(())
+}
+
+/// Evict a blob from the local device's cache without deleting it from the cloud catalog.
+#[tauri::command]
+pub async fn evict_local_file(hash: String, state: State<'_, AppState>) -> Result<(), String> {
+    let guard = state.engine.read().await;
+    let engine = guard.as_ref().ok_or("Iroh engine not yet started")?;
+
+    if let Ok(parsed_hash) = hash.parse::<iroh_blobs::Hash>() {
+        let _ = engine.blobs.clone().client().delete_blob(parsed_hash).await;
+    }
+
     Ok(())
 }
 

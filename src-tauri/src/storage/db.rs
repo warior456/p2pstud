@@ -44,6 +44,7 @@ const MIGRATIONS: &[&str] = &[
 ];
 
 /// Thread-safe SQLite database wrapper.
+#[derive(Debug)]
 pub struct Database {
     conn: Mutex<Connection>,
 }

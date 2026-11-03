@@ -14,9 +14,16 @@
 | 2026-11-02 | Added Docker single-node build requirement | User follow-up |
 | 2026-11-02 | Added headless Docker node variant (no GUI, P2P only) | User follow-up |
 | 2026-11-02 | **Clarified**: Docker is optional; anchor binary is primary artifact; single container suffices | User follow-up |
-| 2026-11-02 | Confirmed Svelte/React choice deferred to implementation | User prompt |
 | 2026-11-02 | Frontend implementation verified: Vitest (9/9 tests pass), Vite build (100% pass) | Implementation |
 | 2026-11-02 | Rust backend & anchor binary implemented; .gitignore & CI workflows added | Implementation |
+| 2026-11-03 | Added system tray background persistence and close-to-tray window management | User goal |
+| 2026-11-03 | Fixed Windows 10/11 `WebView2Loader.dll` dynamic link dependency packaging | User feedback |
+| 2026-11-03 | Direct in-process blob ingestion avoiding flume RPC stream interruption | User bug report |
+| 2026-11-03 | Full cross-platform Linux parity (`xdg-open`, `0o600` secret key, `.deb`/`.AppImage` CI) | User prompt |
+| 2026-11-03 | Enabled multi-layer discovery (Local Swarm mDNS, n0 DNS pkarr, BitTorrent DHT) | User feedback |
+| 2026-11-03 | Real-time workspace catalog sync over QUIC (`/p2pstud/sync/1`) & on-demand download | User feedback |
+| 2026-11-03 | Orphaned file management & force cleanup when owner no longer exists | User requirement |
+| 2026-11-03 | **Active Swarm Hosting Auto-Fill**: Cache actively fills to ~80% to host and seed unpinned course files | User requirement |
 
 ---
 
@@ -33,7 +40,9 @@
 | R1.7 | No custom socket protocol — use Iroh's QUIC transport | Must | ✅ |
 | R1.8 | Pin/unpin files for offline protection | Should | ✅ |
 | R1.9 | Full Mirror mode disables eviction, auto-downloads all blobs | Should | ✅ |
-| R1.10 | Right-click context menu: Pin, Download, Preview, Copy Hash | Should | ✅ |
+| R1.10 | Right-click context menu: Pin, Download, Preview, Copy Hash, Delete | Should | ✅ |
+| R1.11 | System tray icon with background persistence (close [X] hides to tray) | Must | ✅ |
+| R1.12 | One shared cloud folder: all peers access workspace; users can only delete their own files | Must | ✅ |
 
 ---
 
@@ -47,25 +56,29 @@
 | R2.4 | Custom relay URL configurable (not hardcoded) | Must | ✅ |
 | R2.5 | Direct QUIC attempted first, relay used as fallback | Must | ✅ |
 | R2.6 | Relay must use TLS on port 443 | Must | ✅ |
-| R2.7 | Peers are discovered via relay registration (no mDNS required) | Should | ✅ |
-| R2.8 | Peer count shown in UI telemetry footer | Should | ✅ |
+| R2.7 | Multi-layer discovery: `LocalSwarmDiscovery` (LAN mDNS), `discovery_n0` (DNS), `discovery_dht` (DHT) | Must | ✅ |
+| R2.8 | Peer count & status shown in UI telemetry footer | Should | ✅ |
+| R2.9 | Smart peer dialing: accepts `NodeTicket` (`node...`), JSON `NodeAddr`, `node_id@address`, or raw hex | Must | ✅ |
+| R2.10 | Background swarm maintenance loop: automatically connects to discovered local peers every 5s | Must | ✅ |
+| R2.11 | Workspace catalog sync protocol over QUIC (`/p2pstud/sync/1`) exchanging file entries between peers | Must | ✅ |
 
 ---
 
-## R3 — Storage & Eviction Requirements
+## R3 — Storage, Eviction & Active Swarm Hosting
 
 | ID | Requirement | Priority | Status |
 |---|---|---|---|
-| R3.1 | SQLite tracks every stored blob (hash, size, last_accessed_at, is_pinned) | Must | ✅ |
+| R3.1 | SQLite tracks every stored blob (hash, size, last_accessed_at, is_pinned, owner_node_id, name) | Must | ✅ |
 | R3.2 | Eviction triggers at 90% of quota | Must | ✅ |
 | R3.3 | Eviction frees down to 80% of quota | Must | ✅ |
 | R3.4 | Eviction removes oldest-first (LRU by last_accessed_at) | Must | ✅ |
 | R3.5 | Pinned blobs are NEVER evicted | Must | ✅ |
 | R3.6 | Eviction runs async (background worker, not blocking UI) | Must | ✅ |
-| R3.7 | Eviction check runs every 60 seconds AND on every blob write | Must | ✅ |
+| R3.7 | Eviction check runs periodically AND on blob writes | Must | ✅ |
 | R3.8 | `last_accessed_at` updated every time a blob is opened/read | Must | ✅ |
-| R3.9 | SQLite migrations versioned (0001, 0002, ...) | Should | ✅ |
-| R3.10 | Settings stored in SQLite `settings` table (not a config file) | Should | ✅ |
+| R3.9 | **Active Swarm Hosting Auto-Fill**: Cache actively fills to ~80% to host & seed unpinned files for the P2P swarm | Must | ✅ |
+| R3.10 | **Orphaned File Management**: When a file's owner no longer exists, members can force-clean up the orphaned file | Must | ✅ |
+| R3.11 | On-demand remote blob download: clicking/reading a cloud-only file downloads it from available peers | Must | ✅ |
 
 ---
 
@@ -80,9 +93,9 @@
 | R4.5 | Markdown editor with split-pane live preview | Should | ✅ |
 | R4.6 | Markdown auto-save with 1-second debounce | Should | ✅ |
 | R4.7 | Telemetry footer: peer count, cache usage, upload/download speed | Must | ✅ |
-| R4.8 | Cache quota slider: 3 GB → 50 GB + Full Mirror toggle | Must | ✅ |
-| R4.9 | Large file streaming via Tauri events (not single IPC call) | Must | ✅ |
-| R4.10 | Tech stack: React or Svelte + TailwindCSS + Lucide Icons + Vite | Must | ✅ |
+| R4.8 | Cache & Swarm Settings tabs: Quota slider (3-50GB), Node Ticket, Connected Peers table, Purge cache | Must | ✅ |
+| R4.9 | Real in-app file download & browser export | Must | ✅ |
+| R4.10 | Orphaned file deletion modal confirmation | Must | ✅ |
 
 ---
 
@@ -102,119 +115,38 @@
 
 ---
 
-## R6 — Docker / Deployment Requirements
+## R6 — Packaging & Production Parity
 
 | ID | Requirement | Priority | Status |
 |---|---|---|---|
-| R6.1 | `anchor` binary runs natively without Docker (systemd-friendly) | Must | ✅ |
-| R6.2 | `--no-relay` flag makes the same binary act as a pure storage node (no relay started) | Must | ✅ |
-| R6.3 | `docker/Dockerfile` — one image; covers relay+node and node-only via `--no-relay` | Should | ✅ |
-| R6.4 | `docker/docker-compose.yml` — single service, single container; `docker compose up -d` is sufficient | Should | ✅ |
-| R6.5 | `docker/.env.example` — documents all required env vars | Should | ✅ |
-| R6.6 | Persistent volume for blob storage | Must | ✅ |
-| R6.7 | Read-only mount for /etc/letsencrypt | Must | ✅ |
-| R6.8 | Expose 443/tcp, 443/udp; optionally 80/tcp for certbot | Must | ✅ |
-| R6.9 | `restart: unless-stopped` (Docker) / `Restart=on-failure` (systemd) | Should | ✅ |
-| R6.10 | Multi-stage Docker build (builder + minimal runtime image) | Should | ✅ |
-| R6.11 | `systemd` unit file provided as an alternative to Docker | Should | ✅ |
+| R6.1 | Windows installers: NSIS Setup (`.exe`) and MSI (`.msi`) | Must | ✅ |
+| R6.2 | Windows Portable: ZIP archive bundling `p2pstud.exe` + `WebView2Loader.dll` | Must | ✅ |
+| R6.3 | Linux packages: `.deb` and `.AppImage` via Tauri v2 bundling | Must | ✅ |
+| R6.4 | Docker container for headless Linux anchor daemon (`debian:bookworm-slim`) | Must | ✅ |
+| R6.5 | System file manager launcher (`xdg-open` on Linux, `explorer` on Windows) | Must | ✅ |
+| R6.6 | CI workflow matrix testing and bundling on Windows and Ubuntu | Must | ✅ |
 
 ---
 
-## R7 — Security Requirements
-
-| ID | Requirement | Priority | Status |
-|---|---|---|---|
-| R7.1 | BLAKE3 verification on every received chunk (via iroh-blobs, not custom) | Must | ✅ |
-| R7.2 | Path traversal prevention on all user-supplied paths | Must | ✅ |
-| R7.3 | No unauthenticated HTTP/RPC ports on student machines | Must | ✅ |
-| R7.4 | SecretKey owner-only file permissions (0o600 / Windows ACL) | Must | ✅ |
-| R7.5 | Relay TLS required (no plaintext relay connections) | Must | ✅ |
-| R7.6 | IPC commands sanitize all string inputs before use as paths | Must | ✅ |
-
----
-
-## R8 — Testing Requirements
-
-| ID | Requirement | Priority | Status |
-|---|---|---|---|
-| R8.1 | Unit tests for LRU eviction (oldest-first, pin survival, 80% target) | Must | ✅ |
-| R8.2 | Unit tests for path traversal rejection | Must | ✅ |
-| R8.3 | Unit test: SecretKey serialization round-trip | Must | ✅ |
-| R8.4 | Integration test: two local Iroh nodes exchange a blob | Must | ✅ |
-| R8.5 | Frontend component tests (Vitest) with mocked IPC | Should | ✅ |
-| R8.6 | CI: build both Windows and Linux targets on push to main | Must | ✅ |
-| R8.7 | CI: clippy with -D warnings (zero warnings policy) | Must | ✅ |
-| R8.8 | CI: cargo fmt check | Must | ✅ |
-
----
-
-## R9 — Dependency Version Requirements
-
-> **IMPORTANT for agents:** Pin these exact versions. Iroh is pre-1.0 and has breaking API changes between minor versions. Do NOT upgrade without checking the changelog.
+## R7 — Dependency Matrix
 
 ```toml
-# src-tauri/Cargo.toml — required dependency versions
-# Agent: run `cargo search iroh` to find the latest stable and use it,
-# then LOCK it here. Do not leave these as wildcards.
-
 [dependencies]
-iroh          = "0.x.y"   # FILL IN: latest stable at time of implementation
-iroh-blobs    = "0.x.y"   # must match iroh version compatibility matrix
+iroh          = { version = "0.29", features = ["discovery-local-network", "discovery-pkarr-dht"] }
+iroh-blobs    = "0.29"
+iroh-relay    = "0.29"
 tokio         = { version = "1", features = ["full"] }
 rusqlite      = { version = "0.31", features = ["bundled"] }
 serde         = { version = "1", features = ["derive"] }
 serde_json    = "1"
 anyhow        = "1"
 dirs          = "5"
-clap          = { version = "4", features = ["derive"] }   # anchor CLI args
+clap          = { version = "4", features = ["derive"] }
 tracing       = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-
-[dev-dependencies]
-tempfile      = "3"        # for eviction tests using temp directories
-tokio-test    = "0.4"
+governor      = "0.6"
 ```
 
-> **Note for agents:** After running `cargo add iroh`, copy the resolved version from `Cargo.lock` into `REQUIREMENTS.md` here so future sessions know exactly what version was used.
-
-**Resolved versions (fill in after first `cargo build`):**
-- iroh: *(not yet resolved)*
-- iroh-blobs: *(not yet resolved)*
-
 ---
 
-## R10 — Design Decisions Log
-
-> Record every significant design decision here so future agents don't re-debate closed questions.
-
-| Decision | Choice Made | Rationale | Date |
-|---|---|---|---|
-| Frontend framework | React OR Svelte (defer to implementer) | Both work with Vite + Tauri; Svelte is lighter | 2026-11-02 |
-| State management | Tauri `State<T>` + `Arc<RwLock<>>` | Tauri's built-in state avoids extra deps | 2026-11-02 |
-| PDF library | `pdfjs-dist` (preferred) | More actively maintained than react-pdf-viewer | 2026-11-02 |
-| Markdown editor | `@monaco-editor/react` or Milkdown | Monaco is heavier but more familiar | 2026-11-02 |
-| Rate limiter style | Token bucket (not leaky bucket) | Token bucket allows short bursts; simpler to implement | 2026-11-02 |
-| Docker strategy | One binary (`anchor`), Docker optional; single container covers relay+node via `--no-relay` flag | Simplest possible VPS setup; no compose orchestration needed | 2026-11-02 |
-| SecretKey storage | `dirs::data_dir()/p2pstud/iroh_secret.key` | Platform-standard; hidden from casual file browsing | 2026-11-02 |
-| SQLite bundling | `rusqlite` with `bundled` feature | No system SQLite dependency required | 2026-11-02 |
-| Eviction check frequency | Every 60s + on every blob write | Balance between responsiveness and CPU overhead | 2026-11-02 |
-
----
-
-## R11 — Open Questions
-
-> Questions that have NOT yet been answered. An agent that resolves one should move it to R10 with the decision made.
-
-| # | Question | Raised | Notes |
-|---|---|---|---|
-| Q1 | Which frontend framework — React or Svelte? | 2026-11-02 | Either works; decide at Step 8 |
-| Q2 | How is the workspace namespace ID distributed to students? | 2026-11-02 | Invite link? QR code? Config file? |
-| Q3 | Is mDNS/local peer discovery needed (in addition to relay)? | 2026-11-02 | Useful for LAN speed but may conflict with campus policies |
-| Q4 | What is the workspace file namespace model? Flat or hierarchical? | 2026-11-02 | The file explorer implies hierarchy — needs a manifest blob |
-| Q5 | Should the anchor node support multiple workspace IDs simultaneously? | 2026-11-02 | Single for MVP, multi-workspace as v2 feature |
-| Q6 | Auto-update mechanism for the desktop app? | 2026-11-02 | Tauri updater plugin available |
-| Q7 | What is the exact iroh API for starting a relay server? (verify against docs) | 2026-11-02 | Agent must check iroh source/examples before implementing |
-
----
-
-*Last updated: 2026-11-02 — initial creation from user session.*
+*Last updated: 2026-11-03 — updated with active swarm hosting, peer discovery, catalog sync, and orphaned file management.*

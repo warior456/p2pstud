@@ -106,11 +106,16 @@ pub fn run() {
 
             // Spawn the Iroh node startup on the async runtime.
             let data_dir_clone = data_dir.clone();
+            let db_clone = db.clone();
+            let engine_clone = engine.clone();
             tauri::async_runtime::spawn(async move {
-                match p2p::engine::IrohEngine::start(&data_dir_clone, db).await {
+                match p2p::engine::IrohEngine::start(&data_dir_clone, db_clone.clone()).await {
                     Ok(e) => {
                         tracing::info!("Iroh node started: {}", e.node_id());
-                        *engine.write().await = Some(e);
+                        *engine_clone.write().await = Some(e);
+                        // Start background eviction worker and cooperative swarm hosting worker (~80% fill)
+                        storage::eviction::spawn_eviction_worker(db_clone.clone(), engine_clone.clone());
+                        storage::hosting_worker::spawn_hosting_worker(db_clone, engine_clone);
                     }
                     Err(err) => {
                         tracing::error!("Failed to start Iroh node: {:#}", err);
@@ -142,9 +147,11 @@ pub fn run() {
             commands::file_cmds::add_file,
             commands::file_cmds::upload_file_bytes,
             commands::file_cmds::delete_file,
+            commands::file_cmds::evict_local_file,
             commands::file_cmds::export_file,
             commands::peer_cmds::list_peers,
             commands::peer_cmds::get_node_id,
+            commands::peer_cmds::get_node_ticket,
             commands::peer_cmds::get_node_addr,
             commands::peer_cmds::connect_peer,
         ])

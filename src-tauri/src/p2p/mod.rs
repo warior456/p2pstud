@@ -2,3 +2,4 @@
 pub mod engine;
 pub mod identity;
 pub mod relay;
+pub mod sync;

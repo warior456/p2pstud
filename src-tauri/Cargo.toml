@@ -27,7 +27,7 @@ tauri-plugin-shell = "2"
 tauri-plugin-fs    = "2"
 
 # P2P networking
-iroh           = "0.29"
+iroh           = { version = "0.29", features = ["discovery-local-network", "discovery-pkarr-dht"] }
 iroh-blobs     = "0.29"
 iroh-relay     = "0.29"
 

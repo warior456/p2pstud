@@ -71,6 +71,9 @@ At the end of every session (or when interrupted), update the `## Progress Track
 | 19 | README + deployment guide | ✅ | Comprehensive `README.md` and `.gitignore` created |
 | 20 | Production Readiness Polish & Background Tray | ✅ | System tray icon, window close interception, network & peer configuration, purge cache, installer & portable ZIP |
 | 21 | Cross-Platform Linux & Windows Parity | ✅ | `xdg-open` on Linux, `0o600` secret key permissions, bundled SQLite, `.deb` & `.AppImage` bundle config in Tauri, CI matrix for Windows & Ubuntu |
+| 22 | Multi-Layer Discovery & Smart Peer Dialing | ✅ | `LocalSwarmDiscovery` on LAN, `n0_dns` and `pkarr_dht` on WAN, auto background discovery connect, `NodeTicket` parsing |
+| 23 | Workspace Catalog Synchronization & Remote Fetch | ✅ | Real-time QUIC catalog exchange (`/p2pstud/sync/1`), broadcast on upload/delete, on-demand remote blob download |
+| 24 | Active Swarm Hosting (~80%) & Orphaned File Management | ✅ | Worker actively fills cache to 80% to seed course files; orphaned file force-cleanup for departed owners |
 
 ---
 
@@ -569,4 +572,5 @@ certbot certonly --standalone -d relay.yourcampus.org --agree-tos -m admin@yourc
 ---
 
 *Last updated: 2026-11-02 — initial plan creation.*
+
 

@@ -15,6 +15,8 @@ interface FileTreeProps {
   onDownload: (hash: string) => void;
   onPreview: (hash: string) => void;
   onDelete?: (hash: string) => void;
+  onDeleteOrphan?: (hash: string) => void;
+  onEvictLocal?: (hash: string) => void;
   onFileUploaded?: (hash: string) => void;
   onTriggerUpload?: () => void;
 }
@@ -30,6 +32,8 @@ export const FileTree: React.FC<FileTreeProps> = ({
   onDownload,
   onPreview,
   onDelete,
+  onDeleteOrphan,
+  onEvictLocal,
   onFileUploaded,
   onTriggerUpload,
 }) => {
@@ -120,6 +124,8 @@ export const FileTree: React.FC<FileTreeProps> = ({
               onDownload={onDownload}
               onPreview={onPreview}
               onDelete={onDelete}
+              onDeleteOrphan={onDeleteOrphan}
+              onEvictLocal={onEvictLocal}
             />
           ))}
         </div>

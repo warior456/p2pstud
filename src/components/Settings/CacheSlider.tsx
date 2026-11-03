@@ -13,7 +13,9 @@ import {
   Server,
   RefreshCw,
   FolderOpen,
-  Trash2
+  Trash2,
+  Globe,
+  Wifi
 } from 'lucide-react';
 import { StorageStats, PeerInfo } from '../../types';
 
@@ -36,6 +38,7 @@ export const CacheSlider: React.FC<CacheSliderProps> = ({ stats, onStatsUpdated 
 
   // Network & Identity Settings
   const [nodeId, setNodeId] = useState<string>('');
+  const [nodeTicket, setNodeTicket] = useState<string>('');
   const [nodeAddr, setNodeAddr] = useState<string>('');
   const [relayUrl, setRelayUrl] = useState<string>('https://use1-1.relay.iroh.network/');
   const [peerInput, setPeerInput] = useState<string>('');
@@ -44,7 +47,7 @@ export const CacheSlider: React.FC<CacheSliderProps> = ({ stats, onStatsUpdated 
   const [connecting, setConnecting] = useState<boolean>(false);
   const [savingRelay, setSavingRelay] = useState<boolean>(false);
   const [copiedId, setCopiedId] = useState<boolean>(false);
-  const [copiedAddr, setCopiedAddr] = useState<boolean>(false);
+  const [copiedTicket, setCopiedTicket] = useState<boolean>(false);
   const [peers, setPeers] = useState<PeerInfo[]>([]);
 
   useEffect(() => {
@@ -61,6 +64,13 @@ export const CacheSlider: React.FC<CacheSliderProps> = ({ stats, onStatsUpdated 
     try {
       const id = await invoke<string>('get_node_id');
       if (id) setNodeId(id);
+    } catch {
+      // Starting
+    }
+
+    try {
+      const ticket = await invoke<string>('get_node_ticket');
+      if (ticket) setNodeTicket(ticket);
     } catch {
       // Starting
     }
@@ -101,53 +111,26 @@ export const CacheSlider: React.FC<CacheSliderProps> = ({ stats, onStatsUpdated 
       await invoke('set_cache_limit', { bytes, fullMirror: false });
       if (onStatsUpdated) onStatsUpdated();
     } catch (err) {
-      console.error('Failed to set cache limit:', err);
+      console.error('Failed to update cache limit:', err);
     } finally {
       setSavingStorage(false);
     }
   };
 
-  const handleFullMirrorToggle = async (enabled: boolean) => {
-    setFullMirror(enabled);
+  const handleToggleFullMirror = async () => {
+    const nextMirror = !fullMirror;
+    setFullMirror(nextMirror);
     setSavingStorage(true);
     try {
-      const bytes = enabled ? null : sliderGb * 1024 * 1024 * 1024;
-      await invoke('set_cache_limit', { bytes, fullMirror: enabled });
+      await invoke('set_cache_limit', {
+        bytes: nextMirror ? null : sliderGb * 1024 * 1024 * 1024,
+        fullMirror: nextMirror,
+      });
       if (onStatsUpdated) onStatsUpdated();
     } catch (err) {
-      console.error('Failed to update mirror mode:', err);
+      console.error('Failed to toggle full mirror:', err);
     } finally {
       setSavingStorage(false);
-    }
-  };
-
-  const handlePurgeCache = async () => {
-    try {
-      const freed = await invoke<number>('purge_unpinned_cache');
-      alert(`Purged ${(freed / (1024 * 1024)).toFixed(1)} MB from unpinned cache.`);
-      if (onStatsUpdated) onStatsUpdated();
-    } catch (err) {
-      alert(`Failed to purge cache: ${err}`);
-    }
-  };
-
-  const handleOpenDataDir = async () => {
-    try {
-      await invoke('open_data_dir');
-    } catch (err) {
-      alert(`Failed to open data directory: ${err}`);
-    }
-  };
-
-  const handleSaveRelay = async () => {
-    setSavingRelay(true);
-    try {
-      await invoke('set_relay_url', { relayUrl });
-      alert('Relay URL saved. Restart app or reconnect peers to apply.');
-    } catch (err) {
-      alert(`Failed to save relay URL: ${err}`);
-    } finally {
-      setSavingRelay(false);
     }
   };
 
@@ -160,38 +143,71 @@ export const CacheSlider: React.FC<CacheSliderProps> = ({ stats, onStatsUpdated 
     try {
       await invoke('connect_peer', {
         nodeId: peerInput.trim(),
-        relayUrl: peerRelayInput.trim() ? peerRelayInput.trim() : null,
+        relayUrl: peerRelayInput.trim() || null,
       });
-      setConnectStatus({ msg: 'Connected successfully to peer!', isError: false });
+      setConnectStatus({ msg: 'Successfully connected and synced workspace catalog with peer!', isError: false });
       setPeerInput('');
       setPeerRelayInput('');
-      loadNetworkInfo();
+      await loadNetworkInfo();
       if (onStatsUpdated) onStatsUpdated();
-    } catch (err: any) {
-      setConnectStatus({ msg: `Connection failed: ${err}`, isError: true });
+    } catch (err) {
+      setConnectStatus({ msg: String(err), isError: true });
     } finally {
       setConnecting(false);
     }
   };
 
-  const copyToClipboard = (text: string, isAddr: boolean) => {
+  const handleSaveRelay = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSavingRelay(true);
+    try {
+      await invoke('set_relay_url', { relayUrl: relayUrl.trim() });
+      alert('Relay URL saved. Restart app to connect through the new relay.');
+    } catch (err) {
+      alert(`Failed to save relay URL: ${err}`);
+    } finally {
+      setSavingRelay(false);
+    }
+  };
+
+  const handlePurgeCache = async () => {
+    if (confirm('Are you sure you want to purge unpinned cached blobs? Pinned files and cloud files will remain safe.')) {
+      try {
+        const freed = await invoke<number>('purge_unpinned_cache');
+        const freedMb = (freed / (1024 * 1024)).toFixed(1);
+        alert(`Purged unpinned cache! Freed ${freedMb} MB.`);
+        if (onStatsUpdated) onStatsUpdated();
+      } catch (err) {
+        alert(`Failed to purge cache: ${err}`);
+      }
+    }
+  };
+
+  const handleOpenDataDir = async () => {
+    try {
+      await invoke('open_data_dir');
+    } catch (err) {
+      alert(`Failed to open data directory: ${err}`);
+    }
+  };
+
+  const copyToClipboard = (text: string, isTicket: boolean) => {
     navigator.clipboard.writeText(text);
-    if (isAddr) {
-      setCopiedAddr(true);
-      setTimeout(() => setCopiedAddr(false), 2000);
+    if (isTicket) {
+      setCopiedTicket(true);
+      setTimeout(() => setCopiedTicket(false), 2000);
     } else {
       setCopiedId(true);
       setTimeout(() => setCopiedId(false), 2000);
     }
   };
 
-  const usedGb = stats ? formatGigabytes(stats.used_bytes) : '0.00';
-  const pinnedGb = stats ? formatGigabytes(stats.pinned_bytes) : '0.00';
+  const targetHostGb = (sliderGb * 0.8).toFixed(1);
 
   return (
     <div className="max-w-3xl mx-auto space-y-6">
-      {/* Settings Navigation Tabs */}
-      <div className="flex border-b border-gray-200 gap-4">
+      {/* Navigation Tabs */}
+      <div className="flex border-b border-gray-200 gap-8">
         <button
           onClick={() => setActiveTab('network')}
           className={`flex items-center gap-2 pb-3 px-1 text-sm font-semibold border-b-2 transition-colors ${
@@ -219,12 +235,42 @@ export const CacheSlider: React.FC<CacheSliderProps> = ({ stats, onStatsUpdated 
       {/* Network Configuration Tab */}
       {activeTab === 'network' && (
         <div className="space-y-6">
+          {/* Swarm Auto-Discovery Status */}
+          <div className="bg-gradient-to-r from-blue-50 to-indigo-50 p-4 rounded-xl border border-blue-200 shadow-xs">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Globe className="w-4 h-4 text-blue-600" />
+                <span className="text-xs font-bold text-gray-900">Zero-Config Swarm Discovery</span>
+              </div>
+              <span className="text-[10px] font-semibold bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full border border-blue-200">
+                Active & Listening
+              </span>
+            </div>
+            <div className="mt-2 grid grid-cols-1 sm:grid-cols-3 gap-2 text-[11px] text-gray-600">
+              <div className="flex items-center gap-1.5 bg-white/70 p-2 rounded-lg border border-blue-100">
+                <Wifi className="w-3.5 h-3.5 text-green-600" />
+                <span>LAN Swarm (mDNS)</span>
+              </div>
+              <div className="flex items-center gap-1.5 bg-white/70 p-2 rounded-lg border border-blue-100">
+                <Radio className="w-3.5 h-3.5 text-blue-600" />
+                <span>WAN DNS / Pkarr</span>
+              </div>
+              <div className="flex items-center gap-1.5 bg-white/70 p-2 rounded-lg border border-blue-100">
+                <Server className="w-3.5 h-3.5 text-indigo-600" />
+                <span>BitTorrent DHT</span>
+              </div>
+            </div>
+            <p className="text-[11px] text-gray-500 mt-2">
+              Devices on the same Wi-Fi, Ethernet, or campus network discover each other automatically. For remote friends or cloud anchors, share your Node Ticket below.
+            </p>
+          </div>
+
           {/* Identity Section */}
           <div className="bg-white p-6 rounded-xl border border-gray-200 shadow-xs space-y-4">
             <div className="flex items-center justify-between border-b border-gray-100 pb-3">
               <div className="flex items-center gap-2.5">
                 <Radio className="w-5 h-5 text-blue-600" />
-                <h3 className="text-sm font-bold text-gray-900">Your Node Identity</h3>
+                <h3 className="text-sm font-bold text-gray-900">Your Node Identity & Ticket</h3>
               </div>
               <span className="text-[10px] font-mono bg-green-50 text-green-700 px-2 py-0.5 rounded-full border border-green-200 flex items-center gap-1">
                 <Activity className="w-3 h-3 text-green-600" />
@@ -232,8 +278,33 @@ export const CacheSlider: React.FC<CacheSliderProps> = ({ stats, onStatsUpdated 
               </span>
             </div>
 
+            {nodeTicket && (
+              <div>
+                <label className="text-xs font-semibold text-gray-700">P2P Node Ticket (Recommended for Sharing)</label>
+                <div className="mt-1 flex items-center gap-2">
+                  <input
+                    type="text"
+                    readOnly
+                    value={nodeTicket}
+                    className="w-full text-xs font-mono bg-blue-50/50 border border-blue-200 rounded-lg px-3 py-2 text-blue-900 select-all focus:outline-none truncate"
+                  />
+                  <button
+                    onClick={() => copyToClipboard(nodeTicket, true)}
+                    className="px-3 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-medium flex items-center gap-1.5 transition-colors"
+                    title="Copy Node Ticket"
+                  >
+                    {copiedTicket ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+                    {copiedTicket ? 'Copied' : 'Copy'}
+                  </button>
+                </div>
+                <p className="text-[11px] text-gray-400 mt-1">
+                  This single ticket encodes your Node ID, direct IPs, and relay addresses. Friends can paste this directly to link.
+                </p>
+              </div>
+            )}
+
             <div>
-              <label className="text-xs font-semibold text-gray-700">Node ID (Ed25519 Public Key)</label>
+              <label className="text-xs font-semibold text-gray-700">Raw Node ID (Ed25519 Public Key)</label>
               <div className="mt-1 flex items-center gap-2">
                 <input
                   type="text"
@@ -251,31 +322,28 @@ export const CacheSlider: React.FC<CacheSliderProps> = ({ stats, onStatsUpdated 
                   {copiedId ? 'Copied' : 'Copy'}
                 </button>
               </div>
-              <p className="text-[11px] text-gray-400 mt-1">
-                Share this Node ID with peers or friends so they can add you to their shared swarm.
-              </p>
             </div>
 
             {nodeAddr && (
-              <div>
-                <label className="text-xs font-semibold text-gray-700">Full Node Address (Direct & Relay Hint)</label>
-                <div className="mt-1 flex items-center gap-2">
+              <details className="text-xs text-gray-500 cursor-pointer pt-1">
+                <summary className="font-semibold text-gray-700 hover:text-gray-900">
+                  Advanced: View Full JSON Address
+                </summary>
+                <div className="mt-2 flex items-center gap-2">
                   <input
                     type="text"
                     readOnly
                     value={nodeAddr}
-                    className="w-full text-xs font-mono bg-gray-50 border border-gray-200 rounded-lg px-3 py-2 text-gray-700 select-all focus:outline-none truncate"
+                    className="w-full text-[11px] font-mono bg-gray-50 border border-gray-200 rounded-lg px-2.5 py-1.5 text-gray-600 select-all focus:outline-none truncate"
                   />
                   <button
-                    onClick={() => copyToClipboard(nodeAddr, true)}
-                    className="px-3 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-lg text-xs font-medium flex items-center gap-1.5 transition-colors"
-                    title="Copy Full Node Address"
+                    onClick={() => copyToClipboard(nodeAddr, false)}
+                    className="px-2.5 py-1.5 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-lg text-xs font-medium flex items-center gap-1 transition-colors"
                   >
-                    {copiedAddr ? <Check className="w-3.5 h-3.5 text-green-600" /> : <Copy className="w-3.5 h-3.5" />}
-                    {copiedAddr ? 'Copied' : 'Copy'}
+                    <Copy className="w-3 h-3" />
                   </button>
                 </div>
-              </div>
+              </details>
             )}
           </div>
 
@@ -286,17 +354,17 @@ export const CacheSlider: React.FC<CacheSliderProps> = ({ stats, onStatsUpdated 
               <div>
                 <h3 className="text-sm font-bold text-gray-900">Connect to Peer or Anchor Node</h3>
                 <p className="text-xs text-gray-500">
-                  Dial a specific student laptop or cloud anchor VPS to link swarms and sync files.
+                  Paste a Node Ticket, JSON address, or Node ID to connect and sync the shared cloud.
                 </p>
               </div>
             </div>
 
             <form onSubmit={handleConnectPeer} className="space-y-3">
               <div>
-                <label className="text-xs font-semibold text-gray-700">Peer Node ID *</label>
+                <label className="text-xs font-semibold text-gray-700">Peer Address / Ticket *</label>
                 <input
                   type="text"
-                  placeholder="Paste peer's Node ID (e.g. uqpewh6pnmgq...)"
+                  placeholder="Paste Node Ticket (node...), JSON address, or Node ID"
                   value={peerInput}
                   onChange={(e) => setPeerInput(e.target.value)}
                   className="w-full mt-1 text-xs font-mono bg-gray-50 border border-gray-200 rounded-lg px-3 py-2 focus:bg-white focus:border-blue-500 focus:outline-none transition-all"
@@ -305,7 +373,7 @@ export const CacheSlider: React.FC<CacheSliderProps> = ({ stats, onStatsUpdated 
               </div>
 
               <div>
-                <label className="text-xs font-semibold text-gray-700">Relay URL (Optional)</label>
+                <label className="text-xs font-semibold text-gray-700">Relay URL (Optional for raw Node ID)</label>
                 <input
                   type="text"
                   placeholder="Leave empty to use default relay"
@@ -361,7 +429,7 @@ export const CacheSlider: React.FC<CacheSliderProps> = ({ stats, onStatsUpdated 
               <div className="text-center py-6 text-gray-400">
                 <p className="text-xs">No remote peers connected yet.</p>
                 <p className="text-[11px] text-gray-400 mt-1">
-                  Share your Node ID above or connect to a friend's Node ID to begin direct file sharing.
+                  Once another node opens the app on your network or you connect to an anchor node, it will appear here.
                 </p>
               </div>
             ) : (
@@ -383,84 +451,88 @@ export const CacheSlider: React.FC<CacheSliderProps> = ({ stats, onStatsUpdated 
             )}
           </div>
 
-          {/* Relay Server Configuration */}
+          {/* Custom Relay Configuration */}
           <div className="bg-white p-6 rounded-xl border border-gray-200 shadow-xs space-y-4">
             <div className="flex items-center gap-2.5 border-b border-gray-100 pb-3">
               <Server className="w-5 h-5 text-blue-600" />
               <div>
-                <h3 className="text-sm font-bold text-gray-900">Swarm Relay & NAT Fallback</h3>
+                <h3 className="text-sm font-bold text-gray-900">Custom Swarm Relay</h3>
                 <p className="text-xs text-gray-500">
-                  Custom TLS relay for university campus networks (Eduroam) and symmetric NAT traversal.
+                  Optional TLS 443 relay URL for bypassing restrictive campus firewalls.
                 </p>
               </div>
             </div>
 
-            <div className="flex gap-2">
-              <input
-                type="text"
-                value={relayUrl}
-                onChange={(e) => setRelayUrl(e.target.value)}
-                placeholder="https://use1-1.relay.iroh.network/"
-                className="flex-1 text-xs font-mono bg-gray-50 border border-gray-200 rounded-lg px-3 py-2 focus:bg-white focus:border-blue-500 focus:outline-none"
-              />
+            <form onSubmit={handleSaveRelay} className="space-y-3">
+              <div>
+                <label className="text-xs font-semibold text-gray-700">Relay Server URL</label>
+                <input
+                  type="text"
+                  value={relayUrl}
+                  onChange={(e) => setRelayUrl(e.target.value)}
+                  className="w-full mt-1 text-xs font-mono bg-gray-50 border border-gray-200 rounded-lg px-3 py-2 focus:bg-white focus:border-blue-500 focus:outline-none transition-all"
+                />
+              </div>
               <button
-                onClick={handleSaveRelay}
+                type="submit"
                 disabled={savingRelay}
-                className="px-4 py-2 bg-gray-800 hover:bg-gray-900 text-white rounded-lg text-xs font-semibold transition-colors disabled:opacity-50"
+                className="px-4 py-2 bg-gray-800 hover:bg-gray-900 text-white rounded-lg text-xs font-semibold shadow-xs transition-colors"
               >
-                {savingRelay ? 'Saving...' : 'Save Relay'}
+                {savingRelay ? 'Saving...' : 'Save Relay Configuration'}
               </button>
-            </div>
+            </form>
           </div>
         </div>
       )}
 
-      {/* Storage Allocation Tab */}
+      {/* Storage & Disk Quota Tab */}
       {activeTab === 'storage' && (
         <div className="bg-white p-6 rounded-xl border border-gray-200 shadow-xs space-y-6">
-          <div className="flex items-center gap-3 border-b border-gray-100 pb-4">
-            <HardDrive className="w-6 h-6 text-blue-600" />
-            <div>
-              <h2 className="text-lg font-bold text-gray-900">Host-to-Play Cache Allocation</h2>
-              <p className="text-xs text-gray-500">
-                Dedicating local disk space seeds course materials to peers on campus.
-              </p>
+          <div>
+            <h2 className="text-base font-bold text-gray-900">Host-to-Play Cache Allocation</h2>
+            <p className="text-xs text-gray-500 mt-1">
+              Dedicating local disk space seeds course materials to classmates on campus.
+            </p>
+          </div>
+
+          <div className="grid grid-cols-2 gap-4">
+            <div className="p-4 bg-gray-50 rounded-lg border border-gray-100">
+              <div className="text-xs font-medium text-gray-500">Currently Used</div>
+              <div className="text-2xl font-bold text-gray-900 mt-1">{formatGigabytes(stats?.used_bytes || 0)} GB</div>
+            </div>
+            <div className="p-4 bg-gray-50 rounded-lg border border-gray-100">
+              <div className="text-xs font-medium text-gray-500">Pinned (Protected)</div>
+              <div className="text-2xl font-bold text-green-600 mt-1">{formatGigabytes(stats?.pinned_bytes || 0)} GB</div>
             </div>
           </div>
 
-          {/* Usage breakdown */}
-          <div className="grid grid-cols-2 gap-4 bg-gray-50 p-4 rounded-lg">
-            <div>
-              <span className="text-xs text-gray-500 font-medium">Currently Used</span>
-              <p className="text-xl font-bold text-gray-900 mt-1">{usedGb} GB</p>
+          {/* Active 80% Swarm Hosting Banner */}
+          <div className="p-4 bg-blue-50/70 border border-blue-200 rounded-lg">
+            <div className="flex items-center gap-2 text-xs font-semibold text-blue-900">
+              <Zap className="w-4 h-4 text-blue-600" />
+              <span>Active Cooperative Swarm Seeding (~80% target)</span>
             </div>
-            <div>
-              <span className="text-xs text-gray-500 font-medium">Pinned (Protected)</span>
-              <p className="text-xl font-bold text-green-700 mt-1">{pinnedGb} GB</p>
-            </div>
+            <p className="text-[11px] text-blue-700 mt-1 leading-relaxed">
+              Your node actively pre-fetches and hosts course files up to <strong>~{targetHostGb} GB</strong> (80% of quota). 
+              This ensures unpinned files are seeded across campus so classmates can download them at LAN speeds.
+            </p>
           </div>
 
-          {/* Quota slider */}
-          <div className="space-y-3">
-            <div className="flex items-center justify-between">
-              <label htmlFor="cache-slider" className="text-sm font-semibold text-gray-800">
-                Cache Quota Limit
-              </label>
-              <span className="text-sm font-bold text-blue-600">
-                {fullMirror ? 'Unlimited (Full Mirror)' : `${sliderGb} GB`}
-              </span>
+          <div className="space-y-4 pt-2">
+            <div className="flex justify-between items-center text-xs">
+              <label htmlFor="cache-slider" className="font-semibold text-gray-700">Cache Quota Limit</label>
+              <span className="font-bold text-blue-600 text-sm">{sliderGb} GB</span>
             </div>
 
             <input
               id="cache-slider"
               type="range"
-              min={3}
-              max={50}
-              step={1}
+              min="3"
+              max="50"
               value={sliderGb}
               disabled={fullMirror || savingStorage}
               onChange={(e) => handleSliderChange(parseInt(e.target.value, 10))}
-              className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-blue-600 disabled:opacity-40"
+              className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-blue-600 disabled:opacity-50"
             />
 
             <div className="flex justify-between text-[11px] text-gray-400">
@@ -470,60 +542,51 @@ export const CacheSlider: React.FC<CacheSliderProps> = ({ stats, onStatsUpdated 
             </div>
           </div>
 
-          {/* Full mirror toggle */}
-          <div className="border border-blue-100 bg-blue-50/50 p-4 rounded-lg flex items-start gap-3">
+          <div className="p-4 bg-gray-50 rounded-lg border border-gray-200 flex items-start gap-3">
             <input
               type="checkbox"
               id="full-mirror"
               checked={fullMirror}
               disabled={savingStorage}
-              onChange={(e) => handleFullMirrorToggle(e.target.checked)}
-              className="mt-0.5 h-4 w-4 rounded text-blue-600 focus:ring-blue-500 border-gray-300"
+              onChange={handleToggleFullMirror}
+              className="mt-1 h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
             />
-            <div>
-              <label htmlFor="full-mirror" className="text-xs font-bold text-gray-900 flex items-center gap-1.5 cursor-pointer">
+            <label htmlFor="full-mirror" className="cursor-pointer">
+              <div className="flex items-center gap-1.5 text-xs font-bold text-gray-900">
                 <Zap className="w-3.5 h-3.5 text-amber-500 fill-amber-500" />
                 Enable Full Mirror Mode
-              </label>
-              <p className="text-xs text-gray-500 mt-0.5">
-                Disables the automatic LRU eviction worker and auto-downloads all workspace blobs locally to provide 100% offline redundancy.
+              </div>
+              <p className="text-[11px] text-gray-500 mt-0.5">
+                Disables the automatic LRU eviction worker and auto-downloads all course workspace blobs locally to provide 100% offline redundancy.
               </p>
-            </div>
+            </label>
           </div>
 
-          <div className="flex items-center gap-2 text-xs text-gray-500 border-t border-gray-100 pt-4">
-            <ShieldCheck className="w-4 h-4 text-green-600 flex-shrink-0" />
-            <span>Oldest unpinned items are automatically evicted when cache reaches 90% capacity.</span>
+          <div className="flex items-center gap-2 text-xs text-gray-600">
+            <ShieldCheck className="w-4 h-4 text-green-600 shrink-0" />
+            <span>Oldest unpinned items are automatically evicted when cache exceeds 90% capacity.</span>
           </div>
 
-          {/* Diagnostic & Disk Utilities */}
-          <div className="border-t border-gray-100 pt-5 space-y-3">
-            <h3 className="text-xs font-bold text-gray-700 uppercase tracking-wider">
-              Diagnostic & Disk Management
-            </h3>
-            <div className="flex flex-wrap gap-3">
-              <button
-                onClick={handlePurgeCache}
-                className="px-3.5 py-2 bg-red-50 hover:bg-red-100 text-red-700 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-colors border border-red-200"
-              >
-                <Trash2 className="w-3.5 h-3.5 text-red-600" />
-                Purge Unpinned Cache
-              </button>
-              <button
-                onClick={handleOpenDataDir}
-                className="px-3.5 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-colors"
-              >
-                <FolderOpen className="w-3.5 h-3.5 text-gray-600" />
-                Open Data Folder on Disk
-              </button>
-            </div>
-            <p className="text-[11px] text-gray-400">
-              Closing the window [X] minimizes to the system tray so that P2P file seeding continues in the background. To quit completely, right-click the system tray icon and choose Quit.
-            </p>
+          {/* Disk Actions */}
+          <div className="pt-4 border-t border-gray-100 flex flex-wrap gap-3">
+            <button
+              onClick={handleOpenDataDir}
+              className="px-3 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-colors"
+            >
+              <FolderOpen className="w-3.5 h-3.5 text-gray-600" />
+              Open Data Folder
+            </button>
+
+            <button
+              onClick={handlePurgeCache}
+              className="px-3 py-2 bg-red-50 hover:bg-red-100 text-red-700 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-colors"
+            >
+              <Trash2 className="w-3.5 h-3.5 text-red-600" />
+              Purge Unpinned Cache
+            </button>
           </div>
         </div>
       )}
     </div>
   );
 };
-export default CacheSlider;

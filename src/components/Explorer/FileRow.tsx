@@ -11,7 +11,8 @@ import {
   Eye,
   Copy,
   Trash2,
-  Lock,
+  HardDriveDownload,
+  AlertTriangle,
   User
 } from 'lucide-react';
 import { FileEntry } from '../../types';
@@ -26,6 +27,8 @@ interface FileRowProps {
   onDownload: (hash: string) => void;
   onPreview: (hash: string) => void;
   onDelete?: (hash: string) => void;
+  onDeleteOrphan?: (hash: string) => void;
+  onEvictLocal?: (hash: string) => void;
 }
 
 function formatBytes(bytes: number): string {
@@ -46,6 +49,8 @@ export const FileRow: React.FC<FileRowProps> = ({
   onDownload,
   onPreview,
   onDelete,
+  onDeleteOrphan,
+  onEvictLocal,
 }) => {
   const [menuOpen, setMenuOpen] = useState(false);
 
@@ -99,51 +104,55 @@ export const FileRow: React.FC<FileRowProps> = ({
     <div
       onClick={onClick}
       onContextMenu={handleContextMenu}
-      className={`relative group flex items-center justify-between px-4 py-2.5 text-sm cursor-pointer select-none border-b border-gray-100 transition-colors ${
-        isSelected ? 'bg-blue-50 hover:bg-blue-100/70' : 'hover:bg-gray-50'
+      className={`group flex items-center justify-between px-4 py-3 hover:bg-gray-50 border-b border-gray-100 cursor-pointer relative ${
+        isSelected ? 'bg-blue-50/50' : ''
       }`}
     >
-      <div className="flex items-center gap-3 min-w-0 flex-1">
+      <div className="flex items-center gap-3 overflow-hidden">
         {file.is_dir ? (
-          <Folder className="w-5 h-5 text-amber-500 flex-shrink-0" />
+          <Folder className="w-5 h-5 text-blue-500 fill-blue-50 shrink-0" />
         ) : (
-          <FileText className="w-5 h-5 text-blue-500 flex-shrink-0" />
+          <FileText className="w-5 h-5 text-gray-400 shrink-0" />
         )}
-        <span className="truncate font-medium text-gray-800">{file.name}</span>
-        {file.owner_node_id && (
-          <span
-            className={`text-[10px] px-1.5 py-0.5 rounded flex items-center gap-1 flex-shrink-0 ${
-              isOwner ? 'bg-green-50 text-green-700 border border-green-200' : 'bg-gray-100 text-gray-500'
-            }`}
-            title={`Uploaded by: ${file.owner_node_id}`}
-          >
-            <User className="w-2.5 h-2.5" />
-            {isOwner ? 'Uploaded by you' : `${file.owner_node_id.slice(0, 6)}...`}
-          </span>
-        )}
+        <div className="flex flex-col truncate">
+          <span className="text-sm font-medium text-gray-800 truncate">{file.name}</span>
+          <div className="flex items-center gap-2 text-[10px] text-gray-400 mt-0.5">
+            {file.owner_node_id && (
+              <span className="flex items-center gap-1 font-mono">
+                <User className="w-2.5 h-2.5" />
+                {isOwner ? 'You (Owner)' : `Owner: ${file.owner_node_id.slice(0, 8)}...`}
+              </span>
+            )}
+            <span className="font-mono">{file.hash.slice(0, 10)}...</span>
+          </div>
+        </div>
       </div>
 
-      <div className="flex items-center gap-4 flex-shrink-0">
-        <span className="text-xs text-gray-500 w-20 text-right">
-          {file.is_dir ? '--' : formatBytes(file.size_bytes)}
-        </span>
-        <div className="w-28 flex justify-end">{renderBadge()}</div>
+      <div className="flex items-center gap-4">
+        {!file.is_dir && (
+          <span className="text-xs text-gray-400 font-mono w-16 text-right">
+            {formatBytes(file.size_bytes)}
+          </span>
+        )}
+
+        <div className="w-24 flex justify-end">{renderBadge()}</div>
 
         <button
           onClick={(e) => {
             e.stopPropagation();
             setMenuOpen(!menuOpen);
           }}
-          className="p-1 rounded text-gray-400 hover:text-gray-700 hover:bg-gray-200"
+          className="p-1 rounded hover:bg-gray-200 text-gray-400 hover:text-gray-600"
         >
           <MoreVertical className="w-4 h-4" />
         </button>
       </div>
 
+      {/* Context Menu */}
       {menuOpen && (
-        <div 
-          className="absolute right-4 top-10 z-20 w-48 bg-white border border-gray-200 rounded-lg shadow-lg py-1 text-xs"
+        <div
           onMouseLeave={() => setMenuOpen(false)}
+          className="absolute right-4 top-10 bg-white border border-gray-200 shadow-lg rounded-lg py-1 z-20 text-xs w-56 font-normal"
         >
           {!file.is_dir && (
             <>
@@ -193,6 +202,19 @@ export const FileRow: React.FC<FileRowProps> = ({
                 </button>
               )}
 
+              {file.sync_state !== 'cloud_only' && onEvictLocal && (
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onEvictLocal(file.hash);
+                    setMenuOpen(false);
+                  }}
+                  className="w-full text-left px-3 py-1.5 flex items-center gap-2 hover:bg-gray-100 text-gray-700"
+                >
+                  <HardDriveDownload className="w-3.5 h-3.5 text-gray-500" /> Free Local Disk Space
+                </button>
+              )}
+
               <div className="border-t border-gray-100 my-1" />
             </>
           )}
@@ -219,12 +241,17 @@ export const FileRow: React.FC<FileRowProps> = ({
                   <Trash2 className="w-3.5 h-3.5 text-red-600" /> Delete My File
                 </button>
               ) : (
-                <div 
-                  className="w-full text-left px-3 py-1.5 flex items-center gap-2 text-gray-400 cursor-not-allowed"
-                  title="Only the uploader can delete this file"
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    if (onDeleteOrphan) onDeleteOrphan(file.hash);
+                    setMenuOpen(false);
+                  }}
+                  className="w-full text-left px-3 py-1.5 flex items-center gap-2 hover:bg-amber-50 text-amber-700 font-medium"
+                  title="Remove abandoned file whose owner no longer exists in workspace"
                 >
-                  <Lock className="w-3.5 h-3.5" /> Only uploader can delete
-                </div>
+                  <AlertTriangle className="w-3.5 h-3.5 text-amber-600" /> Clean Up Orphaned File
+                </button>
               )}
             </>
           )}

@@ -29,7 +29,7 @@ interface BlobRecord {
   owner_node_id: string | null;
 }
 
-export function App() {
+export default function App() {
   const [paths, setPaths] = useState<string[]>(['Shared Cloud']);
   const [files, setFiles] = useState<FileEntry[]>([]);
   const [selectedHash, setSelectedHash] = useState<string | null>(null);
@@ -65,6 +65,9 @@ export function App() {
 
   useEffect(() => {
     loadWorkspaceFiles();
+    // Periodically poll catalog so peers' uploads appear automatically
+    const interval = setInterval(loadWorkspaceFiles, 3500);
+    return () => clearInterval(interval);
   }, []);
 
   const handleTriggerUpload = () => {
@@ -95,14 +98,38 @@ export function App() {
     refetchStats();
   };
 
-  const handleDelete = async (hash: string) => {
+  const handleDelete = async (hash: string, forceOrphan = false) => {
     try {
-      await invoke('delete_file', { hash });
+      await invoke('delete_file', { hash, forceOrphan });
       setFiles((prev) => prev.filter((f) => f.hash !== hash));
       refetchStats();
     } catch (err) {
       console.error('Delete error:', err);
       alert(`Delete failed: ${err}`);
+    }
+  };
+
+  const handleDeleteOrphan = async (hash: string) => {
+    const file = files.find((f) => f.hash === hash);
+    const fileName = file?.name || hash.slice(0, 8);
+    if (
+      confirm(
+        `Are you sure you want to clean up "${fileName}"?\n\nThis will remove the file from the workspace for everyone because the original owner is no longer active in the swarm.`
+      )
+    ) {
+      await handleDelete(hash, true);
+    }
+  };
+
+  const handleEvictLocal = async (hash: string) => {
+    try {
+      await invoke('evict_local_file', { hash });
+      setFiles((prev) =>
+        prev.map((f) => (f.hash === hash ? { ...f, sync_state: 'cloud_only' } : f))
+      );
+      refetchStats();
+    } catch (err) {
+      alert(`Failed to free local space: ${err}`);
     }
   };
 
@@ -210,53 +237,52 @@ export function App() {
         type="file"
         ref={fileInputRef}
         onChange={handleFileInputChange}
-        multiple
         className="hidden"
       />
 
-      {/* Top Header Bar */}
-      <header className="h-12 bg-white border-b border-gray-200 px-4 flex items-center justify-between shadow-xs z-10">
+      {/* Top Application Header */}
+      <header className="h-14 bg-white border-b border-gray-200 px-4 flex items-center justify-between z-10">
         <div className="flex items-center gap-3">
-          <div className="bg-blue-600 text-white p-1.5 rounded-lg shadow-xs">
+          <div className="p-2 bg-blue-600 rounded-lg text-white shadow-xs">
             <FolderGit2 className="w-5 h-5" />
           </div>
           <div>
-            <h1 className="font-bold text-sm tracking-tight text-gray-900">P2P Shared Cloud</h1>
-            <p className="text-[10px] text-gray-500 font-mono truncate max-w-[280px]">
-              {nodeId ? `Node: ${nodeId}` : 'Initializing Iroh Quic Engine...'}
+            <h1 className="text-sm font-bold tracking-tight text-gray-900">
+              P2P Shared Cloud
+            </h1>
+            <p className="text-[10px] font-mono text-gray-400 truncate max-w-[200px]">
+              {nodeId ? `Node: ${nodeId.slice(0, 16)}...` : 'Connecting to Iroh Swarm...'}
             </p>
           </div>
         </div>
 
-        {/* Global Search Bar */}
-        <div className="relative w-72">
-          <Search className="w-3.5 h-3.5 text-gray-400 absolute left-2.5 top-2.5" />
+        {/* Search Bar */}
+        <div className="flex-1 max-w-md mx-8 relative">
+          <Search className="w-4 h-4 absolute left-3 top-2.5 text-gray-400" />
           <input
             type="text"
-            placeholder="Search files & hashes..."
+            placeholder="Search workspace files & hashes..."
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            className="w-full text-xs pl-8 pr-3 py-1.5 bg-gray-100 border border-transparent rounded-md focus:bg-white focus:border-blue-500 focus:outline-none transition-all"
+            className="w-full pl-9 pr-4 py-1.5 bg-gray-100 hover:bg-gray-100/80 focus:bg-white border border-transparent focus:border-blue-500 rounded-lg text-xs transition-all outline-hidden"
           />
         </div>
 
-        {/* Action icons & Upload */}
+        {/* Global Action Buttons */}
         <div className="flex items-center gap-2">
           <button
             onClick={handleTriggerUpload}
-            className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-md text-xs font-semibold shadow-xs transition-colors"
-            title="Upload file to P2P Cloud"
+            className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-semibold flex items-center gap-1.5 shadow-xs transition-colors"
           >
             <Upload className="w-3.5 h-3.5" />
-            <span>Upload File</span>
+            Upload File
           </button>
-
           <button
             onClick={() => {
               loadWorkspaceFiles();
               refetchStats();
             }}
-            className="p-1.5 rounded-md text-gray-600 hover:text-gray-900 hover:bg-gray-100 transition-colors"
+            className="p-1.5 rounded-md hover:bg-gray-100 text-gray-600 hover:text-gray-900 transition-colors"
             title="Refresh Swarm Cache"
           >
             <RefreshCw className="w-4 h-4" />
@@ -308,14 +334,14 @@ export function App() {
                   onClick={() => setSearchQuery('.pdf')}
                   className="w-full flex items-center gap-2.5 px-3 py-1.5 text-xs text-gray-600 rounded-lg hover:bg-gray-100"
                 >
-                  <FileCode className="w-3.5 h-3.5 text-red-500" />
+                  <FileText className="w-3.5 h-3.5 text-red-500" />
                   Documents (.pdf)
                 </button>
                 <button
                   onClick={() => setSearchQuery('.md')}
                   className="w-full flex items-center gap-2.5 px-3 py-1.5 text-xs text-gray-600 rounded-lg hover:bg-gray-100"
                 >
-                  <FileText className="w-3.5 h-3.5 text-blue-500" />
+                  <FileCode className="w-3.5 h-3.5 text-blue-500" />
                   Notes (.md, .txt)
                 </button>
               </div>
@@ -325,14 +351,14 @@ export function App() {
           <div className="px-3">
             <button
               onClick={() => setCurrentView('settings')}
-              className="w-full flex items-center justify-between p-2 rounded-lg bg-gray-50 border border-gray-200 text-xs hover:bg-gray-100 transition-colors"
+              className="w-full flex items-center justify-between p-2 rounded-lg border border-gray-200 hover:bg-gray-50 transition-colors"
             >
-              <div className="flex items-center gap-2">
-                <Settings className="w-3.5 h-3.5 text-gray-600" />
-                <span className="font-medium text-gray-700">Cache Slider</span>
+              <div className="flex items-center gap-2 text-xs font-semibold text-gray-700">
+                <Settings className="w-3.5 h-3.5 text-gray-500" />
+                Cache Slider
               </div>
-              <span className="text-[10px] font-bold text-blue-600 bg-blue-100 px-1.5 py-0.5 rounded">
-                {stats?.full_mirror ? 'Mirror' : `${Math.round((stats?.quota_bytes ?? 5368709120) / (1024*1024*1024))}GB`}
+              <span className="text-[10px] font-bold text-blue-600 bg-blue-50 px-1.5 py-0.5 rounded">
+                {stats ? `${Math.round(stats.quota_bytes / (1024 * 1024 * 1024))}GB` : '5GB'}
               </span>
             </button>
           </div>
@@ -356,7 +382,9 @@ export function App() {
                   const f = files.find((item) => item.hash === hash);
                   if (f) handleSelectFile(f);
                 }}
-                onDelete={handleDelete}
+                onDelete={(hash) => handleDelete(hash, false)}
+                onDeleteOrphan={handleDeleteOrphan}
+                onEvictLocal={handleEvictLocal}
                 onFileUploaded={() => {
                   loadWorkspaceFiles();
                   refetchStats();
@@ -388,13 +416,8 @@ export function App() {
         </main>
       </div>
 
-      {/* Live Telemetry Footer */}
-      <TelemetryBar
-        stats={stats}
-        onOpenSettings={() => setCurrentView('settings')}
-      />
+      {/* Persistent Bottom Telemetry Status Bar */}
+      <TelemetryBar stats={stats} />
     </div>
   );
 }
-
-export default App;
