@@ -67,7 +67,7 @@ At the end of every session (or when interrupted), update the `## Progress Track
 | 15 | Docker packaging (optional) — single `Dockerfile` + `docker-compose.yml` | ✅ | `docker/Dockerfile`, `docker-compose.yml`, `.env.example`, `p2pstud-anchor.service` |
 | 16 | End-to-end connectivity test (2 local nodes) | ✅ | Feature-gated integration test passing (`two_nodes_transfer_blob`) |
 | 17 | Security audit (path sanitization, no open RPC) | ✅ | `path_utils.rs` (`safe_join`), owner-only key permissions, in-process IPC |
-| 18 | CI workflow (GitHub Actions) | ✅ | `.github/workflows/build.yml` and `test.yml` created |
+| 18 | CI workflow (GitHub Actions) | ✅ | Multi-platform build matrix in `.github/workflows/build.yml` (Windows, Linux, macOS ARM64 & x86_64) |
 | 19 | README + deployment guide | ✅ | Comprehensive `README.md` and `.gitignore` created |
 | 20 | Production Readiness Polish & Background Tray | ✅ | System tray icon, window close interception, network & peer configuration, purge cache, installer & portable ZIP |
 | 21 | Cross-Platform Linux & Windows Parity | ✅ | `xdg-open` on Linux, `0o600` secret key permissions, bundled SQLite, `.deb` & `.AppImage` bundle config in Tauri, CI matrix for Windows & Ubuntu |
