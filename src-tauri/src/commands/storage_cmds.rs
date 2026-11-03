@@ -169,7 +169,7 @@ pub async fn purge_unpinned_cache(state: State<'_, AppState>) -> Result<u64, Str
     Ok(freed_bytes)
 }
 
-/// Open the app data folder on disk in Windows Explorer.
+/// Open the app data folder on disk in the system file manager (Explorer / xdg-open / Finder).
 #[tauri::command]
 pub async fn open_data_dir(app: tauri::AppHandle) -> Result<(), String> {
     use tauri::Manager;
@@ -177,7 +177,19 @@ pub async fn open_data_dir(app: tauri::AppHandle) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
         let _ = std::process::Command::new("explorer")
-            .arg(data_dir)
+            .arg(&data_dir)
+            .spawn();
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let _ = std::process::Command::new("xdg-open")
+            .arg(&data_dir)
+            .spawn();
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let _ = std::process::Command::new("open")
+            .arg(&data_dir)
             .spawn();
     }
     Ok(())

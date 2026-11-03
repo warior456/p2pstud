@@ -1,6 +1,7 @@
 # P2P Cooperative Campus Workspace (`p2pstud`)
 
 > A lightweight, cross-platform academic file sharing desktop application built with **Tauri v2** and **Iroh** for restrictive enterprise university networks (Eduroam).
+> Full cross-platform support for **Linux** (Debian, Ubuntu, Fedora, Arch) and **Windows** (10 & 11).
 
 ---
 
@@ -12,6 +13,7 @@
 * **Smart LRU Cache Eviction**: Background worker evicts oldest unpinned blobs when disk usage exceeds 90% until it falls back below 80%.
 * **Pin for Offline**: Right-click to keep any slide deck or assignment offline and exempt from eviction.
 * **In-App Slide & Note Viewers**: Embedded PDF reader with page rendering and Markdown editor with live preview.
+* **Background Tray Persistence**: Minimizes to the system tray so P2P seeding continues in the background even after closing the main window.
 * **Headless VPS Anchor**: An inexpensive cloud VPS ($3–$5/mo) provides 100% persistent availability and token-bucket throttled egress (150 KB/s per session, 2 MB/s aggregate).
 
 ---
@@ -20,9 +22,44 @@
 
 - **Desktop Shell**: Tauri v2 (Rust backend, React + Vite frontend)
 - **P2P Layer**: Embedded `iroh`, `iroh-blobs`, `iroh-net`
-- **Local DB**: Embedded SQLite (`rusqlite`) with WAL mode
+- **Local DB**: Embedded SQLite (`rusqlite` with bundled SQLite source)
 - **Frontend**: React 18, TailwindCSS, Lucide Icons, PDF.js, Marked
 - **Anchor Daemon**: Rust binary with optional single-container Docker setup
+
+---
+
+## 🐧 Linux Support & Prerequisites
+
+### 1. System Dependencies
+On Linux distributions, ensure the required WebKitGTK and AppIndicator libraries are installed:
+
+#### Ubuntu / Debian / Mint:
+```bash
+sudo apt-get update
+sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file \
+    libssl-dev libayatana-appindicator3-dev librsvg2-dev
+```
+
+#### Fedora / RHEL:
+```bash
+sudo dnf install -y webkit2gtk4.1-devel openssl-devel libappindicator-gtk3-devel \
+    librsvg2-devel @development-tools
+```
+
+#### Arch Linux / Manjaro:
+```bash
+sudo pacman -S --needed webkit2gtk-4.1 base-devel openssl libayatana-appindicator librsvg
+```
+
+### 2. Building Packages for Linux
+```bash
+# Build native .deb and .AppImage packages
+npm run build
+npx tauri build
+# Output bundles will be located in:
+# target/release/bundle/deb/
+# target/release/bundle/appimage/
+```
 
 ---
 
@@ -31,7 +68,7 @@
 ### Prerequisites
 - [Node.js](https://nodejs.org/) (v20+)
 - [Rust](https://rustup.rs/) (v1.77+)
-- Platform build dependencies (MSVC or GCC / WebKitGTK on Linux)
+- Platform build dependencies (see Linux section above or Visual Studio C++ Build Tools on Windows)
 
 ### Run Desktop App
 ```bash
@@ -53,7 +90,7 @@ npm run test
 
 ---
 
-## ⚓ Headless Anchor Node Deployment
+## ⚓ Headless Anchor Node Deployment (Linux VPS)
 
 The anchor node persists 100% of workspace files and hosts the TLS 443 relay for NAT traversal.
 
@@ -81,4 +118,3 @@ docker compose up -d
 1. **Strict Path Sanitization**: Path inputs undergo canonicalization checks against directory traversal (`safe_join`).
 2. **Cryptographic Identity**: Node Ed25519 SecretKey stored with owner-only access permissions (`0o600` on Linux, restricted Windows ACLs).
 3. **No Unauthenticated Listeners**: Control plane is strictly embedded in-process via Tauri IPC—no open HTTP/RPC ports bound to `0.0.0.0` on student laptops.
-

@@ -28,6 +28,17 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "category": "Utility",
+    "shortDescription": "P2P Campus Workspace and academic file sharing",
+    "longDescription": "Cooperative Host-to-Play P2P academic file sharing across restrictive university campus networks.",
+    "linux": {
+      "deb": {
+        "depends": [
+          "libwebkit2gtk-4.1-0",
+          "libayatana-appindicator3-1"
+        ]
+      }
+    },
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -37,4 +48,3 @@
     ]
   }
 }
-
