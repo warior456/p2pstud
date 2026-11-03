@@ -61,6 +61,17 @@ const MIGRATIONS: &[&str] = &[
     );
     CREATE INDEX IF NOT EXISTS idx_file_seeds_hash ON file_seeds(hash);
     "#,
+    // Migration 0005 — anti-delete keep voting and deletion grace period
+    r#"
+    CREATE TABLE IF NOT EXISTS file_keep_votes (
+        hash          TEXT NOT NULL,
+        voter_node_id TEXT NOT NULL,
+        voted_at      INTEGER NOT NULL,
+        PRIMARY KEY (hash, voter_node_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_keep_votes_hash ON file_keep_votes(hash);
+    ALTER TABLE local_blobs ADD COLUMN deletion_scheduled_at INTEGER;
+    "#,
 ];
 
 /// Thread-safe SQLite database wrapper.

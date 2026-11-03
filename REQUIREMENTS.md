@@ -30,6 +30,7 @@
 | 2026-11-03 | **Upload Processing Indication**: Added live upload queue drawer & file row progress tracking | User requirement |
 | 2026-11-03 | **Smart Least-Seeds Cache**: Auto-fill prioritizes replicating rare/endangered files with lowest seed count | User requirement |
 | 2026-11-03 | **Hierarchical Folder Support**: Virtual folder tree, directory navigation, "New Folder", folder-aware uploads | User requirement |
+| 2026-11-03 | **File Moving & Sole Seed Eviction Protection**: Drag/context file moving; block disk eviction if only seed | User requirement |
 
 ---
 
@@ -171,6 +172,40 @@
 | R10.3 | Create Folder: "New Folder" action in toolbar allowing users to create directory groupings | Should | ✅ |
 | R10.4 | Folder-aware uploads: Dropping or selecting files while inside a folder places them inside that directory | Must | ✅ |
 | R10.5 | Folder statistics: Display folder item count and aggregated size in the folder row | Should | ✅ |
+
+---
+
+## R11 — File Moving & Swarm Path Synchronization
+
+| ID | Requirement | Priority | Status |
+|---|---|---|---|
+| R11.1 | File moving: Allow users to move files between folders or to the workspace root | Must | ✅ |
+| R11.2 | Drag-and-drop file moving: Dragging a file onto a folder row moves it into that folder | Should | ✅ |
+| R11.3 | Context menu file moving: "Move to..." action with folder picker/prompt | Must | ✅ |
+| R11.4 | Swarm synchronization: Broadcast `SyncMessage::FileMoved` across QUIC to update all connected nodes | Must | ✅ |
+
+---
+
+## R12 — Sole Active Seed Disk Eviction Protection
+
+| ID | Requirement | Priority | Status |
+|---|---|---|---|
+| R12.1 | Disallow disk eviction if sole active seed: `evict_local_file` returns error if remote seed count is 0 | Must | ✅ |
+| R12.2 | Permanent loss prevention: Ensure un-replicated academic materials are never deleted from disk by accident | Must | ✅ |
+| R12.3 | UI safety indication: Disable or guard "Free Local Space" with tooltip and alert explaining sole-seed role | Should | ✅ |
+
+---
+
+## R13 — Anti-Delete (Keep) Voting, 86% Ratio Enforcement & Grace Period
+
+| ID | Requirement | Priority | Status |
+|---|---|---|---|
+| R13.1 | Malicious Client Protection: Non-owners cannot delete files unilaterally across peers via `SyncMessage::FileDeleted`; only original verified owners can unilaterally remove their files | Must | ✅ |
+| R13.2 | Anti-Delete (Keep) Voting: Swarm peers can cast and retract keep/defense votes (`file_keep_votes`, `SyncMessage::FileVoteKeep`, `SyncMessage::FileUnvoteKeep`) | Must | ✅ |
+| R13.3 | 86% Vote Ratio Consensus: Community deletion requires $D \ge 3$ delete votes and a delete ratio of $\ge 86\%$ ($D / (D + K) \ge 0.86$) | Must | ✅ |
+| R13.4 | 24-Hour Deletion Grace Period: When $\ge 86\%$ delete consensus is reached, the file is NOT immediately deleted; a 24-hour grace period (`deletion_scheduled_at`) begins | Must | ✅ |
+| R13.5 | Grace Period Defense: If keep votes added during the grace period drop the delete ratio below 86%, the scheduled deletion is automatically aborted | Must | ✅ |
+| R13.6 | Pending Deletion Warning: UI prominently displays workspace warning banners and row badges alerting students to files scheduled for deletion with time remaining and Defend action | Must | ✅ |
 
 ## R7 — Dependency Matrix
 

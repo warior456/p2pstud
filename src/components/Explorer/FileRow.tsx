@@ -15,7 +15,10 @@ import {
   AlertTriangle,
   User,
   Vote,
-  Sprout
+  Sprout,
+  FolderInput,
+  Shield,
+  Clock
 } from 'lucide-react';
 import { FileEntry } from '../../types';
 
@@ -31,7 +34,11 @@ interface FileRowProps {
   onDelete?: (hash: string) => void;
   onVoteDelete?: (hash: string) => void;
   onUnvoteDelete?: (hash: string) => void;
+  onVoteKeep?: (hash: string) => void;
+  onUnvoteKeep?: (hash: string) => void;
   onEvictLocal?: (hash: string) => void;
+  onMove?: (hash: string) => void;
+  onMoveToFolder?: (sourceHash: string, targetFolderName: string) => void;
 }
 
 function formatBytes(bytes: number): string {
@@ -54,15 +61,33 @@ export const FileRow: React.FC<FileRowProps> = ({
   onDelete,
   onVoteDelete,
   onUnvoteDelete,
+  onVoteKeep,
+  onUnvoteKeep,
   onEvictLocal,
+  onMove,
+  onMoveToFolder,
 }) => {
   const [menuOpen, setMenuOpen] = useState(false);
+  const [isDragTarget, setIsDragTarget] = useState(false);
 
   const isOwner = Boolean(
     file.owner_node_id && currentUserId && file.owner_node_id === currentUserId
   );
+  const isSoleSeed = (file.seeds_count ?? 1) <= 1;
   const deleteVotes = file.delete_votes || [];
+  const keepVotes = file.keep_votes || [];
   const hasVotedDelete = Boolean(currentUserId && deleteVotes.includes(currentUserId));
+  const hasVotedKeep = Boolean(currentUserId && keepVotes.includes(currentUserId));
+
+  const totalVotes = deleteVotes.length + keepVotes.length;
+  const deleteRatio = totalVotes > 0 ? Math.round((deleteVotes.length / totalVotes) * 100) : 0;
+
+  const nowSecs = Math.floor(Date.now() / 1000);
+  const isScheduledForDeletion = Boolean(file.deletion_scheduled_at && file.deletion_scheduled_at > nowSecs);
+  const remainingSecs = isScheduledForDeletion ? ((file.deletion_scheduled_at || 0) - nowSecs) : 0;
+  const remainingHours = Math.floor(remainingSecs / 3600);
+  const remainingMins = Math.floor((remainingSecs % 3600) / 60);
+  const timeRemaining = remainingHours > 0 ? `${remainingHours}h ${remainingMins}m` : `${remainingMins}m`;
 
   const handleContextMenu = (e: React.MouseEvent) => {
     e.preventDefault();
@@ -112,9 +137,39 @@ export const FileRow: React.FC<FileRowProps> = ({
     <div
       onClick={onClick}
       onContextMenu={handleContextMenu}
-      className={`group flex items-center justify-between px-4 py-3 hover:bg-gray-50 border-b border-gray-100 cursor-pointer relative ${
+      draggable={!file.is_dir}
+      onDragStart={(e) => {
+        if (!file.is_dir) {
+          e.dataTransfer.setData('text/p2pstud-hash', file.hash);
+          e.dataTransfer.setData('text/plain', file.name);
+        }
+      }}
+      onDragOver={(e) => {
+        if (file.is_dir) {
+          e.preventDefault();
+          e.stopPropagation();
+          setIsDragTarget(true);
+        }
+      }}
+      onDragLeave={() => {
+        if (file.is_dir) {
+          setIsDragTarget(false);
+        }
+      }}
+      onDrop={(e) => {
+        if (file.is_dir) {
+          e.preventDefault();
+          e.stopPropagation();
+          setIsDragTarget(false);
+          const hash = e.dataTransfer.getData('text/p2pstud-hash');
+          if (hash && onMoveToFolder) {
+            onMoveToFolder(hash, file.name);
+          }
+        }
+      }}
+      className={`group flex items-center justify-between px-4 py-3 hover:bg-gray-50 border-b border-gray-100 cursor-pointer relative transition-all ${
         isSelected ? 'bg-blue-50/50' : ''
-      }`}
+      } ${isDragTarget ? 'bg-blue-100/70 border-blue-400 ring-2 ring-blue-400/50' : ''}`}
     >
       <div className="flex items-center gap-3 overflow-hidden">
         {file.is_dir ? (
@@ -125,14 +180,43 @@ export const FileRow: React.FC<FileRowProps> = ({
         <div className="flex flex-col truncate">
           <div className="flex items-center gap-2 truncate">
             <span className="text-sm font-medium text-gray-800 truncate">{file.name}</span>
-            {deleteVotes.length > 0 && (
+            {isScheduledForDeletion ? (
+              <span
+                className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold bg-red-100 text-red-800 border border-red-300 animate-pulse"
+                title={`Consensus reached (>= 86%). Scheduled for permanent deletion in ${timeRemaining}. Cast a Keep vote to defend and rescue this file!`}
+              >
+                <Clock className="w-3 h-3 text-red-600" />
+                ⚠️ Deleting in {timeRemaining} ({deleteVotes.length}🗑️ / {keepVotes.length}🛡️)
+              </span>
+            ) : deleteVotes.length > 0 ? (
               <span
                 className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-amber-100 text-amber-800 border border-amber-300"
-                title={`${deleteVotes.length} student(s) voted to delete this file. Requires 3 votes for consensus deletion.`}
+                title={`${deleteVotes.length} delete vote(s), ${keepVotes.length} keep vote(s). Delete consensus: ${deleteRatio}%. Deletion requires >= 3 delete votes and >= 86% ratio.`}
               >
                 <AlertTriangle className="w-3 h-3 text-amber-600" />
-                {deleteVotes.length}/3 delete votes
+                {deleteVotes.length}🗑️ {keepVotes.length > 0 ? `| ${keepVotes.length}🛡️` : ''} ({deleteRatio}%)
               </span>
+            ) : null}
+            {!file.is_dir && !isOwner && (isScheduledForDeletion || deleteVotes.length > 0) && (
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  if (hasVotedKeep) {
+                    if (onUnvoteKeep) onUnvoteKeep(file.hash);
+                  } else {
+                    if (onVoteKeep) onVoteKeep(file.hash);
+                  }
+                }}
+                className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium transition-colors shadow-2xs ${
+                  hasVotedKeep
+                    ? 'bg-emerald-600 text-white hover:bg-emerald-700'
+                    : 'bg-emerald-50 text-emerald-700 border border-emerald-300 hover:bg-emerald-100'
+                }`}
+                title={hasVotedKeep ? 'Click to retract your keep vote' : 'Click to vote to keep and defend this file from deletion'}
+              >
+                <Shield className="w-2.5 h-2.5" />
+                {hasVotedKeep ? 'Defending' : 'Defend'}
+              </button>
             )}
             {!file.is_dir && file.seeds_count !== undefined && (
               <span
@@ -252,16 +336,48 @@ export const FileRow: React.FC<FileRowProps> = ({
                 </button>
               )}
 
+              {onMove && (
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setMenuOpen(false);
+                    onMove(file.hash);
+                  }}
+                  className="w-full text-left px-3 py-1.5 flex items-center gap-2 hover:bg-gray-100 text-gray-700"
+                >
+                  <FolderInput className="w-3.5 h-3.5 text-blue-600" /> Move to Folder...
+                </button>
+              )}
+
               {file.sync_state !== 'cloud_only' && onEvictLocal && (
                 <button
                   onClick={(e) => {
                     e.stopPropagation();
+                    if (isSoleSeed) {
+                      alert(
+                        `Cannot remove "${file.name}" from local disk: You are currently the ONLY active seed in the swarm!\n\nIf you delete your copy, this file will be permanently lost for all students. Wait until at least one other peer caches it, or vote to delete the file if it is no longer needed.`
+                      );
+                      return;
+                    }
                     onEvictLocal(file.hash);
                     setMenuOpen(false);
                   }}
-                  className="w-full text-left px-3 py-1.5 flex items-center gap-2 hover:bg-gray-100 text-gray-700"
+                  className={`w-full text-left px-3 py-1.5 flex items-center gap-2 hover:bg-gray-100 ${
+                    isSoleSeed ? 'text-gray-400' : 'text-gray-700'
+                  }`}
+                  title={
+                    isSoleSeed
+                      ? 'You are the only active seed! Eviction is blocked to prevent permanent file loss.'
+                      : 'Remove local copy to free space; file stays in cloud catalog'
+                  }
                 >
-                  <HardDriveDownload className="w-3.5 h-3.5 text-gray-500" /> Free Local Disk Space
+                  <HardDriveDownload className={`w-3.5 h-3.5 ${isSoleSeed ? 'text-amber-500' : 'text-gray-500'}`} />
+                  <span>Free Local Disk Space</span>
+                  {isSoleSeed && (
+                    <span className="ml-auto text-[9px] font-semibold text-amber-700 bg-amber-50 px-1 py-0.5 rounded border border-amber-200">
+                      Sole Seed
+                    </span>
+                  )}
                 </button>
               )}
 
@@ -292,6 +408,32 @@ export const FileRow: React.FC<FileRowProps> = ({
                 </button>
               ) : (
                 <>
+                  {hasVotedKeep ? (
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        if (onUnvoteKeep) onUnvoteKeep(file.hash);
+                        setMenuOpen(false);
+                      }}
+                      className="w-full text-left px-3 py-1.5 flex items-center gap-2 hover:bg-emerald-50 text-emerald-800 font-medium"
+                      title="Retract your vote to keep this file"
+                    >
+                      <Shield className="w-3.5 h-3.5 text-emerald-600 fill-emerald-600" /> Retract Keep Vote ({keepVotes.length} 🛡️)
+                    </button>
+                  ) : (
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        if (onVoteKeep) onVoteKeep(file.hash);
+                        setMenuOpen(false);
+                      }}
+                      className="w-full text-left px-3 py-1.5 flex items-center gap-2 hover:bg-emerald-50 text-emerald-800 font-medium"
+                      title="Vote to KEEP/DEFEND this file against community deletion"
+                    >
+                      <Shield className="w-3.5 h-3.5 text-emerald-600" /> Defend / Vote to Keep ({keepVotes.length} 🛡️)
+                    </button>
+                  )}
+
                   {hasVotedDelete ? (
                     <button
                       onClick={(e) => {
@@ -302,7 +444,7 @@ export const FileRow: React.FC<FileRowProps> = ({
                       className="w-full text-left px-3 py-1.5 flex items-center gap-2 hover:bg-amber-50 text-amber-800 font-medium"
                       title="Retract your vote to delete this file"
                     >
-                      <Vote className="w-3.5 h-3.5 text-amber-600" /> Retract Delete Vote ({deleteVotes.length}/3)
+                      <Vote className="w-3.5 h-3.5 text-amber-600" /> Retract Delete Vote ({deleteVotes.length} 🗑️)
                     </button>
                   ) : (
                     <button
@@ -312,9 +454,9 @@ export const FileRow: React.FC<FileRowProps> = ({
                         setMenuOpen(false);
                       }}
                       className="w-full text-left px-3 py-1.5 flex items-center gap-2 hover:bg-amber-50 text-amber-800 font-medium"
-                      title="Vote to delete this file. Requires 3 community votes to purge."
+                      title="Vote to delete this file. Requires 3 community votes and >= 86% ratio to schedule deletion."
                     >
-                      <Vote className="w-3.5 h-3.5 text-amber-600" /> Vote to Delete ({deleteVotes.length}/3)
+                      <Vote className="w-3.5 h-3.5 text-amber-600" /> Vote to Delete ({deleteVotes.length} 🗑️)
                     </button>
                   )}
                 </>

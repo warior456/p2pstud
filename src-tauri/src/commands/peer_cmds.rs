@@ -147,7 +147,7 @@ pub async fn connect_peer(
     let _ = state.db.set_setting("bootstrap_peer", node_id.trim());
 
     // Synchronize workspace catalog immediately
-    let _ = sync_catalog_with_peer(&engine.endpoint, &state.db, addr).await;
+    let _ = sync_catalog_with_peer(&engine.endpoint, &state.db, Some(&engine.store), addr).await;
 
     tracing::info!(node_id = %node_id, "Connected to peer and synchronized catalog successfully");
     Ok(())

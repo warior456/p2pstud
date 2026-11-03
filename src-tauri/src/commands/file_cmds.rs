@@ -7,8 +7,9 @@ use iroh_blobs::BlobFormat;
 
 use crate::p2p::sync::{broadcast_catalog_event, SyncMessage};
 use crate::storage::blob_tracker::{
-    cast_delete_vote, delete_blob, get_blob, list_all_blobs, record_peer_seed, remove_delete_vote,
-    set_pinned, touch_blob, upsert_blob, BlobRecord, DELETE_VOTE_QUORUM,
+    cast_delete_vote, cast_keep_vote, delete_blob, get_blob, get_seed_count, list_all_blobs,
+    record_peer_seed, remove_delete_vote, remove_keep_vote, rename_blob, set_pinned, touch_blob,
+    upsert_blob, BlobRecord,
 };
 use crate::storage::hosting_worker::is_blob_cached;
 use crate::AppState;
@@ -19,9 +20,17 @@ pub async fn list_files(state: State<'_, AppState>) -> Result<Vec<BlobRecord>, S
     let mut blobs = list_all_blobs(&state.db).map_err(|e| e.to_string())?;
     let guard = state.engine.read().await;
     if let Some(engine) = guard.as_ref() {
+        let my_node_id = engine.node_id().to_string();
         for blob in &mut blobs {
             if let Ok(parsed_hash) = blob.hash.parse::<iroh_blobs::Hash>() {
                 blob.is_cached = is_blob_cached(&engine.store, &parsed_hash).await;
+                blob.seed_count = get_seed_count(
+                    &state.db,
+                    &blob.hash,
+                    Some(&my_node_id),
+                    blob.is_cached,
+                )
+                .unwrap_or(0);
             }
         }
     }
@@ -121,6 +130,18 @@ pub async fn read_file_bytes(
 
             // Record dynamic network download throughput
             state.bandwidth.record_download(downloaded.len() as u64);
+
+            // Broadcast to swarm that this node is now actively seeding this blob!
+            let my_node_id = engine.node_id().to_string();
+            broadcast_catalog_event(
+                &engine.endpoint,
+                SyncMessage::FileSeeded {
+                    hash: hash.clone(),
+                    seeder_node_id: my_node_id,
+                },
+            )
+            .await;
+
             downloaded
         }
     };
@@ -231,6 +252,8 @@ pub async fn add_file(local_path: String, state: State<'_, AppState>) -> Result<
         is_pinned: false,
         owner_node_id: Some(owner_node_id.clone()),
         delete_votes: Vec::new(),
+        keep_votes: Vec::new(),
+        deletion_scheduled_at: None,
         seed_count: 1,
         is_cached: true,
     };
@@ -299,6 +322,8 @@ pub async fn upload_file_bytes(
         is_pinned: false,
         owner_node_id: Some(owner_node_id.clone()),
         delete_votes: Vec::new(),
+        keep_votes: Vec::new(),
+        deletion_scheduled_at: None,
         seed_count: 1,
         is_cached: true,
     };
@@ -355,7 +380,8 @@ pub async fn delete_file(
 }
 
 /// Cast a vote to mark a file for deletion.
-/// Once quorum (3 community votes) is reached, the file is consensus-purged from the workspace.
+/// Deletion requires >= 3 delete votes AND >= 86% delete consensus.
+/// Even upon reaching this ratio, a 24-hour grace period begins, allowing peers to defend/keep the file.
 #[tauri::command]
 pub async fn vote_delete_file(
     hash: String,
@@ -381,32 +407,7 @@ pub async fn vote_delete_file(
     )
     .await;
 
-    tracing::info!(hash = %hash, voter = %my_node_id, total_votes = votes, "Voted to delete file");
-
-    if votes >= DELETE_VOTE_QUORUM {
-        tracing::info!(hash = %hash, "Quorum of {} votes reached: consensus purging file", DELETE_VOTE_QUORUM);
-
-        // Delete record from SQLite
-        delete_blob(&state.db, &hash).map_err(|e| e.to_string())?;
-
-        // Delete blob data from local Iroh store
-        if let Ok(parsed_hash) = hash.parse::<iroh_blobs::Hash>() {
-            let _ = engine.blobs.clone().client().delete_blob(parsed_hash).await;
-        }
-
-        // Broadcast deletion event to the swarm
-        broadcast_catalog_event(
-            &engine.endpoint,
-            SyncMessage::FileDeleted {
-                hash: hash.clone(),
-                deleter_node_id: format!("consensus:{votes}_votes"),
-            },
-        )
-        .await;
-
-        return Ok(0); // 0 indicates the file was purged by reaching quorum
-    }
-
+    tracing::info!(hash = %hash, voter = %my_node_id, total_delete_votes = votes, "Voted to delete file");
     Ok(votes)
 }
 
@@ -435,14 +436,121 @@ pub async fn unvote_delete_file(
     Ok(votes)
 }
 
+/// Cast a vote to KEEP / DEFEND a file against deletion.
+/// Keep votes increase the defense quorum and will abort a scheduled deletion if ratio falls below 86%.
+#[tauri::command]
+pub async fn vote_keep_file(
+    hash: String,
+    state: State<'_, AppState>,
+) -> Result<usize, String> {
+    let _blob = get_blob(&state.db, &hash)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("file '{hash}' not found in workspace"))?;
+
+    let guard = state.engine.read().await;
+    let engine = guard.as_ref().ok_or("Iroh engine not yet started")?;
+    let my_node_id = engine.node_id().to_string();
+
+    let votes = cast_keep_vote(&state.db, &hash, &my_node_id).map_err(|e| e.to_string())?;
+
+    // Broadcast keep vote to all connected swarm peers
+    broadcast_catalog_event(
+        &engine.endpoint,
+        SyncMessage::FileVoteKeep {
+            hash: hash.clone(),
+            voter_node_id: my_node_id.clone(),
+        },
+    )
+    .await;
+
+    tracing::info!(hash = %hash, voter = %my_node_id, total_keep_votes = votes, "Voted to keep/defend file");
+    Ok(votes)
+}
+
+/// Retract a previously cast keep vote.
+#[tauri::command]
+pub async fn unvote_keep_file(
+    hash: String,
+    state: State<'_, AppState>,
+) -> Result<usize, String> {
+    let guard = state.engine.read().await;
+    let engine = guard.as_ref().ok_or("Iroh engine not yet started")?;
+    let my_node_id = engine.node_id().to_string();
+
+    let votes = remove_keep_vote(&state.db, &hash, &my_node_id).map_err(|e| e.to_string())?;
+
+    // Broadcast unvote to all swarm peers
+    broadcast_catalog_event(
+        &engine.endpoint,
+        SyncMessage::FileUnvoteKeep {
+            hash: hash.clone(),
+            voter_node_id: my_node_id,
+        },
+    )
+    .await;
+
+    Ok(votes)
+}
+
 /// Evict a blob from the local device's cache without deleting it from the cloud catalog.
+/// PREVENTED if the local node is the only active seed in the swarm to avoid irrecoverable data loss.
 #[tauri::command]
 pub async fn evict_local_file(hash: String, state: State<'_, AppState>) -> Result<(), String> {
     let guard = state.engine.read().await;
     let engine = guard.as_ref().ok_or("Iroh engine not yet started")?;
+    let my_node_id = engine.node_id().to_string();
+
+    // User requirement: "don't allow removing from disc if you're the only active seed"
+    let remote_seeds = get_seed_count(&state.db, &hash, Some(&my_node_id), false).map_err(|e| e.to_string())?;
+    if remote_seeds == 0 {
+        return Err(
+            "Cannot remove file from disk: You are the ONLY active seed in the swarm! Deleting your copy would permanently destroy this file for all students. Wait until another peer caches it, or vote to delete the file if it is no longer needed."
+                .to_string(),
+        );
+    }
 
     if let Ok(parsed_hash) = hash.parse::<iroh_blobs::Hash>() {
         let _ = engine.blobs.clone().client().delete_blob(parsed_hash).await;
+    }
+
+    // Broadcast to the swarm that this node is no longer seeding this blob
+    broadcast_catalog_event(
+        &engine.endpoint,
+        SyncMessage::FileUnseeded {
+            hash: hash.clone(),
+            seeder_node_id: my_node_id,
+        },
+    )
+    .await;
+
+    Ok(())
+}
+
+/// Move or rename a file to a new workspace path.
+#[tauri::command]
+pub async fn move_file(
+    hash: String,
+    new_path: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let clean_path = new_path.trim().trim_matches('/').to_string();
+    if clean_path.is_empty() {
+        return Err("Destination path cannot be empty".to_string());
+    }
+
+    rename_blob(&state.db, &hash, &clean_path).map_err(|e| e.to_string())?;
+
+    // Broadcast file moved event to connected peers
+    let guard = state.engine.read().await;
+    if let Some(engine) = guard.as_ref() {
+        broadcast_catalog_event(
+            &engine.endpoint,
+            SyncMessage::FileMoved {
+                hash,
+                new_name: clean_path,
+            },
+        )
+        .await;
     }
 
     Ok(())

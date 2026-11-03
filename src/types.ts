@@ -8,6 +8,8 @@ export interface FileEntry {
   owner_node_id?: string;
   last_accessed_at?: number;
   delete_votes?: string[]; // Node IDs who voted to mark this file for deletion
+  keep_votes?: string[]; // Node IDs who voted to KEEP/DEFEND this file against deletion
+  deletion_scheduled_at?: number; // Unix timestamp when file will be permanently deleted (grace period)
   seeds_count?: number; // Active peer seeds hosting this file
   item_count?: number; // For virtual folders: number of nested items
 }

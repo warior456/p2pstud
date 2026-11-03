@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { render, screen, fireEvent } from '@testing-library/react';
 import { describe, it, expect, vi } from 'vitest';
 import { FileRow } from '../components/Explorer/FileRow';
 import { FileEntry } from '../types';
@@ -72,7 +72,24 @@ describe('FileRow Component', () => {
 
     render(<FileRow file={votedFile} {...dummyProps} />);
 
-    expect(screen.getByText(/2\/3 delete votes/i)).toBeInTheDocument();
+    expect(screen.getByText(/2\s*🗑️/)).toBeInTheDocument();
+    expect(screen.getByText(/Defend/i)).toBeInTheDocument();
+  });
+
+  it('renders pending deletion grace period warning badge when scheduled', () => {
+    const pendingFile: FileEntry = {
+      name: 'Soon-Deleted.pdf',
+      hash: 'sched999',
+      size_bytes: 524288,
+      is_dir: false,
+      sync_state: 'cloud_only',
+      delete_votes: ['peer1', 'peer2', 'peer3'],
+      deletion_scheduled_at: Math.floor(Date.now() / 1000) + 7200,
+    };
+
+    render(<FileRow file={pendingFile} {...dummyProps} />);
+
+    expect(screen.getByText(/Deleting in/i)).toBeInTheDocument();
   });
 
   it('renders seed count badge with rare indicator when seeds <= 1', () => {
@@ -105,5 +122,60 @@ describe('FileRow Component', () => {
     expect(screen.getByText('ComputerScience')).toBeInTheDocument();
     expect(screen.getByText(/5 items/i)).toBeInTheDocument();
     expect(screen.getByText('Folder')).toBeInTheDocument();
+  });
+
+  it('renders move to folder action in context menu and calls onMove', () => {
+    const onMove = vi.fn();
+    const testFile: FileEntry = {
+      name: 'AlgorithmNotes.pdf',
+      hash: 'algo999',
+      size_bytes: 1048576,
+      is_dir: false,
+      sync_state: 'cached',
+    };
+
+    render(<FileRow file={testFile} {...dummyProps} onMove={onMove} />);
+
+    // Open context menu
+    const menuBtn = screen.getByRole('button');
+    fireEvent.click(menuBtn);
+
+    const moveOption = screen.getByText(/Move to Folder\.\.\./i);
+    expect(moveOption).toBeInTheDocument();
+    fireEvent.click(moveOption);
+
+    expect(onMove).toHaveBeenCalledWith('algo999');
+  });
+
+  it('shows sole seed protection and prevents local eviction when seeds <= 1', () => {
+    const alertMock = vi.spyOn(window, 'alert').mockImplementation(() => {});
+    const onEvictLocal = vi.fn();
+    const soleSeedFile: FileEntry = {
+      name: 'Sole-Copy.pdf',
+      hash: 'sole111',
+      size_bytes: 2048576,
+      is_dir: false,
+      sync_state: 'cached',
+      seeds_count: 1, // Sole active seed!
+    };
+
+    render(<FileRow file={soleSeedFile} {...dummyProps} onEvictLocal={onEvictLocal} />);
+
+    // Open context menu
+    const menuBtn = screen.getByRole('button');
+    fireEvent.click(menuBtn);
+
+    const evictBtn = screen.getByText(/Free Local Disk Space/i);
+    expect(screen.getByText('Sole Seed')).toBeInTheDocument();
+
+    fireEvent.click(evictBtn);
+
+    // Eviction must be blocked and alert shown!
+    expect(alertMock).toHaveBeenCalledWith(
+      expect.stringContaining('You are currently the ONLY active seed in the swarm')
+    );
+    expect(onEvictLocal).not.toHaveBeenCalled();
+
+    alertMock.mockRestore();
   });
 });

@@ -3,7 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { StorageStats } from '../types';
 import { useInterval } from './useInterval';
 
-export function useStorageStats(intervalMs = 5000) {
+export function useStorageStats(intervalMs = 1000) {
   const [stats, setStats] = useState<StorageStats | null>(null);
   const [error, setError] = useState<string | null>(null);
 

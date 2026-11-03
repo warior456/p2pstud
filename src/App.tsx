@@ -29,6 +29,8 @@ interface BlobRecord {
   is_pinned: boolean;
   owner_node_id: string | null;
   delete_votes?: string[];
+  keep_votes?: string[];
+  deletion_scheduled_at?: number | null;
   seed_count?: number;
   is_cached?: boolean;
 }
@@ -62,6 +64,8 @@ export default function App() {
             owner_node_id: r.owner_node_id || undefined,
             last_accessed_at: r.last_accessed_at,
             delete_votes: r.delete_votes || [],
+            keep_votes: r.keep_votes || [],
+            deletion_scheduled_at: r.deletion_scheduled_at ?? undefined,
             seeds_count: r.seed_count ?? 1,
           }))
         );
@@ -74,7 +78,7 @@ export default function App() {
   useEffect(() => {
     loadWorkspaceFiles();
     // Periodically poll catalog so peers' uploads appear automatically
-    const interval = setInterval(loadWorkspaceFiles, 3500);
+    const interval = setInterval(loadWorkspaceFiles, 2000);
     return () => clearInterval(interval);
   }, []);
 
@@ -207,20 +211,15 @@ export default function App() {
     const fileName = file?.name || hash.slice(0, 8);
     if (
       !confirm(
-        `Vote to mark "${fileName}" for deletion?\n\nThis records your vote. When 3 community members vote to delete an orphaned or unwanted file, it is automatically purged from the workspace.`
+        `Vote to mark "${fileName}" for deletion?\n\nThis records your vote. Deletion requires at least 3 delete votes and an 86% community consensus ratio. Once reached, a 24-hour grace period allows peers to defend/keep the file before permanent removal.`
       )
     ) {
       return;
     }
 
     try {
-      const remainingOrStatus = await invoke<number>('vote_delete_file', { hash });
-      if (remainingOrStatus === 0) {
-        alert(`Consensus reached! "${fileName}" has received 3 delete votes and was purged from the workspace.`);
-        setFiles((prev) => prev.filter((f) => f.hash !== hash));
-      } else {
-        await loadWorkspaceFiles();
-      }
+      await invoke<number>('vote_delete_file', { hash });
+      await loadWorkspaceFiles();
       refetchStats();
     } catch (err) {
       console.error('Vote delete error:', err);
@@ -239,7 +238,37 @@ export default function App() {
     }
   };
 
+  const handleVoteKeep = async (hash: string) => {
+    try {
+      await invoke<number>('vote_keep_file', { hash });
+      await loadWorkspaceFiles();
+      refetchStats();
+    } catch (err) {
+      console.error('Vote keep error:', err);
+      alert(`Vote to keep failed: ${err}`);
+    }
+  };
+
+  const handleUnvoteKeep = async (hash: string) => {
+    try {
+      await invoke<number>('unvote_keep_file', { hash });
+      await loadWorkspaceFiles();
+      refetchStats();
+    } catch (err) {
+      console.error('Unvote keep error:', err);
+      alert(`Unvote keep failed: ${err}`);
+    }
+  };
+
   const handleEvictLocal = async (hash: string) => {
+    const file = files.find((f) => f.hash === hash);
+    if (file && (file.seeds_count ?? 1) <= 1) {
+      alert(
+        `Cannot remove "${file.name}" from local disk: You are currently the ONLY active seed in the swarm!\n\nIf you delete your copy, this file will be permanently lost for all students. Wait until at least one other peer caches it, or vote to delete the file if it is no longer needed.`
+      );
+      return;
+    }
+
     try {
       await invoke('evict_local_file', { hash });
       setFiles((prev) =>
@@ -249,6 +278,66 @@ export default function App() {
     } catch (err) {
       alert(`Failed to free local space: ${err}`);
     }
+  };
+
+  const handleMoveFile = async (hash: string, targetFolderPath: string) => {
+    const file = files.find((f) => f.hash === hash);
+    if (!file) return;
+
+    // Extract basename from existing name
+    const basename = file.name.split('/').pop() || file.name;
+    const cleanFolder = targetFolderPath.trim().replace(/^\/+|\/+$/g, '');
+    const newPath = cleanFolder ? `${cleanFolder}/${basename}` : basename;
+
+    if (newPath === file.name) return; // Unchanged
+
+    try {
+      await invoke('move_file', { hash, newPath });
+      await loadWorkspaceFiles();
+    } catch (err) {
+      console.error('Move file error:', err);
+      alert(`Failed to move file: ${err}`);
+    }
+  };
+
+  const handlePromptMove = async (hash: string) => {
+    const file = files.find((f) => f.hash === hash);
+    if (!file) return;
+
+    // Collect all existing directory paths across all files + custom folders
+    const knownFolders = new Set<string>();
+    for (const f of files) {
+      if (f.name.includes('/')) {
+        const parts = f.name.split('/');
+        parts.pop(); // remove filename
+        let acc = '';
+        for (const p of parts) {
+          acc = acc ? `${acc}/${p}` : p;
+          knownFolders.add(acc);
+        }
+      }
+    }
+    for (const cf of customFolders) {
+      knownFolders.add(cf);
+    }
+
+    const folderList = Array.from(knownFolders).sort();
+    const folderHelp = folderList.length > 0 
+      ? `\n\nAvailable folders:\n- (leave empty for Root)\n` + folderList.map((f) => `- ${f}`).join('\n')
+      : '\n\nEnter folder name (or leave empty for Root)';
+
+    const destination = prompt(
+      `Move "${file.name}" to folder:${folderHelp}`,
+      currentPrefix.replace(/\/$/, '')
+    );
+
+    if (destination === null) return; // User cancelled
+    await handleMoveFile(hash, destination.trim());
+  };
+
+  const handleMoveToFolder = async (sourceHash: string, targetFolderName: string) => {
+    const targetPath = currentPrefix ? `${currentPrefix}${targetFolderName}` : targetFolderName;
+    await handleMoveFile(sourceHash, targetPath);
   };
 
   const handleSelectFile = async (file: FileEntry) => {
@@ -326,7 +415,7 @@ export default function App() {
       console.error('Download error:', err);
       alert(`Download failed: ${err}`);
       setFiles((prev) =>
-        prev.map((f) => (f.hash === hash ? { ...f, sync_state: 'cached' } : f))
+        prev.map((f) => (f.hash === hash ? { ...f, sync_state: 'cloud_only' } : f))
       );
     }
   };
@@ -563,7 +652,11 @@ export default function App() {
                 onDelete={handleDelete}
                 onVoteDelete={handleVoteDelete}
                 onUnvoteDelete={handleUnvoteDelete}
+                onVoteKeep={handleVoteKeep}
+                onUnvoteKeep={handleUnvoteKeep}
                 onEvictLocal={handleEvictLocal}
+                onMove={handlePromptMove}
+                onMoveToFolder={handleMoveToFolder}
                 onFileUploaded={() => {
                   loadWorkspaceFiles();
                   refetchStats();

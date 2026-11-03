@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { UploadCloud, Plus, FolderPlus, ArrowLeft, Loader2 } from 'lucide-react';
+import { UploadCloud, Plus, FolderPlus, ArrowLeft, Loader2, AlertTriangle, Shield } from 'lucide-react';
 import { FileEntry, UploadItem } from '../../types';
 import { FileRow } from './FileRow';
 
@@ -20,10 +20,14 @@ interface FileTreeProps {
   onDelete?: (hash: string) => void;
   onVoteDelete?: (hash: string) => void;
   onUnvoteDelete?: (hash: string) => void;
+  onVoteKeep?: (hash: string) => void;
+  onUnvoteKeep?: (hash: string) => void;
   onEvictLocal?: (hash: string) => void;
   onFileUploaded?: (hash: string) => void;
   onTriggerUpload?: () => void;
   onUploadFiles?: (files: FileList | File[]) => void;
+  onMove?: (hash: string) => void;
+  onMoveToFolder?: (sourceHash: string, targetFolderName: string) => void;
 }
 
 function formatBytes(bytes: number): string {
@@ -51,9 +55,13 @@ export const FileTree: React.FC<FileTreeProps> = ({
   onDelete,
   onVoteDelete,
   onUnvoteDelete,
+  onVoteKeep,
+  onUnvoteKeep,
   onEvictLocal,
   onTriggerUpload,
   onUploadFiles,
+  onMove,
+  onMoveToFolder,
 }) => {
   const [isDragging, setIsDragging] = useState(false);
 
@@ -82,6 +90,11 @@ export const FileTree: React.FC<FileTreeProps> = ({
     (item) => item.status === 'reading' || item.status === 'uploading'
   );
 
+  const nowSecs = Math.floor(Date.now() / 1000);
+  const pendingDeletionFiles = files.filter(
+    (f) => !f.is_dir && f.deletion_scheduled_at && f.deletion_scheduled_at > nowSecs
+  );
+
   return (
     <div
       onDragOver={handleDragOver}
@@ -91,6 +104,23 @@ export const FileTree: React.FC<FileTreeProps> = ({
         isDragging ? 'bg-blue-50/50 border-2 border-dashed border-blue-400' : ''
       }`}
     >
+      {/* Pending Community Deletion Swarm Warning Banner */}
+      {pendingDeletionFiles.length > 0 && (
+        <div className="bg-red-50 border-b border-red-200 px-4 py-2.5 flex items-center justify-between text-xs text-red-900 shadow-2xs">
+          <div className="flex items-center gap-2">
+            <AlertTriangle className="w-4 h-4 text-red-600 shrink-0 animate-bounce" />
+            <span>
+              <strong>Pending Community Deletion:</strong> {pendingDeletionFiles.length}{' '}
+              {pendingDeletionFiles.length === 1 ? 'file has' : 'files have'} reached the 86% delete consensus and will be permanently deleted after the 24h grace period. Review and click <strong>Defend</strong> to keep files you need!
+            </span>
+          </div>
+          <div className="flex items-center gap-1 font-semibold text-red-700 bg-red-100/80 px-2 py-0.5 rounded border border-red-300 shrink-0 ml-2">
+            <Shield className="w-3.5 h-3.5 text-red-600" />
+            <span>Grace Period Active</span>
+          </div>
+        </div>
+      )}
+
       {/* Action Toolbar */}
       <div className="flex items-center justify-between px-4 py-2 bg-gray-50/70 border-b border-gray-100 text-xs">
         <div className="flex items-center gap-2">
@@ -213,7 +243,11 @@ export const FileTree: React.FC<FileTreeProps> = ({
               onDelete={onDelete}
               onVoteDelete={onVoteDelete}
               onUnvoteDelete={onUnvoteDelete}
+              onVoteKeep={onVoteKeep}
+              onUnvoteKeep={onUnvoteKeep}
               onEvictLocal={onEvictLocal}
+              onMove={onMove}
+              onMoveToFolder={onMoveToFolder}
             />
           ))}
         </div>

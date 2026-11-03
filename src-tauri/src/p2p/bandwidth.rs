@@ -58,10 +58,20 @@ impl BandwidthTracker {
             let down_bps = (diff_down as f64 / elapsed).round() as u64;
 
             let mut cached_guard = self.cached_rates.lock().unwrap();
-            *cached_guard = (up_bps, down_bps);
+            let final_up = if up_bps > 0 {
+                up_bps
+            } else {
+                (cached_guard.0 as f64 * 0.4).round() as u64
+            };
+            let final_down = if down_bps > 0 {
+                down_bps
+            } else {
+                (cached_guard.1 as f64 * 0.4).round() as u64
+            };
 
+            *cached_guard = (final_up, final_down);
             *tick_guard = (now, total_up, total_down);
-            (up_bps, down_bps)
+            (final_up, final_down)
         } else {
             *self.cached_rates.lock().unwrap()
         }

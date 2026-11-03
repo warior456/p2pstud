@@ -13,6 +13,7 @@ use tokio::sync::RwLock;
 
 use crate::p2p::bandwidth::BandwidthTracker;
 use crate::p2p::engine::IrohEngine;
+use crate::p2p::sync::{broadcast_catalog_event, SyncMessage};
 use crate::storage::blob_tracker::{get_seed_count, list_all_blobs, touch_blob, BlobRecord};
 use crate::storage::db::Database;
 
@@ -87,9 +88,10 @@ pub async fn run_hosting_fill_pass(
     // Smart Cache Prioritization: Sort missing files by least seeds first!
     // Rare/endangered files with fewest seeders across the swarm are replicated first,
     // ensuring files with only 1 seed never disappear from the campus network.
+    let my_node_id = engine.node_id().to_string();
     let mut missing_with_seeds: Vec<(BlobRecord, usize)> = Vec::with_capacity(missing_blobs.len());
     for missing in missing_blobs {
-        let seeds = get_seed_count(db, &missing.hash, false).unwrap_or(1);
+        let seeds = get_seed_count(db, &missing.hash, Some(&my_node_id), false).unwrap_or(0);
         missing_with_seeds.push((missing, seeds));
     }
 
@@ -146,6 +148,17 @@ pub async fn run_hosting_fill_pass(
             if let Some(bw) = bandwidth {
                 bw.record_download(missing.size_bytes);
             }
+
+            // Broadcast to the swarm that this node is now actively seeding this blob!
+            broadcast_catalog_event(
+                &engine.endpoint,
+                SyncMessage::FileSeeded {
+                    hash: missing.hash.clone(),
+                    seeder_node_id: my_node_id.clone(),
+                },
+            )
+            .await;
+
             tracing::info!(
                 hash = %missing.hash,
                 name = ?missing.name,

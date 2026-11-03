@@ -77,6 +77,8 @@ At the end of every session (or when interrupted), update the `## Progress Track
 | 25 | Live Bandwidth Telemetry & Community Deletion Consensus Voting | ✅ | Real-time byte-rate tracker replaces static mock speeds; community vote-to-delete with 3-vote quorum |
 | 26 | Upload Queue Visual Indicator & Smart Least-Seeds Cache Auto-Fill | ✅ | Live upload queue drawer & file row progress; smart auto-fill prioritizing lowest seed counts |
 | 27 | Hierarchical Folder Support & Organization | ✅ | Virtual folder tree, directory navigation, "New Folder", folder-aware uploads & breadcrumb deep-linking |
+| 28 | File Moving & Sole Active Seed Disk Eviction Protection | ✅ | Drag-and-drop & context file moving with QUIC sync; prevent disk eviction if local node is sole seed |
+| 29 | Anti-Delete (Keep) Voting, 86% Consensus, 24h Grace Period & Offline Bundling | ✅ | Non-owners blocked from unilateral delete; Keep defense voting; 86% consensus ratio threshold; 24h grace period warning banner; offline-embedded release build |
 
 ---
 

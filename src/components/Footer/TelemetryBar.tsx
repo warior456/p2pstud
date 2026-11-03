@@ -1,5 +1,5 @@
 import React from 'react';
-import { ArrowUp, ArrowDown, Users, Database } from 'lucide-react';
+import { Users, Database } from 'lucide-react';
 import { StorageStats } from '../../types';
 
 interface TelemetryBarProps {
@@ -57,13 +57,13 @@ export const TelemetryBar: React.FC<TelemetryBarProps> = ({ stats, onOpenSetting
       </div>
 
       {/* Center: Live dynamic network speeds */}
-      <div className="flex items-center gap-4 text-gray-400 font-mono">
-        <div className="flex items-center gap-1">
-          <ArrowUp className="w-3.5 h-3.5 text-blue-400" />
+      <div className="flex items-center gap-5 font-mono text-xs">
+        <div className="flex items-center gap-1.5 text-blue-400 font-medium">
+          <span className="text-sm">↑</span>
           <span>{upSpeed}</span>
         </div>
-        <div className="flex items-center gap-1">
-          <ArrowDown className="w-3.5 h-3.5 text-emerald-400" />
+        <div className="flex items-center gap-1.5 text-emerald-400 font-medium">
+          <span className="text-sm">↓</span>
           <span>{downSpeed}</span>
         </div>
       </div>

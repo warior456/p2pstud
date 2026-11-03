@@ -66,7 +66,7 @@ impl IrohEngine {
         let router = Router::builder(endpoint);
         let blobs = Blobs::builder(store.clone()).build(pool.handle(), router.endpoint());
         let router = router.accept(iroh_blobs::ALPN, blobs.clone());
-        let sync_handler = Arc::new(CatalogSyncHandler::new(db.clone()));
+        let sync_handler = Arc::new(CatalogSyncHandler::new(db.clone(), Some(store.clone())));
         let router = router.accept(SYNC_ALPN, sync_handler);
         let endpoint = router.endpoint().clone();
         let running_router = router.spawn().await?;
@@ -75,6 +75,7 @@ impl IrohEngine {
         // Periodically connects to discovered nodes and synchronizes workspace catalogs.
         let bg_endpoint = endpoint.clone();
         let bg_db = db.clone();
+        let bg_store = store.clone();
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
             loop {
@@ -86,10 +87,10 @@ impl IrohEngine {
                     if !trimmed.is_empty() {
                         if let Ok(ticket) = trimmed.parse::<iroh::ticket::NodeTicket>() {
                             let _ = bg_endpoint.connect(ticket.node_addr().clone(), iroh_blobs::ALPN).await;
-                            let _ = sync_catalog_with_peer(&bg_endpoint, &bg_db, ticket.node_addr().clone()).await;
+                            let _ = sync_catalog_with_peer(&bg_endpoint, &bg_db, Some(&bg_store), ticket.node_addr().clone()).await;
                         } else if let Ok(id) = trimmed.parse::<NodeId>() {
                             let _ = bg_endpoint.connect(iroh::NodeAddr::new(id), iroh_blobs::ALPN).await;
-                            let _ = sync_catalog_with_peer(&bg_endpoint, &bg_db, iroh::NodeAddr::new(id)).await;
+                            let _ = sync_catalog_with_peer(&bg_endpoint, &bg_db, Some(&bg_store), iroh::NodeAddr::new(id)).await;
                         }
                     }
                 }
@@ -99,7 +100,7 @@ impl IrohEngine {
                 for remote in remotes {
                     let addr = iroh::NodeAddr::new(remote.node_id);
                     let _ = bg_endpoint.connect(addr.clone(), iroh_blobs::ALPN).await;
-                    let _ = sync_catalog_with_peer(&bg_endpoint, &bg_db, addr).await;
+                    let _ = sync_catalog_with_peer(&bg_endpoint, &bg_db, Some(&bg_store), addr).await;
                 }
             }
         });
