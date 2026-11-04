@@ -15,7 +15,7 @@ use iroh_blobs::util::local_pool::LocalPool;
 
 use crate::p2p::identity::load_or_create_secret_key;
 use crate::p2p::relay::parse_relay_url;
-use crate::p2p::sync::{sync_catalog_with_peer, CatalogSyncHandler, SYNC_ALPN};
+use crate::p2p::sync::{get_sync_alpn, sync_catalog_with_peer, CatalogSyncHandler};
 use crate::storage::db::Database;
 
 /// A running Iroh node with its blob store.
@@ -25,6 +25,7 @@ pub struct IrohEngine {
     pub endpoint: Endpoint,
     pub blobs: Arc<Blobs<BlobStore>>,
     pub store: BlobStore,
+    pub sync_alpn: Vec<u8>,
     _router: Arc<Router>,
     _pool: Arc<LocalPool>,
 }
@@ -63,11 +64,12 @@ impl IrohEngine {
             .bind()
             .await?;
 
+        let sync_alpn = get_sync_alpn(&db);
         let router = Router::builder(endpoint);
         let blobs = Blobs::builder(store.clone()).build(pool.handle(), router.endpoint());
         let router = router.accept(iroh_blobs::ALPN, blobs.clone());
         let sync_handler = Arc::new(CatalogSyncHandler::new(db.clone(), Some(store.clone())));
-        let router = router.accept(SYNC_ALPN, sync_handler);
+        let router = router.accept(sync_alpn.clone(), sync_handler);
         let endpoint = router.endpoint().clone();
         let running_router = router.spawn().await?;
 
@@ -109,6 +111,7 @@ impl IrohEngine {
             endpoint,
             blobs,
             store,
+            sync_alpn,
             _router: Arc::new(running_router),
             _pool: Arc::new(pool),
         })

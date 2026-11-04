@@ -7,9 +7,10 @@ import {
   Share2, 
   RefreshCw,
   Search,
-  Upload
+  Upload,
+  FileArchive
 } from 'lucide-react';
-import { FileEntry, UploadItem } from './types';
+import { FileEntry, UploadItem, ZipImportSummary } from './types';
 import { useStorageStats } from './hooks/useStorageStats';
 import { usePeerStatus } from './hooks/usePeerStatus';
 import { Breadcrumbs } from './components/Explorer/Breadcrumbs';
@@ -46,6 +47,8 @@ export default function App() {
   const [pdfData, setPdfData] = useState<Uint8Array | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const zipInputRef = useRef<HTMLInputElement>(null);
+  const [importingZip, setImportingZip] = useState<boolean>(false);
 
   const { stats, refetch: refetchStats } = useStorageStats();
   const { nodeId } = usePeerStatus();
@@ -145,6 +148,42 @@ export default function App() {
   const handleFileInputChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files.length > 0) {
       await handleUploadFiles(e.target.files);
+    }
+  };
+
+  const handleTriggerZipImport = () => {
+    zipInputRef.current?.click();
+  };
+
+  const handleZipInputChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setImportingZip(true);
+    try {
+      const buffer = await file.arrayBuffer();
+      const bytes = Array.from(new Uint8Array(buffer));
+      const targetFolder = currentPrefix.replace(/\/$/, '') || null;
+      const summary = await invoke<ZipImportSummary>('import_zip_bytes', {
+        data: bytes,
+        targetFolder,
+      });
+
+      const mb = (summary.total_bytes / (1024 * 1024)).toFixed(2);
+      let msg = `Successfully imported ${summary.files_imported} file(s) (${mb} MB) from ${file.name}.`;
+      if (summary.errors && summary.errors.length > 0) {
+        msg += `\n\n${summary.errors.length} file(s) failed or were skipped:\n` + summary.errors.slice(0, 3).join('\n');
+      }
+      alert(msg);
+      await loadWorkspaceFiles();
+      refetchStats();
+    } catch (err) {
+      alert(`ZIP import failed: ${err}`);
+    } finally {
+      setImportingZip(false);
+      if (zipInputRef.current) {
+        zipInputRef.current.value = '';
+      }
     }
   };
 
@@ -505,6 +544,13 @@ export default function App() {
         onChange={handleFileInputChange}
         className="hidden"
       />
+      <input
+        type="file"
+        ref={zipInputRef}
+        accept=".zip"
+        onChange={handleZipInputChange}
+        className="hidden"
+      />
 
       {/* Top Application Header */}
       <header className="h-14 bg-white border-b border-gray-200 px-4 flex items-center justify-between z-10">
@@ -536,6 +582,17 @@ export default function App() {
 
         {/* Global Action Buttons */}
         <div className="flex items-center gap-2">
+          {import.meta.env.DEV && (
+            <button
+              onClick={handleTriggerZipImport}
+              disabled={importingZip}
+              className="px-3 py-1.5 bg-amber-500 hover:bg-amber-600 text-white rounded-lg text-xs font-semibold flex items-center gap-1.5 shadow-xs transition-colors disabled:opacity-50"
+              title="Developer tool: Import a ZIP archive of files into the active folder"
+            >
+              <FileArchive className="w-3.5 h-3.5" />
+              {importingZip ? 'Importing ZIP...' : 'Import ZIP (Dev)'}
+            </button>
+          )}
           <button
             onClick={handleTriggerUpload}
             className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-semibold flex items-center gap-1.5 shadow-xs transition-colors"

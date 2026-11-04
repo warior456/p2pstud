@@ -38,3 +38,17 @@ export interface PeerInfo {
   relay_url?: string;
   latency_ms?: number;
 }
+
+export interface AppSettings {
+  relay_url: string;
+  cache_limit_bytes: number;
+  full_mirror: boolean;
+  node_id?: string;
+  network_secret: string;
+}
+
+export interface ZipImportSummary {
+  files_imported: number;
+  total_bytes: number;
+  errors: string[];
+}

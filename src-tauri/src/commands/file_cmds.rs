@@ -135,6 +135,7 @@ pub async fn read_file_bytes(
             let my_node_id = engine.node_id().to_string();
             broadcast_catalog_event(
                 &engine.endpoint,
+                &engine.sync_alpn,
                 SyncMessage::FileSeeded {
                     hash: hash.clone(),
                     seeder_node_id: my_node_id,
@@ -197,7 +198,7 @@ pub async fn add_file(local_path: String, state: State<'_, AppState>) -> Result<
     let file_name = path
         .file_name()
         .and_then(|n| n.to_str())
-        .map(|s| s.to_string());
+        .and_then(|n| crate::storage::path_utils::sanitize_virtual_path(n).ok());
 
     let data = std::fs::read(path).map_err(|e| format!("read failed: {e}"))?;
     let size_bytes = data.len() as u64;
@@ -257,7 +258,7 @@ pub async fn add_file(local_path: String, state: State<'_, AppState>) -> Result<
         seed_count: 1,
         is_cached: true,
     };
-    broadcast_catalog_event(&engine.endpoint, SyncMessage::FileAdded(record)).await;
+    broadcast_catalog_event(&engine.endpoint, &engine.sync_alpn, SyncMessage::FileAdded(record)).await;
 
     tracing::info!(hash = %hash, name = ?file_name, owner = %owner_node_id, bytes = size_bytes, "Added file to workspace");
     Ok(hash)
@@ -270,6 +271,10 @@ pub async fn upload_file_bytes(
     data: Vec<u8>,
     state: State<'_, AppState>,
 ) -> Result<String, String> {
+    // Sanitize virtual path
+    let clean_name = crate::storage::path_utils::sanitize_virtual_path(&name)
+        .map_err(|e| format!("Invalid filename: {e}"))?;
+
     let size_bytes = data.len() as u64;
 
     let guard = state.engine.read().await;
@@ -288,7 +293,7 @@ pub async fn upload_file_bytes(
     let _ = engine
         .store
         .set_tag(
-            iroh_blobs::Tag::from(name.as_str()),
+            iroh_blobs::Tag::from(clean_name.as_str()),
             Some(hash_and_format),
         )
         .await;
@@ -297,7 +302,7 @@ pub async fn upload_file_bytes(
     upsert_blob(
         &state.db,
         &hash,
-        Some(&name),
+        Some(&clean_name),
         size_bytes,
         false,
         Some(&owner_node_id),
@@ -313,7 +318,7 @@ pub async fn upload_file_bytes(
     // Broadcast file addition to the swarm
     let record = BlobRecord {
         hash: hash.clone(),
-        name: Some(name.clone()),
+        name: Some(clean_name.clone()),
         size_bytes,
         last_accessed_at: std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -327,9 +332,9 @@ pub async fn upload_file_bytes(
         seed_count: 1,
         is_cached: true,
     };
-    broadcast_catalog_event(&engine.endpoint, SyncMessage::FileAdded(record)).await;
+    broadcast_catalog_event(&engine.endpoint, &engine.sync_alpn, SyncMessage::FileAdded(record)).await;
 
-    tracing::info!(hash = %hash, name = %name, owner = %owner_node_id, bytes = size_bytes, "Uploaded file to workspace");
+    tracing::info!(hash = %hash, name = %clean_name, owner = %owner_node_id, bytes = size_bytes, "Uploaded file to workspace");
     Ok(hash)
 }
 
@@ -368,6 +373,7 @@ pub async fn delete_file(
     // Broadcast deletion event to the swarm
     broadcast_catalog_event(
         &engine.endpoint,
+        &engine.sync_alpn,
         SyncMessage::FileDeleted {
             hash: hash.clone(),
             deleter_node_id: my_node_id,
@@ -400,6 +406,7 @@ pub async fn vote_delete_file(
     // Broadcast vote to all connected swarm peers
     broadcast_catalog_event(
         &engine.endpoint,
+        &engine.sync_alpn,
         SyncMessage::FileVoteDelete {
             hash: hash.clone(),
             voter_node_id: my_node_id.clone(),
@@ -426,6 +433,7 @@ pub async fn unvote_delete_file(
     // Broadcast unvote to all swarm peers
     broadcast_catalog_event(
         &engine.endpoint,
+        &engine.sync_alpn,
         SyncMessage::FileUnvoteDelete {
             hash: hash.clone(),
             voter_node_id: my_node_id,
@@ -456,6 +464,7 @@ pub async fn vote_keep_file(
     // Broadcast keep vote to all connected swarm peers
     broadcast_catalog_event(
         &engine.endpoint,
+        &engine.sync_alpn,
         SyncMessage::FileVoteKeep {
             hash: hash.clone(),
             voter_node_id: my_node_id.clone(),
@@ -482,6 +491,7 @@ pub async fn unvote_keep_file(
     // Broadcast unvote to all swarm peers
     broadcast_catalog_event(
         &engine.endpoint,
+        &engine.sync_alpn,
         SyncMessage::FileUnvoteKeep {
             hash: hash.clone(),
             voter_node_id: my_node_id,
@@ -516,6 +526,7 @@ pub async fn evict_local_file(hash: String, state: State<'_, AppState>) -> Resul
     // Broadcast to the swarm that this node is no longer seeding this blob
     broadcast_catalog_event(
         &engine.endpoint,
+        &engine.sync_alpn,
         SyncMessage::FileUnseeded {
             hash: hash.clone(),
             seeder_node_id: my_node_id,
@@ -533,10 +544,8 @@ pub async fn move_file(
     new_path: String,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let clean_path = new_path.trim().trim_matches('/').to_string();
-    if clean_path.is_empty() {
-        return Err("Destination path cannot be empty".to_string());
-    }
+    let clean_path = crate::storage::path_utils::sanitize_virtual_path(&new_path)
+        .map_err(|e| format!("Invalid destination path: {e}"))?;
 
     rename_blob(&state.db, &hash, &clean_path).map_err(|e| e.to_string())?;
 
@@ -545,6 +554,7 @@ pub async fn move_file(
     if let Some(engine) = guard.as_ref() {
         broadcast_catalog_event(
             &engine.endpoint,
+            &engine.sync_alpn,
             SyncMessage::FileMoved {
                 hash,
                 new_name: clean_path,
@@ -563,6 +573,10 @@ pub async fn export_file(
     dest_path: String,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
+    if dest_path.contains('\0') {
+        return Err("Invalid destination path: contains null byte".to_string());
+    }
+
     let parsed_hash = hash
         .parse::<iroh_blobs::Hash>()
         .map_err(|e| format!("invalid hash '{hash}': {e}"))?;
@@ -582,4 +596,175 @@ pub async fn export_file(
         .map_err(|e| format!("failed to write destination file '{dest_path}': {e}"))?;
 
     Ok(())
+}
+
+/// Summary of files imported from a ZIP archive.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct ZipImportSummary {
+    pub files_imported: usize,
+    pub total_bytes: u64,
+    pub errors: Vec<String>,
+}
+
+/// Import all files from a ZIP archive via raw in-memory bytes.
+/// Available in developer mode for rapidly loading course packages.
+/// Features full Zip-Slip protection and path sanitization.
+#[tauri::command]
+pub async fn import_zip_bytes(
+    data: Vec<u8>,
+    target_folder: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<ZipImportSummary, String> {
+    use std::io::Read;
+    use zip::ZipArchive;
+
+    let guard = state.engine.read().await;
+    let engine = guard.as_ref().ok_or("Iroh engine not yet started")?;
+    let owner_node_id = engine.node_id().to_string();
+
+    let cursor = std::io::Cursor::new(data);
+    let mut archive = ZipArchive::new(cursor).map_err(|e| format!("invalid zip archive: {e}"))?;
+
+    let mut summary = ZipImportSummary {
+        files_imported: 0,
+        total_bytes: 0,
+        errors: Vec::new(),
+    };
+
+    let target_prefix = match target_folder {
+        Some(f) => {
+            let trimmed = f.trim().trim_matches('/');
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        }
+        None => None,
+    };
+
+    for i in 0..archive.len() {
+        let mut file = match archive.by_index(i) {
+            Ok(f) => f,
+            Err(e) => {
+                summary.errors.push(format!("entry {i} read error: {e}"));
+                continue;
+            }
+        };
+
+        if file.is_dir() {
+            continue;
+        }
+
+        // Security check: Zip Slip prevention
+        let enclosed = match file.enclosed_name() {
+            Some(path) => path.to_string_lossy().replace('\\', "/"),
+            None => {
+                summary.errors.push(format!("Zip Slip directory traversal detected for entry {}", file.name()));
+                continue;
+            }
+        };
+
+        let raw_virtual_path = if let Some(ref prefix) = target_prefix {
+            format!("{}/{}", prefix, enclosed)
+        } else {
+            enclosed
+        };
+
+        let sanitized_path = match crate::storage::path_utils::sanitize_virtual_path(&raw_virtual_path) {
+            Ok(p) => p,
+            Err(e) => {
+                summary.errors.push(format!("Invalid path for entry '{}': {e}", file.name()));
+                continue;
+            }
+        };
+
+        let mut file_bytes = Vec::new();
+        if let Err(e) = file.read_to_end(&mut file_bytes) {
+            summary.errors.push(format!("Failed reading bytes for entry '{sanitized_path}': {e}"));
+            continue;
+        }
+
+        let size_bytes = file_bytes.len() as u64;
+
+        let tag = match engine
+            .store
+            .import_bytes(bytes::Bytes::from(file_bytes), BlobFormat::Raw)
+            .await
+        {
+            Ok(t) => t,
+            Err(e) => {
+                summary.errors.push(format!("Failed importing '{sanitized_path}' to store: {e}"));
+                continue;
+            }
+        };
+
+        let hash_and_format = *tag.inner();
+        let hash = hash_and_format.hash.to_hex().to_string();
+
+        let _ = engine
+            .store
+            .set_tag(
+                iroh_blobs::Tag::from(sanitized_path.as_str()),
+                Some(hash_and_format),
+            )
+            .await;
+
+        if let Err(e) = upsert_blob(
+            &state.db,
+            &hash,
+            Some(&sanitized_path),
+            size_bytes,
+            false,
+            Some(&owner_node_id),
+        ) {
+            summary.errors.push(format!("Database insert failed for '{sanitized_path}': {e}"));
+            continue;
+        }
+
+        let _ = record_peer_seed(&state.db, &hash, &owner_node_id);
+        state.bandwidth.record_upload(size_bytes);
+
+        let record = BlobRecord {
+            hash: hash.clone(),
+            name: Some(sanitized_path.clone()),
+            size_bytes,
+            last_accessed_at: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs() as i64,
+            is_pinned: false,
+            owner_node_id: Some(owner_node_id.clone()),
+            delete_votes: Vec::new(),
+            keep_votes: Vec::new(),
+            deletion_scheduled_at: None,
+            seed_count: 1,
+            is_cached: true,
+        };
+
+        broadcast_catalog_event(&engine.endpoint, &engine.sync_alpn, SyncMessage::FileAdded(record)).await;
+
+        summary.files_imported += 1;
+        summary.total_bytes += size_bytes;
+    }
+
+    tracing::info!(
+        imported = summary.files_imported,
+        bytes = summary.total_bytes,
+        "Finished ZIP archive import"
+    );
+
+    Ok(summary)
+}
+
+/// Import a local ZIP archive file into the workspace (dev mode helper).
+#[tauri::command]
+pub async fn import_zip_file(
+    file_path: String,
+    target_folder: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<ZipImportSummary, String> {
+    let path = std::path::Path::new(&file_path);
+    let bytes = std::fs::read(path).map_err(|e| format!("cannot read zip file '{file_path}': {e}"))?;
+    import_zip_bytes(bytes, target_folder, state).await
 }

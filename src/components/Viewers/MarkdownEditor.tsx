@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { marked } from 'marked';
+import DOMPurify from 'dompurify';
 import { invoke } from '@tauri-apps/api/core';
 import { Save, CheckCircle2, Loader2 } from 'lucide-react';
 
@@ -60,7 +61,8 @@ export const MarkdownEditor: React.FC<MarkdownEditorProps> = ({
 
   const getHtml = () => {
     try {
-      return marked.parse(content, { async: false }) as string;
+      const raw = marked.parse(content, { async: false }) as string;
+      return DOMPurify.sanitize(raw);
     } catch {
       return '<p>Error rendering markdown</p>';
     }

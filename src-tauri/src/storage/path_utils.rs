@@ -97,6 +97,57 @@ fn normalize_path(path: &Path) -> PathBuf {
     components.iter().collect()
 }
 
+/// Validate and sanitize a virtual workspace path/filename.
+/// Ensures the path is strictly relative, normalized with forward slashes `/`,
+/// does not contain directory traversal (`..`), null bytes, Windows drive prefixes,
+/// reserved device names, or invalid filename characters.
+pub fn sanitize_virtual_path(raw: &str) -> Result<String> {
+    if raw.contains('\0') {
+        bail!("path contains null byte");
+    }
+
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        bail!("path cannot be empty");
+    }
+
+    // Reject Windows drive letters (e.g. "C:", "D:\")
+    if trimmed.len() >= 2 && trimmed.chars().nth(1) == Some(':') {
+        bail!("absolute drive paths not permitted");
+    }
+
+    // Convert Windows backslashes to standard forward slashes
+    let normalized = trimmed.replace('\\', "/");
+    let parts: Vec<&str> = normalized.split('/').filter(|p| !p.is_empty()).collect();
+
+    if parts.is_empty() {
+        bail!("path contains no valid components");
+    }
+
+    const FORBIDDEN_CHARS: &[char] = &['<', '>', ':', '"', '|', '?', '*'];
+    const RESERVED_NAMES: &[&str] = &[
+        "CON", "PRN", "AUX", "NUL",
+        "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+        "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+    ];
+
+    for segment in &parts {
+        let seg = segment.trim();
+        if seg == "." || seg == ".." {
+            bail!("directory traversal '..' detected in path");
+        }
+        if seg.chars().any(|c| FORBIDDEN_CHARS.contains(&c) || c.is_control()) {
+            bail!("invalid characters in path component '{seg}'");
+        }
+        let base_name = seg.split('.').next().unwrap_or(seg).to_ascii_uppercase();
+        if RESERVED_NAMES.contains(&base_name.as_str()) {
+            bail!("reserved system filename '{seg}' not permitted");
+        }
+    }
+
+    Ok(parts.join("/"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -145,5 +196,20 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let result = safe_join_new(dir.path(), "../outside.txt");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn virtual_path_sanitization() {
+        assert_eq!(sanitize_virtual_path("folder/sub/file.pdf").unwrap(), "folder/sub/file.pdf");
+        assert_eq!(sanitize_virtual_path(r"folder\sub\file.pdf").unwrap(), "folder/sub/file.pdf");
+        assert_eq!(sanitize_virtual_path("/root/file.txt").unwrap(), "root/file.txt");
+
+        assert!(sanitize_virtual_path("../evil.txt").is_err());
+        assert!(sanitize_virtual_path("folder/../../evil.txt").is_err());
+        assert!(sanitize_virtual_path("C:\\Windows\\System32").is_err());
+        assert!(sanitize_virtual_path("file\0name.txt").is_err());
+        assert!(sanitize_virtual_path("COM1.txt").is_err());
+        assert!(sanitize_virtual_path("CON").is_err());
+        assert!(sanitize_virtual_path("bad*char.txt").is_err());
     }
 }

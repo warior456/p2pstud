@@ -44,9 +44,9 @@ At the end of every session (or when interrupted), update the `## Progress Track
 
 ## Progress Tracker
 
-> **Last session:** 2026-11-02
+> **Last session:** 2026-11-04
 > **Last completed task:** Complete implementation achieved. All 19 steps implemented and verified: Rust backend with Iroh 0.29 & SQLite LRU eviction (14/14 unit tests pass), P2P multi-node blob exchange integration test passes, headless anchor daemon binary built and verified (`--health-check`), and React 18 frontend built (9/9 Vitest tests pass).
-> **Next action:** Production deployment / release packaging.
+> **Next action:** Production release tagging / packaging.
 
 | # | Step | Status | Notes |
 |---|---|---|---|
@@ -79,6 +79,9 @@ At the end of every session (or when interrupted), update the `## Progress Track
 | 27 | Hierarchical Folder Support & Organization | ✅ | Virtual folder tree, directory navigation, "New Folder", folder-aware uploads & breadcrumb deep-linking |
 | 28 | File Moving & Sole Active Seed Disk Eviction Protection | ✅ | Drag-and-drop & context file moving with QUIC sync; prevent disk eviction if local node is sole seed |
 | 29 | Anti-Delete (Keep) Voting, 86% Consensus, 24h Grace Period & Offline Bundling | ✅ | Non-owners blocked from unilateral delete; Keep defense voting; 86% consensus ratio threshold; 24h grace period warning banner; offline-embedded release build |
+| 30 | Single-Instance Integration & Multi-Instance WebView2 Crash Fix | ✅ | Integrated `tauri-plugin-single-instance` to prevent 0x800700AA crash; safe SQLite forward-migration bounds check |
+| 31 | Security Audit & Comprehensive Hardening | ✅ | Virtual path sanitization (`sanitize_virtual_path`), DOMPurify XSS mitigation in Markdown preview, authenticated QUIC vote verification, owner-only file moving, null-byte rejection |
+| 32 | P2P Swarm Network Secret & Dev Mode ZIP Import | ✅ | Swarm passphrase derives dynamic QUIC ALPN isolating private student networks; Zip-Slip safe bulk ZIP archive import in dev mode |
 
 ---
 

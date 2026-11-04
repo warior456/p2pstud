@@ -59,7 +59,10 @@ pub fn load_or_create_secret_key(data_dir: &Path) -> Result<SecretKey> {
 /// modern Windows versions).
 #[cfg(windows)]
 fn restrict_file_to_current_user(path: &std::path::Path) -> Result<()> {
+    use std::os::windows::process::CommandExt;
     use std::process::Command;
+
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
 
     let full_path = if path.is_absolute() {
         path.to_path_buf()
@@ -67,7 +70,9 @@ fn restrict_file_to_current_user(path: &std::path::Path) -> Result<()> {
         std::env::current_dir().unwrap_or_default().join(path)
     };
     let path_str = full_path.to_string_lossy();
-    let username = std::env::var("USERNAME").unwrap_or_else(|_| "Everyone".to_string());
+    let username = std::env::var("USERNAME")
+        .or_else(|_| std::env::var("USER"))
+        .context("cannot determine current user name for file ACL restriction")?;
 
     // Remove inherited permissions and grant current user full control only.
     let status = Command::new("icacls")
@@ -77,6 +82,7 @@ fn restrict_file_to_current_user(path: &std::path::Path) -> Result<()> {
             "/grant:r",
             &format!("{}:(F)", username),
         ])
+        .creation_flags(CREATE_NO_WINDOW)
         .status()
         .context("running icacls to restrict secret key permissions")?;
 

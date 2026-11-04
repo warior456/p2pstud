@@ -15,7 +15,11 @@ import {
   FolderOpen,
   Trash2,
   Globe,
-  Wifi
+  Wifi,
+  Lock,
+  Key,
+  Eye,
+  EyeOff
 } from 'lucide-react';
 import { StorageStats, PeerInfo } from '../../types';
 
@@ -43,6 +47,9 @@ export const CacheSlider: React.FC<CacheSliderProps> = ({ stats, onStatsUpdated 
   const [relayUrl, setRelayUrl] = useState<string>('https://use1-1.relay.iroh.network/');
   const [peerInput, setPeerInput] = useState<string>('');
   const [peerRelayInput, setPeerRelayInput] = useState<string>('');
+  const [networkSecret, setNetworkSecret] = useState<string>('');
+  const [savingSecret, setSavingSecret] = useState<boolean>(false);
+  const [showSecret, setShowSecret] = useState<boolean>(false);
   const [connectStatus, setConnectStatus] = useState<{ msg: string; isError: boolean } | null>(null);
   const [connecting, setConnecting] = useState<boolean>(false);
   const [savingRelay, setSavingRelay] = useState<boolean>(false);
@@ -83,8 +90,9 @@ export const CacheSlider: React.FC<CacheSliderProps> = ({ stats, onStatsUpdated 
     }
 
     try {
-      const settings = await invoke<{ relay_url: string }>('get_app_settings');
+      const settings = await invoke<{ relay_url: string; network_secret?: string }>('get_app_settings');
       if (settings?.relay_url) setRelayUrl(settings.relay_url);
+      if (settings?.network_secret !== undefined) setNetworkSecret(settings.network_secret);
     } catch {
       // Fallback
     }
@@ -154,6 +162,19 @@ export const CacheSlider: React.FC<CacheSliderProps> = ({ stats, onStatsUpdated 
       setConnectStatus({ msg: String(err), isError: true });
     } finally {
       setConnecting(false);
+    }
+  };
+
+  const handleSaveSecret = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSavingSecret(true);
+    try {
+      await invoke('set_network_secret', { secret: networkSecret.trim() });
+      alert('P2P Network Secret saved! Please restart the application to rejoin with the new secret.');
+    } catch (err) {
+      alert(`Failed to save network secret: ${err}`);
+    } finally {
+      setSavingSecret(false);
     }
   };
 
@@ -449,6 +470,54 @@ export const CacheSlider: React.FC<CacheSliderProps> = ({ stats, onStatsUpdated 
                 ))}
               </div>
             )}
+          </div>
+
+          {/* Swarm Network Secret / Workspace Passphrase */}
+          <div className="bg-white p-6 rounded-xl border border-gray-200 shadow-xs space-y-4">
+            <div className="flex items-center gap-2.5 border-b border-gray-100 pb-3">
+              <Key className="w-5 h-5 text-indigo-600" />
+              <div>
+                <h3 className="text-sm font-bold text-gray-900">P2P Network Passphrase / Swarm Secret</h3>
+                <p className="text-xs text-gray-500">
+                  Isolates your peer swarm from public discovery. Only peers with the exact same secret passphrase can connect and sync files with you.
+                </p>
+              </div>
+            </div>
+
+            <form onSubmit={handleSaveSecret} className="space-y-3">
+              <div>
+                <label className="text-xs font-semibold text-gray-700">Network Secret Passphrase</label>
+                <div className="relative mt-1">
+                  <input
+                    type={showSecret ? "text" : "password"}
+                    placeholder="Enter secret passphrase (e.g. course-group-2026)"
+                    value={networkSecret}
+                    onChange={(e) => setNetworkSecret(e.target.value)}
+                    className="w-full text-xs font-mono bg-gray-50 border border-gray-200 rounded-lg pl-3 pr-10 py-2 focus:bg-white focus:border-indigo-500 focus:outline-none transition-all"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowSecret(!showSecret)}
+                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                    title={showSecret ? "Hide passphrase" : "Show passphrase"}
+                  >
+                    {showSecret ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
+                </div>
+                <p className="text-[11px] text-gray-400 mt-1">
+                  Leave blank to use the default open network. Changing this secret isolates your workspace from random strangers on GitHub.
+                </p>
+              </div>
+
+              <button
+                type="submit"
+                disabled={savingSecret}
+                className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-semibold shadow-xs transition-colors flex items-center gap-1.5"
+              >
+                <Lock className="w-3.5 h-3.5" />
+                {savingSecret ? 'Saving Secret...' : 'Save Network Secret'}
+              </button>
+            </form>
           </div>
 
           {/* Custom Relay Configuration */}

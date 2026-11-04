@@ -18,7 +18,31 @@ use crate::storage::blob_tracker::{
 };
 use crate::storage::db::Database;
 
+pub const DEFAULT_SYNC_ALPN: &[u8] = b"/p2pstud/sync/1";
 pub const SYNC_ALPN: &[u8] = b"/p2pstud/sync/1";
+
+/// Compute the QUIC ALPN for catalog sync based on the workspace secret.
+/// If no secret is configured, uses DEFAULT_SYNC_ALPN.
+/// If a secret is set, derives a unique 16-hex ALPN suffix to isolate the swarm from other networks.
+pub fn get_sync_alpn(db: &Database) -> Vec<u8> {
+    if let Ok(Some(secret)) = db.get_setting("network_secret") {
+        let trimmed = secret.trim();
+        if !trimmed.is_empty() {
+            let hash = iroh_blobs::Hash::new(format!("p2pstud-net-secret:{trimmed}").as_bytes());
+            let short = &hash.to_hex()[..16];
+            return format!("/p2pstud/sync/1/{short}").into_bytes();
+        }
+    }
+    DEFAULT_SYNC_ALPN.to_vec()
+}
+
+fn is_valid_blob_hash(h: &str) -> bool {
+    h.len() == 64 && h.chars().all(|c| c.is_ascii_hexdigit()) && h.parse::<iroh_blobs::Hash>().is_ok()
+}
+
+fn sanitize_incoming_name(name: Option<&str>) -> Option<String> {
+    name.and_then(|n| crate::storage::path_utils::sanitize_virtual_path(n).ok())
+}
 
 /// Catalog synchronization messages exchanged between peers.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -86,12 +110,15 @@ impl CatalogSyncHandler {
         match msg {
             SyncMessage::CatalogDump(remote_records) => {
                 for r in remote_records {
-                    // Upsert remote metadata into local SQLite catalog (unpinned by default)
+                    if !is_valid_blob_hash(&r.hash) {
+                        continue;
+                    }
+                    let clean_name = sanitize_incoming_name(r.name.as_deref());
                     let _ = upsert_blob(
                         &self.db,
                         &r.hash,
-                        r.name.as_deref(),
-                        r.size_bytes,
+                        clean_name.as_deref(),
+                        r.size_bytes.min(100 * 1024 * 1024 * 1024),
                         false, // peer metadata starts unpinned locally until user pins or downloads
                         r.owner_node_id.as_deref(),
                     );
@@ -123,11 +150,15 @@ impl CatalogSyncHandler {
                 Ok(Some(SyncMessage::CatalogDump(my_records)))
             }
             SyncMessage::FileAdded(r) => {
+                if !is_valid_blob_hash(&r.hash) {
+                    return Ok(None);
+                }
+                let clean_name = sanitize_incoming_name(r.name.as_deref());
                 let _ = upsert_blob(
                     &self.db,
                     &r.hash,
-                    r.name.as_deref(),
-                    r.size_bytes,
+                    clean_name.as_deref(),
+                    r.size_bytes.min(100 * 1024 * 1024 * 1024),
                     false,
                     r.owner_node_id.as_deref(),
                 );
@@ -146,6 +177,9 @@ impl CatalogSyncHandler {
                 Ok(None)
             }
             SyncMessage::FileDeleted { hash, deleter_node_id } => {
+                if !is_valid_blob_hash(&hash) {
+                    return Ok(None);
+                }
                 // SECURITY: ONLY allow deletion if the deleter is the legitimate owner of the file!
                 // Non-owners CANNOT unilaterally delete files across peers; they must cast delete votes.
                 if let Ok(Some(blob)) = get_blob(&self.db, &hash) {
@@ -168,32 +202,101 @@ impl CatalogSyncHandler {
                 hash,
                 voter_node_id,
             } => {
-                let _ = cast_delete_vote(&self.db, &hash, &voter_node_id);
+                if !is_valid_blob_hash(&hash) {
+                    return Ok(None);
+                }
+                // SECURITY: Verify voter is the authenticated QUIC sender to prevent vote spoofing
+                if sender_peer_id == Some(voter_node_id.as_str()) {
+                    let _ = cast_delete_vote(&self.db, &hash, &voter_node_id);
+                } else {
+                    tracing::warn!(
+                        hash = %hash,
+                        voter = %voter_node_id,
+                        sender = ?sender_peer_id,
+                        "Rejected spoofed FileVoteDelete message"
+                    );
+                }
                 Ok(None)
             }
             SyncMessage::FileUnvoteDelete {
                 hash,
                 voter_node_id,
             } => {
-                let _ = remove_delete_vote(&self.db, &hash, &voter_node_id);
+                if !is_valid_blob_hash(&hash) {
+                    return Ok(None);
+                }
+                if sender_peer_id == Some(voter_node_id.as_str()) {
+                    let _ = remove_delete_vote(&self.db, &hash, &voter_node_id);
+                } else {
+                    tracing::warn!(
+                        hash = %hash,
+                        voter = %voter_node_id,
+                        sender = ?sender_peer_id,
+                        "Rejected spoofed FileUnvoteDelete message"
+                    );
+                }
                 Ok(None)
             }
             SyncMessage::FileVoteKeep {
                 hash,
                 voter_node_id,
             } => {
-                let _ = cast_keep_vote(&self.db, &hash, &voter_node_id);
+                if !is_valid_blob_hash(&hash) {
+                    return Ok(None);
+                }
+                if sender_peer_id == Some(voter_node_id.as_str()) {
+                    let _ = cast_keep_vote(&self.db, &hash, &voter_node_id);
+                } else {
+                    tracing::warn!(
+                        hash = %hash,
+                        voter = %voter_node_id,
+                        sender = ?sender_peer_id,
+                        "Rejected spoofed FileVoteKeep message"
+                    );
+                }
                 Ok(None)
             }
             SyncMessage::FileUnvoteKeep {
                 hash,
                 voter_node_id,
             } => {
-                let _ = remove_keep_vote(&self.db, &hash, &voter_node_id);
+                if !is_valid_blob_hash(&hash) {
+                    return Ok(None);
+                }
+                if sender_peer_id == Some(voter_node_id.as_str()) {
+                    let _ = remove_keep_vote(&self.db, &hash, &voter_node_id);
+                } else {
+                    tracing::warn!(
+                        hash = %hash,
+                        voter = %voter_node_id,
+                        sender = ?sender_peer_id,
+                        "Rejected spoofed FileUnvoteKeep message"
+                    );
+                }
                 Ok(None)
             }
             SyncMessage::FileMoved { hash, new_name } => {
-                let _ = rename_blob(&self.db, &hash, &new_name);
+                if !is_valid_blob_hash(&hash) {
+                    return Ok(None);
+                }
+                // SECURITY: Only the file's owner can move or rename it, and target path must be sanitized
+                if let Ok(Some(blob)) = get_blob(&self.db, &hash) {
+                    let is_owner = blob.owner_node_id.as_deref() == sender_peer_id;
+                    if is_owner {
+                        if let Ok(clean_path) = crate::storage::path_utils::sanitize_virtual_path(&new_name) {
+                            let _ = rename_blob(&self.db, &hash, &clean_path);
+                        } else {
+                            tracing::warn!(hash = %hash, new_name = %new_name, "Rejected FileMoved with invalid path");
+                        }
+                    } else {
+                        tracing::warn!(
+                            hash = %hash,
+                            sender = ?sender_peer_id,
+                            owner = ?blob.owner_node_id,
+                            "Rejected unauthorized FileMoved message from non-owner"
+                        );
+                    }
+                }
                 Ok(None)
             }
             SyncMessage::FileSeeded { hash, seeder_node_id } => {
@@ -241,7 +344,8 @@ pub async fn sync_catalog_with_peer(
     store: Option<&iroh_blobs::store::fs::Store>,
     peer_addr: NodeAddr,
 ) -> Result<()> {
-    let connection = endpoint.connect(peer_addr.clone(), SYNC_ALPN).await?;
+    let alpn = get_sync_alpn(db);
+    let connection = endpoint.connect(peer_addr.clone(), &alpn).await?;
     let (mut send, mut recv) = connection.open_bi().await?;
 
     let mut my_records = list_all_blobs(db)?;
@@ -267,11 +371,15 @@ pub async fn sync_catalog_with_peer(
         {
             let peer_id_str = peer_addr.node_id.to_string();
             for r in remote_records {
+                if !is_valid_blob_hash(&r.hash) {
+                    continue;
+                }
+                let clean_name = sanitize_incoming_name(r.name.as_deref());
                 let _ = upsert_blob(
                     db,
                     &r.hash,
-                    r.name.as_deref(),
-                    r.size_bytes,
+                    clean_name.as_deref(),
+                    r.size_bytes.min(100 * 1024 * 1024 * 1024),
                     false,
                     r.owner_node_id.as_deref(),
                 );
@@ -294,24 +402,65 @@ pub async fn sync_catalog_with_peer(
 }
 
 /// Broadcast a catalog mutation event to all actively connected swarm peers.
-pub async fn broadcast_catalog_event(endpoint: &Endpoint, msg: SyncMessage) {
+pub async fn broadcast_catalog_event(endpoint: &Endpoint, alpn: &[u8], msg: SyncMessage) {
     let bytes = match serde_json::to_vec(&msg) {
         Ok(b) => b,
         Err(_) => return,
     };
 
+    let alpn_vec = alpn.to_vec();
     let remotes: Vec<_> = endpoint.remote_info_iter().collect();
     for remote in remotes {
         let peer_addr = NodeAddr::new(remote.node_id);
         let ep = endpoint.clone();
         let payload = bytes.clone();
+        let proto = alpn_vec.clone();
         tokio::spawn(async move {
-            if let Ok(conn) = ep.connect(peer_addr, SYNC_ALPN).await {
+            if let Ok(conn) = ep.connect(peer_addr, &proto).await {
                 if let Ok((mut send, _)) = conn.open_bi().await {
                     let _ = send.write_all(&payload).await;
                     let _ = send.finish();
                 }
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn test_sync_alpn_derivation() {
+        let dir = TempDir::new().unwrap();
+        let db = Database::open(&dir.path().join("test.db")).unwrap();
+
+        // Default when secret is unset
+        let default_alpn = get_sync_alpn(&db);
+        assert_eq!(default_alpn, b"/p2pstud/sync/1");
+
+        // When secret is configured
+        db.set_setting("network_secret", "course-math-2026").unwrap();
+        let math_alpn = get_sync_alpn(&db);
+        assert!(math_alpn.starts_with(b"/p2pstud/sync/1/"));
+        assert_ne!(math_alpn, default_alpn);
+
+        // Different secret produces different ALPN
+        db.set_setting("network_secret", "course-cs-2026").unwrap();
+        let cs_alpn = get_sync_alpn(&db);
+        assert_ne!(math_alpn, cs_alpn);
+
+        // Whitespace is trimmed
+        db.set_setting("network_secret", "  course-math-2026  ").unwrap();
+        assert_eq!(get_sync_alpn(&db), math_alpn);
+    }
+
+    #[test]
+    fn test_blob_hash_validation() {
+        assert!(is_valid_blob_hash("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"));
+        assert!(!is_valid_blob_hash("invalid"));
+        assert!(!is_valid_blob_hash(""));
+        assert!(!is_valid_blob_hash("../../../etc/passwd"));
     }
 }

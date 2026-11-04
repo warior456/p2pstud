@@ -33,6 +33,7 @@ pub struct AppSettings {
     pub cache_limit_bytes: u64,
     pub full_mirror: bool,
     pub node_id: Option<String>,
+    pub network_secret: String,
 }
 
 /// Return current storage statistics to the frontend.
@@ -110,11 +111,18 @@ pub async fn get_app_settings(state: State<'_, AppState>) -> Result<AppSettings,
         guard.as_ref().map(|e| e.node_id().to_string())
     };
 
+    let network_secret = state
+        .db
+        .get_setting("network_secret")
+        .map_err(|e| e.to_string())?
+        .unwrap_or_default();
+
     Ok(AppSettings {
         relay_url,
         cache_limit_bytes,
         full_mirror,
         node_id,
+        network_secret,
     })
 }
 
@@ -142,7 +150,26 @@ pub async fn update_app_settings(
         .set_setting("full_mirror", &settings.full_mirror.to_string())
         .map_err(|e| e.to_string())?;
 
+    state
+        .db
+        .set_setting("network_secret", settings.network_secret.trim())
+        .map_err(|e| e.to_string())?;
+
     tracing::info!(?settings, "Updated application settings");
+    Ok(())
+}
+
+/// Update the P2P network secret / workspace passphrase.
+#[tauri::command]
+pub async fn set_network_secret(
+    secret: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    state
+        .db
+        .set_setting("network_secret", secret.trim())
+        .map_err(|e| e.to_string())?;
+    tracing::info!("Updated network secret / workspace passphrase");
     Ok(())
 }
 

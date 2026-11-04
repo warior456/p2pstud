@@ -23,8 +23,12 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri          = { version = "2", features = ["tray-icon"] }
 tauri-plugin-shell = "2"
+tauri-plugin-single-instance = "2"
 # tauri-plugin-dialog removed (not required)
 tauri-plugin-fs    = "2"
+
+# ZIP archive import (dev mode)
+zip = { version = "2", default-features = false, features = ["deflate"] }
 
 # P2P networking
 iroh           = { version = "0.29", features = ["discovery-local-network", "discovery-pkarr-dht"] }

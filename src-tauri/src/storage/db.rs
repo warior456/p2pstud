@@ -72,6 +72,10 @@ const MIGRATIONS: &[&str] = &[
     CREATE INDEX IF NOT EXISTS idx_keep_votes_hash ON file_keep_votes(hash);
     ALTER TABLE local_blobs ADD COLUMN deletion_scheduled_at INTEGER;
     "#,
+    // Migration 0006 — network secret / workspace passphrase for swarm isolation
+    r#"
+    INSERT OR IGNORE INTO settings(key, value) VALUES ('network_secret', '');
+    "#,
 ];
 
 /// Thread-safe SQLite database wrapper.
@@ -102,14 +106,17 @@ impl Database {
         // Create a simple user_version-based migration tracker.
         let current_version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
 
-        let pending = &MIGRATIONS[current_version as usize..];
-        for (i, sql) in pending.iter().enumerate() {
-            tracing::info!("Running DB migration {}", current_version as usize + i + 1);
-            conn.execute_batch(sql)?;
-        }
+        let current_ver = current_version.max(0) as usize;
+        if current_ver < MIGRATIONS.len() {
+            let pending = &MIGRATIONS[current_ver..];
+            for (i, sql) in pending.iter().enumerate() {
+                tracing::info!("Running DB migration {}", current_ver + i + 1);
+                conn.execute_batch(sql)?;
+            }
 
-        let new_version = MIGRATIONS.len() as i64;
-        conn.execute_batch(&format!("PRAGMA user_version = {new_version}"))?;
+            let new_version = MIGRATIONS.len() as i64;
+            conn.execute_batch(&format!("PRAGMA user_version = {new_version}"))?;
+        }
         Ok(())
     }
 

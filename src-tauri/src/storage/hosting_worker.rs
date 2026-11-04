@@ -152,6 +152,7 @@ pub async fn run_hosting_fill_pass(
             // Broadcast to the swarm that this node is now actively seeding this blob!
             broadcast_catalog_event(
                 &engine.endpoint,
+                &engine.sync_alpn,
                 SyncMessage::FileSeeded {
                     hash: missing.hash.clone(),
                     seeder_node_id: my_node_id.clone(),

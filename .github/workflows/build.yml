@@ -1,19 +1,39 @@
 name: Build & Release
 
 on:
+  # Only trigger automatically when pushing a release tag (e.g., v0.1.0)
   push:
-    branches: [main]
     tags:
       - 'v*'
-  pull_request:
-    branches: [main]
+  # Allow manual trigger on-demand from the GitHub Actions tab
   workflow_dispatch:
+    inputs:
+      platform:
+        description: 'Platform to build'
+        required: true
+        default: 'all'
+        type: choice
+        options:
+          - all
+          - windows
+          - linux
+          - macos
+
+# Cancel in-progress runs of the same workflow if a new commit/run is triggered
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: write
 
 jobs:
   build-tauri:
+    # Skip job if user manually selected a specific platform and this runner doesn't match
+    if: |
+      (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) ||
+      (github.event_name == 'workflow_dispatch' && (inputs.platform == 'all' || inputs.platform == matrix.key))
+
     strategy:
       fail-fast: false
       matrix:
@@ -21,15 +41,15 @@ jobs:
           - platform: 'windows-latest'
             name: 'windows-x86_64'
             target: 'x86_64-pc-windows-msvc'
+            key: 'windows'
           - platform: 'ubuntu-22.04'
             name: 'linux-x86_64'
             target: 'x86_64-unknown-linux-gnu'
+            key: 'linux'
           - platform: 'macos-latest'
             name: 'macos-arm64'
             target: 'aarch64-apple-darwin'
-          - platform: 'macos-13'
-            name: 'macos-x86_64'
-            target: 'x86_64-apple-darwin'
+            key: 'macos'
 
     runs-on: ${{ matrix.platform }}
 
@@ -47,6 +67,12 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
+
+      # Cache cargo dependencies to cut compile times drastically (uses free 10GB Actions cache)
+      - name: Rust Cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: 'src-tauri -> target'
 
       - name: Install Linux dependencies (Ubuntu only)
         if: runner.os == 'Linux'

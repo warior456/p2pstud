@@ -33,6 +33,13 @@ pub fn run() {
         .init();
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.show();
+                let _ = window.unminimize();
+                let _ = window.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_fs::init())
         .setup(|app| {
@@ -142,6 +149,7 @@ pub fn run() {
             commands::storage_cmds::get_storage_stats,
             commands::storage_cmds::get_app_settings,
             commands::storage_cmds::update_app_settings,
+            commands::storage_cmds::set_network_secret,
             commands::storage_cmds::set_cache_limit,
             commands::storage_cmds::set_full_mirror,
             commands::storage_cmds::purge_cache,
@@ -152,6 +160,8 @@ pub fn run() {
             commands::file_cmds::read_file_bytes,
             commands::file_cmds::add_file,
             commands::file_cmds::upload_file_bytes,
+            commands::file_cmds::import_zip_bytes,
+            commands::file_cmds::import_zip_file,
             commands::file_cmds::delete_file,
             commands::file_cmds::vote_delete_file,
             commands::file_cmds::unvote_delete_file,

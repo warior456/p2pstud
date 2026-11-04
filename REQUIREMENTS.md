@@ -31,6 +31,10 @@
 | 2026-11-03 | **Smart Least-Seeds Cache**: Auto-fill prioritizes replicating rare/endangered files with lowest seed count | User requirement |
 | 2026-11-03 | **Hierarchical Folder Support**: Virtual folder tree, directory navigation, "New Folder", folder-aware uploads | User requirement |
 | 2026-11-03 | **File Moving & Sole Seed Eviction Protection**: Drag/context file moving; block disk eviction if only seed | User requirement |
+| 2026-11-04 | **Multi-Instance Fix & Single Instance Plugin**: Added `tauri-plugin-single-instance` and fixed DB forward-migration bounds check | Bug fix |
+| 2026-11-04 | **Comprehensive Security Audit & Patching**: Path traversal defense, DOMPurify XSS mitigation, QUIC vote spoofing prevention, authorized file moves | Security audit |
+| 2026-11-04 | **P2P Swarm Network Secret**: Workspace passphrase derives dynamic QUIC ALPN to isolate classroom swarms from public discovery | User requirement |
+| 2026-11-04 | **Dev Mode ZIP Archive Import**: Fast bulk-importing of course packages in dev mode with Zip Slip directory traversal protection | User requirement |
 
 ---
 
