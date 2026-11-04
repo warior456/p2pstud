@@ -12,6 +12,7 @@
     "test:watch": "vitest",
     "prune:target": "node scripts/prune-target.mjs",
     "clean:target": "node scripts/prune-target.mjs --force",
+    "build:exe": "tauri build --no-bundle",
     "tauri": "tauri"
   },
   "dependencies": {
