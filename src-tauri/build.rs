@@ -15,9 +15,12 @@ fn main() {
             .map(|t| t.contains("windows-gnu"))
             .unwrap_or(false)
         {
-            let winlibs = "C:\\Users\\matte\\AppData\\Local\\Microsoft\\WinGet\\Packages\\BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe\\mingw64\\lib\\gcc\\x86_64-w64-mingw32\\16.2.0";
-            if std::path::Path::new(winlibs).exists() {
-                println!("cargo:rustc-link-search=native={winlibs}");
+            if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
+                let winlibs = std::path::Path::new(&local_app_data)
+                    .join("Microsoft\\WinGet\\Packages\\BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe\\mingw64\\lib\\gcc\\x86_64-w64-mingw32\\16.2.0");
+                if winlibs.exists() {
+                    println!("cargo:rustc-link-search=native={}", winlibs.display());
+                }
             }
         }
     }
