@@ -45,8 +45,8 @@ At the end of every session (or when interrupted), update the `## Progress Track
 ## Progress Tracker
 
 > **Last session:** 2026-11-04
-> **Last completed task:** Complete implementation achieved. All 19 steps implemented and verified: Rust backend with Iroh 0.29 & SQLite LRU eviction (14/14 unit tests pass), P2P multi-node blob exchange integration test passes, headless anchor daemon binary built and verified (`--health-check`), and React 18 frontend built (9/9 Vitest tests pass).
-> **Next action:** Production release tagging / packaging.
+> **Last completed task:** Comprehensive architectural grilling completed. Full specifications mapped and documented for Eduroam stealth, onboarding & connection doctor, smart scarcity caching & SSD wear prevention, sole-seed alerting, strict immutability, study ratings & emergency moderation, transfer resumption, and backups.
+> **Next action:** Begin Step 33 (Campus Wi-Fi Detection & Eduroam Stealth Mode) and Step 34 (Onboarding Wizard & Connection Doctor).
 
 | # | Step | Status | Notes |
 |---|---|---|---|
@@ -82,6 +82,15 @@ At the end of every session (or when interrupted), update the `## Progress Track
 | 30 | Single-Instance Integration & Multi-Instance WebView2 Crash Fix | ✅ | Integrated `tauri-plugin-single-instance` to prevent 0x800700AA crash; safe SQLite forward-migration bounds check |
 | 31 | Security Audit & Comprehensive Hardening | ✅ | Virtual path sanitization (`sanitize_virtual_path`), DOMPurify XSS mitigation in Markdown preview, authenticated QUIC vote verification, owner-only file moving, null-byte rejection |
 | 32 | P2P Swarm Network Secret & Dev Mode ZIP Import | ✅ | Swarm passphrase derives dynamic QUIC ALPN isolating private student networks; Zip-Slip safe bulk ZIP archive import in dev mode |
+| 33 | Campus Wi-Fi Detection & Eduroam Stealth Mode | ⬜ | Auto-detect `eduroam`/`campusroam`, disable DHT/mDNS on campus, port 443 camouflage, LEDBAT & lecture throttling |
+| 34 | First-Run Onboarding Wizard & Connection Doctor | ⬜ | Simplified vs Advanced setup, modular credentials, interactive P2P network diagnostics test suite |
+| 35 | Smart Scarcity Replication & SSD Wear Defense | ⬜ | Auto-download 1-seed files, abundance-first eviction ($\ge 3$), 24-48h dwell time, daily write budget, in-memory buffer |
+| 36 | Sole Seed Presence & Desktop Alerts | ⬜ | Floating warning banner, flashing taskbar notification, highlighted tray state when hosting unique files |
+| 37 | Strict Immutability & Path Collision Resolution | ⬜ | Strict absolute path lock, timestamp-based offline conflict resolution, executable warning modal, cross-platform normalization |
+| 38 | Study Ratings, Empty Folder Rules & Emergency Quarantine | ⬜ | Star bookmarks, up/downvote quality signals, negative seeding demotion, 5-report emergency quarantine (1-week hold), empty-only folder deletion |
+| 39 | Transfer Resumption & Enhanced Offline Mode | ⬜ | Persistent SQLite transfer resume queue, offline header banner, 'Available Offline' filter toggle |
+| 40 | Workspace Backup, Folder ZIP Export & Updates | ⬜ | Settings full app backup, folder ZIP export with peer download prompt, startup/shutdown Tauri auto-updater |
+| 41 | Bilateral Seeding Receipts & Lifecycle Pruning | ⬜ | Hash-verified transfer receipts for Sybil-resistant voting, 5-year seeding deprioritization, 2-year dead file purge |
 
 ---
 
@@ -579,6 +588,27 @@ certbot certonly --standalone -d relay.yourcampus.org --agree-tos -m admin@yourc
 
 ---
 
-*Last updated: 2026-11-02 — initial plan creation.*
+---
+
+## 11. Phase 2 Roadmap: Campus Hardening, UX & Autonomous P2P Resilience
+
+### Milestone 7: Campus Stealth & Network Adaptation (Steps 33–34)
+- **Step 33 (Campus Wi-Fi Detection & Eduroam Stealth)**: Native OS SSID query (`eduroam`, `campusroam`); auto-switching to campus profile disabling BitTorrent DHT and mDNS; encapsulating QUIC traffic over TLS 443 with DPI resistance; LEDBAT latency congestion backoff; peak lecture hour background throttling (9 AM – 5 PM).
+- **Step 34 (Onboarding Wizard & Connection Doctor)**: Dual-mode first launch ('Simplified' vs 'Advanced'); modular passphrase screen ready for email OTP; interactive 'Connection Doctor' diagnostic running local mDNS, QUIC UDP, and relay latency checks with green/red checklist.
+
+### Milestone 8: Smart Scarcity Caching & Hardware Protection (Steps 35–36)
+- **Step 35 (Scarcity Replication & SSD Defense)**: Background worker actively replicates endangered (1-seed) files; abundance-first eviction for $\ge 3$ seeds; SSD wear mitigation enforcing 24–48h dwell time, daily write ceiling, in-memory chunk buffering with BLAKE3 tree-hash integrity, and 10-minute paced downloads.
+- **Step 36 (Sole Seed Desktop Alerts)**: Floating warning banner when hosting unique files; taskbar app icon flashing and highlighted system tray state to prevent accidental shutdown of scarce course seeds.
+
+### Milestone 9: Data Integrity, Moderation & Resilient UX (Steps 37–41)
+- **Step 37 (Strict Immutability & Conflict Resolution)**: Path-to-hash absolute locking (update = delete old + upload new); timestamp-based deterministic offline conflict resolution with suffix rename; blocked in-app execution of dangerous binaries (`.exe`, `.bat`, `.sh`, `.ps1`) with download warning modal; cross-platform Windows-safe path normalization.
+- **Step 38 (Ratings, Empty Folders & Emergency Quarantine)**: Star bookmarks, upvotes/downvotes quality signals; downvote seeding demotion; 5-report 1h emergency quarantine marking files as 'Dangerous' with 1-week hold; strict rule: folders have no single owner and can ONLY be deleted when empty.
+- **Step 39 (Transfer Resumption & Enhanced Offline Mode)**: Persistent SQLite transfer resume queue surviving reboots and laptop lid closures; offline top banner with retry connection button; 'Available Offline' toggle filter and dimmed remote cloud rows.
+- **Step 40 (Backups, Export & Non-Intrusive Updates)**: Full app data backup in Settings; folder ZIP export with missing-chunks download prompt; Tauri auto-updater notifications strictly on startup or shutdown.
+- **Step 41 (Bilateral Seeding Receipts & Lifecycle Pruning)**: Bilateral hash-verified transfer receipts for Sybil-resistant voting; 5-year seeding deprioritization; 2-year dead file purge.
+
+---
+
+*Last updated: 2026-11-04 — updated with Phase 2 specifications from comprehensive architectural grilling.*
 
 
