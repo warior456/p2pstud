@@ -76,6 +76,90 @@ const MIGRATIONS: &[&str] = &[
     r#"
     INSERT OR IGNORE INTO settings(key, value) VALUES ('network_secret', '');
     "#,
+    // Migration 0007 — network SSID profile rules for campus stealth mode
+    r#"
+    CREATE TABLE IF NOT EXISTS network_ssid_rules (
+        ssid     TEXT PRIMARY KEY,
+        profile  TEXT NOT NULL CHECK(profile IN ('campus', 'trusted')),
+        added_at INTEGER NOT NULL
+    );
+    INSERT OR IGNORE INTO network_ssid_rules(ssid, profile, added_at)
+        VALUES ('eduroam', 'campus', unixepoch());
+    INSERT OR IGNORE INTO network_ssid_rules(ssid, profile, added_at)
+        VALUES ('campusroam', 'campus', unixepoch());
+    INSERT OR IGNORE INTO settings(key, value) VALUES ('network_profile_override', 'auto');
+    "#,
+    // Migration 0008 — first-run onboarding status tracker
+    r#"
+    INSERT OR IGNORE INTO settings(key, value) VALUES ('onboarding_complete', 'false');
+    "#,
+    // Migration 0009 — SSD wear defense, transfer resume queue, and daily write budget
+    r#"
+    ALTER TABLE local_blobs ADD COLUMN written_at INTEGER;
+    UPDATE local_blobs SET written_at = last_accessed_at WHERE written_at IS NULL;
+
+    CREATE TABLE IF NOT EXISTS transfer_resume_queue (
+        hash           TEXT PRIMARY KEY,
+        name           TEXT,
+        total_bytes    INTEGER NOT NULL,
+        received_bytes INTEGER NOT NULL DEFAULT 0,
+        source_peer    TEXT,
+        created_at     INTEGER NOT NULL,
+        updated_at     INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS write_budget (
+        date_key      TEXT PRIMARY KEY,
+        bytes_written INTEGER NOT NULL DEFAULT 0
+    );
+    "#,
+    // Migration 0010 — study ratings, bookmarks, and emergency quarantine reports
+    r#"
+    CREATE TABLE IF NOT EXISTS file_ratings (
+        hash          TEXT NOT NULL,
+        voter_node_id TEXT NOT NULL,
+        rating        INTEGER NOT NULL CHECK(rating IN (-1, 0, 1)),
+        voted_at      INTEGER NOT NULL,
+        PRIMARY KEY (hash, voter_node_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_ratings_hash ON file_ratings(hash);
+
+    CREATE TABLE IF NOT EXISTS file_stars (
+        hash          TEXT PRIMARY KEY,
+        starred_at    INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS quarantine_reports (
+        hash             TEXT NOT NULL,
+        reporter_node_id TEXT NOT NULL,
+        reported_at      INTEGER NOT NULL,
+        PRIMARY KEY (hash, reporter_node_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_quarantine_hash ON quarantine_reports(hash);
+
+    ALTER TABLE local_blobs ADD COLUMN is_quarantined   INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE local_blobs ADD COLUMN quarantine_expires_at INTEGER;
+    "#,
+    // Migration 0011 — bilateral cryptographic seeding receipts
+    r#"
+    CREATE TABLE IF NOT EXISTS seeding_receipts (
+        id                INTEGER PRIMARY KEY AUTOINCREMENT,
+        hash              TEXT NOT NULL,
+        seeder_node_id    TEXT NOT NULL,
+        recipient_node_id TEXT NOT NULL,
+        bytes_transferred INTEGER NOT NULL,
+        issued_at         INTEGER NOT NULL,
+        signature         TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_receipts_seeder ON seeding_receipts(seeder_node_id, issued_at);
+    CREATE INDEX IF NOT EXISTS idx_receipts_hash   ON seeding_receipts(hash);
+    "#,
+    // Migration 0012 — catalog lifecycle aging metadata
+    r#"
+    ALTER TABLE local_blobs ADD COLUMN catalog_first_seen_at INTEGER;
+    ALTER TABLE local_blobs ADD COLUMN last_any_seed_seen_at INTEGER;
+    UPDATE local_blobs SET catalog_first_seen_at = last_accessed_at WHERE catalog_first_seen_at IS NULL;
+    "#,
 ];
 
 /// Thread-safe SQLite database wrapper.

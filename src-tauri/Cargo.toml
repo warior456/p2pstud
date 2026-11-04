@@ -1,6 +1,6 @@
 [package]
 name = "p2pstud-tauri"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 edition = "2021"
 rust-version = "1.77"
 default-run = "p2pstud"
@@ -44,6 +44,8 @@ rusqlite       = { version = "0.31", features = ["bundled"] }
 # Serialisation
 serde          = { version = "1", features = ["derive"] }
 serde_json     = "1"
+chrono         = { version = "0.4", features = ["serde", "clock"] }
+url            = "2"
 
 # Error handling
 anyhow         = "1"
@@ -60,6 +62,7 @@ tracing-subscriber  = { version = "0.3", features = ["env-filter"] }
 bytes          = "1"
 rand           = "0.8"
 nonzero_ext    = "0.3"
+unicode-normalization = "0.1"
 
 # CLI (anchor binary only)
 clap = { version = "4", features = ["derive"] }

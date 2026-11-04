@@ -1,11 +1,11 @@
 name: Build & Release
 
 on:
-  # Only trigger automatically when pushing a release tag (e.g., v0.1.0)
   push:
+    branches:
+      - main
     tags:
       - 'v*'
-  # Allow manual trigger on-demand from the GitHub Actions tab
   workflow_dispatch:
     inputs:
       platform:
@@ -29,9 +29,9 @@ permissions:
 
 jobs:
   build-tauri:
-    # Skip job if user manually selected a specific platform and this runner doesn't match
+    # Build on tag push, branch push, or manual workflow dispatch
     if: |
-      (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) ||
+      (github.event_name == 'push') ||
       (github.event_name == 'workflow_dispatch' && (inputs.platform == 'all' || inputs.platform == matrix.key))
 
     strategy:

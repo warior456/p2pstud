@@ -18,7 +18,11 @@ import {
   Sprout,
   FolderInput,
   Shield,
-  Clock
+  Clock,
+  Star,
+  ThumbsUp,
+  ThumbsDown,
+  ShieldAlert
 } from 'lucide-react';
 import { FileEntry } from '../../types';
 
@@ -39,6 +43,19 @@ interface FileRowProps {
   onEvictLocal?: (hash: string) => void;
   onMove?: (hash: string) => void;
   onMoveToFolder?: (sourceHash: string, targetFolderName: string) => void;
+  onRate?: (hash: string, rating: 1 | -1) => void;
+  onToggleStar?: (hash: string) => void;
+  onReportDangerous?: (hash: string, reason: string) => void;
+}
+
+const DANGEROUS_EXTENSIONS = [
+  '.exe', '.bat', '.cmd', '.msi', '.ps1', '.sh', '.bash', '.elf', '.bin', 
+  '.dll', '.so', '.dylib', '.vbs', '.js', '.vbe', '.wsf', '.wsh', '.scr', '.pif'
+];
+
+function isDangerousFile(filename: string): boolean {
+  const lower = filename.toLowerCase();
+  return DANGEROUS_EXTENSIONS.some((ext) => lower.endsWith(ext));
 }
 
 function formatBytes(bytes: number): string {
@@ -66,6 +83,9 @@ export const FileRow: React.FC<FileRowProps> = ({
   onEvictLocal,
   onMove,
   onMoveToFolder,
+  onRate,
+  onToggleStar,
+  onReportDangerous,
 }) => {
   const [menuOpen, setMenuOpen] = useState(false);
   const [isDragTarget, setIsDragTarget] = useState(false);
@@ -98,6 +118,24 @@ export const FileRow: React.FC<FileRowProps> = ({
     e.stopPropagation();
     navigator.clipboard.writeText(file.hash);
     setMenuOpen(false);
+  };
+
+  const handleSafeAction = (action: () => void, isDangerousPrompt: string) => {
+    if (file.is_quarantined) {
+      const proceed = window.confirm(
+        `SECURITY ALERT: "${file.name}" is currently QUARANTINED by community safety consensus.\n\nAre you sure you want to proceed?`
+      );
+      if (!proceed) return;
+    }
+
+    if (isDangerousFile(file.name)) {
+      const proceed = window.confirm(
+        `SECURITY WARNING: "${file.name}" is an executable or script (${isDangerousPrompt}). Running untrusted software downloaded over P2P may harm your computer.\n\nDo you want to proceed?`
+      );
+      if (!proceed) return;
+    }
+
+    action();
   };
 
   const renderBadge = () => {
@@ -169,17 +207,57 @@ export const FileRow: React.FC<FileRowProps> = ({
       }}
       className={`group flex items-center justify-between px-4 py-3 hover:bg-gray-50 border-b border-gray-100 cursor-pointer relative transition-all ${
         isSelected ? 'bg-blue-50/50' : ''
-      } ${isDragTarget ? 'bg-blue-100/70 border-blue-400 ring-2 ring-blue-400/50' : ''}`}
+      } ${file.is_quarantined ? 'bg-red-50/40 border-red-100' : ''} ${
+        isDragTarget ? 'bg-blue-100/70 border-blue-400 ring-2 ring-blue-400/50' : ''
+      }`}
     >
       <div className="flex items-center gap-3 overflow-hidden">
+        {/* Star Button for study prioritization */}
+        {!file.is_dir && onToggleStar && (
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              onToggleStar(file.hash);
+            }}
+            className="p-1 rounded text-gray-300 hover:text-amber-400 transition-colors"
+            title={file.is_starred ? 'Remove star' : 'Star file (Pin to quick access & offline)'}
+          >
+            <Star
+              className={`w-4 h-4 ${
+                file.is_starred ? 'text-amber-400 fill-amber-400' : 'hover:text-amber-400'
+              }`}
+            />
+          </button>
+        )}
+
         {file.is_dir ? (
           <Folder className="w-5 h-5 text-blue-500 fill-blue-50 shrink-0" />
+        ) : file.is_quarantined ? (
+          <ShieldAlert className="w-5 h-5 text-red-600 shrink-0 animate-pulse" />
         ) : (
           <FileText className="w-5 h-5 text-gray-400 shrink-0" />
         )}
+
         <div className="flex flex-col truncate">
           <div className="flex items-center gap-2 truncate">
-            <span className="text-sm font-medium text-gray-800 truncate">{file.name}</span>
+            <span
+              className={`text-sm font-medium truncate ${
+                file.is_quarantined ? 'text-red-900 line-through' : 'text-gray-800'
+              }`}
+            >
+              {file.name}
+            </span>
+
+            {file.is_quarantined && (
+              <span
+                className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold bg-red-100 text-red-800 border border-red-300"
+                title="Quarantined by community security reports. Download blocked by default."
+              >
+                <ShieldAlert className="w-3 h-3 text-red-600" />
+                ⛔ Quarantined
+              </span>
+            )}
+
             {isScheduledForDeletion ? (
               <span
                 className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold bg-red-100 text-red-800 border border-red-300 animate-pulse"
@@ -197,6 +275,7 @@ export const FileRow: React.FC<FileRowProps> = ({
                 {deleteVotes.length}🗑️ {keepVotes.length > 0 ? `| ${keepVotes.length}🛡️` : ''} ({deleteRatio}%)
               </span>
             ) : null}
+
             {!file.is_dir && !isOwner && (isScheduledForDeletion || deleteVotes.length > 0) && (
               <button
                 onClick={(e) => {
@@ -218,6 +297,7 @@ export const FileRow: React.FC<FileRowProps> = ({
                 {hasVotedKeep ? 'Defending' : 'Defend'}
               </button>
             )}
+
             {!file.is_dir && file.seeds_count !== undefined && (
               <span
                 className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium border ${
@@ -236,6 +316,7 @@ export const FileRow: React.FC<FileRowProps> = ({
               </span>
             )}
           </div>
+
           <div className="flex items-center gap-2 text-[10px] text-gray-400 mt-0.5">
             {file.is_dir ? (
               <span className="font-medium text-blue-600">
@@ -257,6 +338,43 @@ export const FileRow: React.FC<FileRowProps> = ({
       </div>
 
       <div className="flex items-center gap-4">
+        {/* Rating Controls (Thumbs up / down) */}
+        {!file.is_dir && onRate && (
+          <div className="flex items-center gap-1 bg-gray-100/70 rounded-md px-1.5 py-0.5 text-xs text-gray-600">
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                onRate(file.hash, 1);
+              }}
+              className="p-0.5 hover:text-emerald-600 transition-colors"
+              title="Helpful study material (+1)"
+            >
+              <ThumbsUp className="w-3 h-3" />
+            </button>
+            <span
+              className={`font-mono text-[11px] font-semibold px-0.5 ${
+                (file.net_rating ?? 0) > 0
+                  ? 'text-emerald-600'
+                  : (file.net_rating ?? 0) < 0
+                  ? 'text-red-500'
+                  : 'text-gray-500'
+              }`}
+            >
+              {(file.net_rating ?? 0) > 0 ? `+${file.net_rating}` : file.net_rating ?? 0}
+            </span>
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                onRate(file.hash, -1);
+              }}
+              className="p-0.5 hover:text-red-600 transition-colors"
+              title="Low quality / inaccurate (-1)"
+            >
+              <ThumbsDown className="w-3 h-3" />
+            </button>
+          </div>
+        )}
+
         <span className="text-xs text-gray-400 font-mono w-16 text-right">
           {formatBytes(file.size_bytes)}
         </span>
@@ -293,8 +411,8 @@ export const FileRow: React.FC<FileRowProps> = ({
               <button
                 onClick={(e) => {
                   e.stopPropagation();
-                  onPreview(file.hash);
                   setMenuOpen(false);
+                  handleSafeAction(() => onPreview(file.hash), 'Preview');
                 }}
                 className="w-full text-left px-3 py-1.5 flex items-center gap-2 hover:bg-gray-100 text-gray-700"
               >
@@ -304,8 +422,8 @@ export const FileRow: React.FC<FileRowProps> = ({
               <button
                 onClick={(e) => {
                   e.stopPropagation();
-                  onDownload(file.hash);
                   setMenuOpen(false);
+                  handleSafeAction(() => onDownload(file.hash), 'Download');
                 }}
                 className="w-full text-left px-3 py-1.5 flex items-center gap-2 hover:bg-gray-100 text-gray-700"
               >
@@ -391,6 +509,24 @@ export const FileRow: React.FC<FileRowProps> = ({
           >
             <Copy className="w-3.5 h-3.5" /> Copy Hash (BLAKE3)
           </button>
+
+          {!file.is_dir && onReportDangerous && (
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                setMenuOpen(false);
+                const reason = window.prompt(
+                  `Report "${file.name}" for security quarantine.\nProvide reason (e.g. malware, trojan, phishing, scam):`
+                );
+                if (reason && reason.trim()) {
+                  onReportDangerous(file.hash, reason.trim());
+                }
+              }}
+              className="w-full text-left px-3 py-1.5 flex items-center gap-2 hover:bg-red-50 text-red-600"
+            >
+              <ShieldAlert className="w-3.5 h-3.5 text-red-600" /> Report Dangerous / Malicious
+            </button>
+          )}
 
           {!file.is_dir && (
             <>

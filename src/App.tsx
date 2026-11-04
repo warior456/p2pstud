@@ -8,19 +8,29 @@ import {
   RefreshCw,
   Search,
   Upload,
-  FileArchive
+  FileArchive,
+  Wifi,
+  HardDrive,
+  Sparkles
 } from 'lucide-react';
-import { FileEntry, UploadItem, ZipImportSummary } from './types';
+import { FileEntry, UploadItem, ZipImportSummary, NetworkProfileInfo } from './types';
 import { useStorageStats } from './hooks/useStorageStats';
 import { usePeerStatus } from './hooks/usePeerStatus';
+import { useConnectionStatus } from './hooks/useConnectionStatus';
 import { Breadcrumbs } from './components/Explorer/Breadcrumbs';
 import { FileTree } from './components/Explorer/FileTree';
 import { PdfViewer } from './components/Viewers/PdfViewer';
 import { MarkdownEditor } from './components/Viewers/MarkdownEditor';
 import { CacheSlider } from './components/Settings/CacheSlider';
+import { NetworkSettings } from './components/Settings/NetworkSettings';
+import { BackupSettings } from './components/Settings/BackupSettings';
 import { UploadQueueDrawer } from './components/Explorer/UploadQueueDrawer';
 import { TelemetryBar } from './components/Footer/TelemetryBar';
+import { OfflineBanner } from './components/OfflineBanner';
+import { SoleSeedBanner } from './components/SoleSeedBanner';
+import { OnboardingWizard } from './components/Onboarding/OnboardingWizard';
 import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 
 interface BlobRecord {
   hash: string;
@@ -34,17 +44,27 @@ interface BlobRecord {
   deletion_scheduled_at?: number | null;
   seed_count?: number;
   is_cached?: boolean;
+  is_quarantined?: boolean;
+  quarantine_expires_at?: number | null;
+  upvotes?: number;
+  downvotes?: number;
+  net_rating?: number;
+  is_starred?: boolean;
 }
 
 export default function App() {
+  const [onboardingComplete, setOnboardingComplete] = useState<boolean | null>(null);
   const [paths, setPaths] = useState<string[]>(['Shared Cloud']);
   const [files, setFiles] = useState<FileEntry[]>([]);
   const [customFolders, setCustomFolders] = useState<string[]>([]);
   const [uploadQueue, setUploadQueue] = useState<UploadItem[]>([]);
   const [selectedHash, setSelectedHash] = useState<string | null>(null);
   const [currentView, setCurrentView] = useState<'explorer' | 'pdf' | 'markdown' | 'settings'>('explorer');
+  const [settingsTab, setSettingsTab] = useState<'cache' | 'network' | 'backup'>('cache');
   const [searchQuery, setSearchQuery] = useState('');
   const [pdfData, setPdfData] = useState<Uint8Array | null>(null);
+  const [networkProfile, setNetworkProfile] = useState<NetworkProfileInfo | null>(null);
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const zipInputRef = useRef<HTMLInputElement>(null);
@@ -52,6 +72,87 @@ export default function App() {
 
   const { stats, refetch: refetchStats } = useStorageStats();
   const { nodeId } = usePeerStatus();
+  const { isOnline } = useConnectionStatus();
+
+  // Check onboarding status on startup
+  useEffect(() => {
+    invoke<string | null>('get_setting', { key: 'onboarding_complete' })
+      .then((val) => {
+        setOnboardingComplete(val === 'true');
+      })
+      .catch((err) => {
+        console.warn('Could not read onboarding status:', err);
+        setOnboardingComplete(true); // default to true on error so app stays usable
+      });
+  }, []);
+
+  // Fetch network profile
+  const refreshNetworkProfile = async () => {
+    try {
+      const profile = await invoke<NetworkProfileInfo>('get_network_profile');
+      setNetworkProfile(profile);
+    } catch (err) {
+      console.warn('Failed to load network profile:', err);
+    }
+  };
+
+  useEffect(() => {
+    refreshNetworkProfile();
+    // Low-frequency safety poll (60s) and immediate refresh on window focus
+    const interval = setInterval(refreshNetworkProfile, 60000);
+    const onFocus = () => refreshNetworkProfile();
+    window.addEventListener('focus', onFocus);
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener('focus', onFocus);
+    };
+  }, []);
+
+  // Listen to background Tauri events (network profile change events, new SSIDs, scarcity replication, quarantine)
+  useEffect(() => {
+    let unlistenProfile: (() => void) | undefined;
+    let unlistenSsid: (() => void) | undefined;
+    let unlistenScarcity: (() => void) | undefined;
+    let unlistenQuarantine: (() => void) | undefined;
+
+    listen<NetworkProfileInfo>('network-profile-changed', (e) => {
+      setNetworkProfile(e.payload);
+    }).then((un) => {
+      unlistenProfile = un;
+    });
+
+    listen<{ ssid: string }>('network-new-ssid', (e) => {
+      refreshNetworkProfile();
+      setToastMessage(`Connected to new network: ${e.payload.ssid}`);
+      setTimeout(() => setToastMessage(null), 5000);
+    }).then((un) => {
+      unlistenSsid = un;
+    });
+
+    listen<{ hash: string }>('scarcity-replicated', () => {
+      setToastMessage(`Defended rare file! Cached endangered sole-seed file.`);
+      setTimeout(() => setToastMessage(null), 5000);
+      loadWorkspaceFiles();
+      refetchStats();
+    }).then((un) => {
+      unlistenScarcity = un;
+    });
+
+    listen<{ hash: string; reason: string }>('file-quarantined', (e) => {
+      setToastMessage(`Security notice: File ${e.payload.hash.slice(0, 8)}... was placed on community quarantine hold.`);
+      setTimeout(() => setToastMessage(null), 7000);
+      loadWorkspaceFiles();
+    }).then((un) => {
+      unlistenQuarantine = un;
+    });
+
+    return () => {
+      if (unlistenProfile) unlistenProfile();
+      if (unlistenSsid) unlistenSsid();
+      if (unlistenScarcity) unlistenScarcity();
+      if (unlistenQuarantine) unlistenQuarantine();
+    };
+  }, []);
 
   const loadWorkspaceFiles = async () => {
     try {
@@ -70,6 +171,12 @@ export default function App() {
             keep_votes: r.keep_votes || [],
             deletion_scheduled_at: r.deletion_scheduled_at ?? undefined,
             seeds_count: r.seed_count ?? 1,
+            is_quarantined: r.is_quarantined ?? false,
+            quarantine_expires_at: r.quarantine_expires_at ?? null,
+            upvotes: r.upvotes ?? 0,
+            downvotes: r.downvotes ?? 0,
+            net_rating: r.net_rating ?? 0,
+            is_starred: r.is_starred ?? false,
           }))
         );
       }
@@ -80,7 +187,6 @@ export default function App() {
 
   useEffect(() => {
     loadWorkspaceFiles();
-    // Periodically poll catalog so peers' uploads appear automatically
     const interval = setInterval(loadWorkspaceFiles, 2000);
     return () => clearInterval(interval);
   }, []);
@@ -89,7 +195,6 @@ export default function App() {
     fileInputRef.current?.click();
   };
 
-  // Current directory relative prefix within workspace, e.g. "Math101/"
   const currentPrefix = paths.length > 1 ? paths.slice(1).join('/') + '/' : '';
 
   const handleUploadFiles = async (selectedFiles: FileList | File[]) => {
@@ -195,6 +300,22 @@ export default function App() {
 
     if (!customFolders.includes(fullFolderPath)) {
       setCustomFolders((prev) => [...prev, fullFolderPath]);
+    }
+  };
+
+  const handleDeleteFolder = async (folderName: string) => {
+    const targetFolder = currentPrefix ? `${currentPrefix}${folderName}` : folderName;
+    if (!confirm(`Are you sure you want to delete folder "${folderName}"?`)) return;
+
+    try {
+      await invoke('delete_folder', { folderPath: targetFolder });
+      setCustomFolders((prev) => prev.filter((f) => f !== targetFolder));
+      if (paths.length > 1 && paths[paths.length - 1] === folderName) {
+        setPaths((prev) => prev.slice(0, -1));
+      }
+      await loadWorkspaceFiles();
+    } catch (err) {
+      alert(`Failed to delete folder: ${err}`);
     }
   };
 
@@ -323,12 +444,11 @@ export default function App() {
     const file = files.find((f) => f.hash === hash);
     if (!file) return;
 
-    // Extract basename from existing name
     const basename = file.name.split('/').pop() || file.name;
     const cleanFolder = targetFolderPath.trim().replace(/^\/+|\/+$/g, '');
     const newPath = cleanFolder ? `${cleanFolder}/${basename}` : basename;
 
-    if (newPath === file.name) return; // Unchanged
+    if (newPath === file.name) return;
 
     try {
       await invoke('move_file', { hash, newPath });
@@ -343,12 +463,11 @@ export default function App() {
     const file = files.find((f) => f.hash === hash);
     if (!file) return;
 
-    // Collect all existing directory paths across all files + custom folders
     const knownFolders = new Set<string>();
     for (const f of files) {
       if (f.name.includes('/')) {
         const parts = f.name.split('/');
-        parts.pop(); // remove filename
+        parts.pop();
         let acc = '';
         for (const p of parts) {
           acc = acc ? `${acc}/${p}` : p;
@@ -370,7 +489,7 @@ export default function App() {
       currentPrefix.replace(/\/$/, '')
     );
 
-    if (destination === null) return; // User cancelled
+    if (destination === null) return;
     await handleMoveFile(hash, destination.trim());
   };
 
@@ -459,8 +578,35 @@ export default function App() {
     }
   };
 
+  const handleRate = async (hash: string, rating: 1 | -1) => {
+    try {
+      await invoke('rate_file', { hash, rating });
+      await loadWorkspaceFiles();
+    } catch (err) {
+      console.warn('Failed to rate file:', err);
+    }
+  };
+
+  const handleToggleStar = async (hash: string) => {
+    try {
+      await invoke('toggle_star', { hash });
+      await loadWorkspaceFiles();
+    } catch (err) {
+      console.warn('Failed to toggle star:', err);
+    }
+  };
+
+  const handleReportDangerous = async (hash: string, reason: string) => {
+    try {
+      await invoke('report_dangerous', { hash, reason });
+      alert(`Security report submitted for file. Thank you for protecting the swarm!`);
+      await loadWorkspaceFiles();
+    } catch (err) {
+      alert(`Failed to submit report: ${err}`);
+    }
+  };
+
   const currentDisplayFiles = useMemo(() => {
-    // If user is searching globally, search across all workspace files
     if (searchQuery.trim()) {
       const q = searchQuery.toLowerCase();
       return files.filter(
@@ -471,7 +617,6 @@ export default function App() {
     const dirMap = new Map<string, { size_bytes: number; count: number }>();
     const fileEntries: FileEntry[] = [];
 
-    // Custom folders under current directory
     for (const folder of customFolders) {
       if (folder.startsWith(currentPrefix)) {
         const rel = folder.slice(currentPrefix.length);
@@ -485,11 +630,9 @@ export default function App() {
       }
     }
 
-    // Process files under current directory
     for (const file of files) {
       const fileName = file.name;
       if (currentPrefix === '') {
-        // Root workspace
         if (fileName.includes('/')) {
           const dirName = fileName.split('/')[0];
           const cur = dirMap.get(dirName) || { size_bytes: 0, count: 0 };
@@ -501,7 +644,6 @@ export default function App() {
           fileEntries.push(file);
         }
       } else {
-        // Inside subfolder
         if (fileName.startsWith(currentPrefix)) {
           const rel = fileName.slice(currentPrefix.length);
           if (rel.includes('/')) {
@@ -514,7 +656,7 @@ export default function App() {
           } else {
             fileEntries.push({
               ...file,
-              name: rel, // Basename within this folder
+              name: rel,
             });
           }
         }
@@ -535,6 +677,11 @@ export default function App() {
 
     return [...folderEntries, ...fileEntries];
   }, [files, customFolders, currentPrefix, searchQuery]);
+
+  // If first launch and onboarding is not complete, show full wizard
+  if (onboardingComplete === false) {
+    return <OnboardingWizard onComplete={() => setOnboardingComplete(true)} />;
+  }
 
   return (
     <div className="flex flex-col h-screen w-screen overflow-hidden bg-gray-50 text-gray-900 select-none">
@@ -604,6 +751,7 @@ export default function App() {
             onClick={() => {
               loadWorkspaceFiles();
               refetchStats();
+              refreshNetworkProfile();
             }}
             className="p-1.5 hover:bg-gray-100 rounded-lg text-gray-500 hover:text-gray-700 transition-colors"
             title="Refresh Swarm Catalog"
@@ -612,13 +760,30 @@ export default function App() {
           </button>
           <button
             onClick={() => setCurrentView('settings')}
-            className="p-1.5 hover:bg-gray-100 rounded-lg text-gray-500 hover:text-gray-700 transition-colors"
+            className={`p-1.5 rounded-lg transition-colors ${
+              currentView === 'settings'
+                ? 'bg-blue-100 text-blue-700'
+                : 'hover:bg-gray-100 text-gray-500 hover:text-gray-700'
+            }`}
             title="Workspace Settings"
           >
             <Settings className="w-4 h-4" />
           </button>
         </div>
       </header>
+
+      {/* Toast Notification */}
+      {toastMessage && (
+        <div className="bg-blue-600 text-white text-xs px-4 py-2 font-medium flex items-center justify-between shadow-md z-30 transition-all">
+          <span>{toastMessage}</span>
+          <button
+            onClick={() => setToastMessage(null)}
+            className="ml-4 text-blue-200 hover:text-white"
+          >
+            ✕
+          </button>
+        </div>
+      )}
 
       {/* Main Body */}
       <div className="flex-1 flex overflow-hidden">
@@ -665,16 +830,47 @@ export default function App() {
                 </button>
               </div>
             </div>
+
+            <div>
+              <span className="px-3 text-[11px] font-semibold tracking-wider text-gray-400 uppercase">
+                Configuration
+              </span>
+              <div className="mt-1.5 space-y-0.5">
+                <button
+                  onClick={() => {
+                    setCurrentView('settings');
+                    setSettingsTab('network');
+                  }}
+                  className="w-full flex items-center gap-2.5 px-3 py-1.5 text-xs text-gray-600 rounded-lg hover:bg-gray-100"
+                >
+                  <Wifi className="w-3.5 h-3.5 text-emerald-500" />
+                  Network & Stealth
+                </button>
+                <button
+                  onClick={() => {
+                    setCurrentView('settings');
+                    setSettingsTab('backup');
+                  }}
+                  className="w-full flex items-center gap-2.5 px-3 py-1.5 text-xs text-gray-600 rounded-lg hover:bg-gray-100"
+                >
+                  <HardDrive className="w-3.5 h-3.5 text-purple-500" />
+                  Backups & Export
+                </button>
+              </div>
+            </div>
           </div>
 
-          <div className="px-3">
+          <div className="px-3 space-y-2">
             <button
-              onClick={() => setCurrentView('settings')}
+              onClick={() => {
+                setCurrentView('settings');
+                setSettingsTab('cache');
+              }}
               className="w-full flex items-center justify-between p-2 rounded-lg border border-gray-200 hover:bg-gray-50 transition-colors"
             >
               <div className="flex items-center gap-2 text-xs font-semibold text-gray-700">
                 <Settings className="w-3.5 h-3.5 text-gray-500" />
-                Cache Slider
+                Cache Limits
               </div>
               <span className="text-[10px] font-bold text-blue-600 bg-blue-50 px-1.5 py-0.5 rounded">
                 {stats ? `${Math.round(stats.quota_bytes / (1024 * 1024 * 1024))}GB` : '5GB'}
@@ -685,6 +881,10 @@ export default function App() {
 
         {/* Center / Content Area */}
         <main className="flex-1 flex flex-col bg-white overflow-hidden">
+          {/* Top Banners */}
+          <SoleSeedBanner />
+          <OfflineBanner isOnline={isOnline} />
+
           {currentView === 'explorer' && (
             <>
               <Breadcrumbs paths={paths} onNavigate={handleNavigateBreadcrumbs} />
@@ -694,10 +894,12 @@ export default function App() {
                 currentUserId={nodeId}
                 uploadQueue={uploadQueue}
                 isRoot={paths.length <= 1}
+                currentFolderName={paths.length > 1 ? paths[paths.length - 1] : undefined}
                 onSelectFile={handleSelectFile}
                 onNavigateFolder={handleNavigateFolder}
                 onNavigateUp={handleNavigateUp}
                 onCreateFolder={handleCreateFolder}
+                onDeleteFolder={handleDeleteFolder}
                 onUploadFiles={handleUploadFiles}
                 onPin={handlePin}
                 onUnpin={handleUnpin}
@@ -714,6 +916,9 @@ export default function App() {
                 onEvictLocal={handleEvictLocal}
                 onMove={handlePromptMove}
                 onMoveToFolder={handleMoveToFolder}
+                onRate={handleRate}
+                onToggleStar={handleToggleStar}
+                onReportDangerous={handleReportDangerous}
                 onFileUploaded={() => {
                   loadWorkspaceFiles();
                   refetchStats();
@@ -739,17 +944,75 @@ export default function App() {
 
           {currentView === 'settings' && (
             <div className="flex-1 p-8 bg-gray-50 overflow-y-auto">
-              <div className="max-w-2xl mx-auto space-y-6">
+              <div className="max-w-3xl mx-auto space-y-6">
                 <div className="flex items-center justify-between">
-                  <h2 className="text-lg font-bold text-gray-900">Workspace & Cache Settings</h2>
+                  <div>
+                    <h2 className="text-xl font-bold text-gray-900">Application Settings</h2>
+                    <p className="text-xs text-gray-500">Configure cache, stealth network rules, diagnostics, and backups.</p>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <button
+                      onClick={() => setOnboardingComplete(false)}
+                      className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-blue-700 bg-blue-50 border border-blue-200 rounded-lg hover:bg-blue-100 transition shadow-sm"
+                      title="Run the initial setup wizard again"
+                    >
+                      <Sparkles className="w-3.5 h-3.5 text-blue-600" />
+                      Re-run Onboarding
+                    </button>
+                    <button
+                      onClick={() => setCurrentView('explorer')}
+                      className="text-xs text-blue-600 hover:underline font-semibold"
+                    >
+                      ← Back to Files
+                    </button>
+                  </div>
+                </div>
+
+                {/* Settings Navigation Tabs */}
+                <div className="flex border-b border-gray-200 space-x-4">
                   <button
-                    onClick={() => setCurrentView('explorer')}
-                    className="text-xs text-blue-600 hover:underline"
+                    onClick={() => setSettingsTab('cache')}
+                    className={`pb-2 text-xs font-semibold border-b-2 transition-colors ${
+                      settingsTab === 'cache'
+                        ? 'border-blue-600 text-blue-600'
+                        : 'border-transparent text-gray-500 hover:text-gray-700'
+                    }`}
                   >
-                    ← Back to Files
+                    Cache & Quota
+                  </button>
+                  <button
+                    onClick={() => setSettingsTab('network')}
+                    className={`pb-2 text-xs font-semibold border-b-2 transition-colors ${
+                      settingsTab === 'network'
+                        ? 'border-blue-600 text-blue-600'
+                        : 'border-transparent text-gray-500 hover:text-gray-700'
+                    }`}
+                  >
+                    Network Stealth & Diagnostics
+                  </button>
+                  <button
+                    onClick={() => setSettingsTab('backup')}
+                    className={`pb-2 text-xs font-semibold border-b-2 transition-colors ${
+                      settingsTab === 'backup'
+                        ? 'border-blue-600 text-blue-600'
+                        : 'border-transparent text-gray-500 hover:text-gray-700'
+                    }`}
+                  >
+                    Backups & Disaster Recovery
                   </button>
                 </div>
-                <CacheSlider stats={stats} onStatsUpdated={refetchStats} />
+
+                {settingsTab === 'cache' && (
+                  <CacheSlider stats={stats} onStatsUpdated={refetchStats} />
+                )}
+
+                {settingsTab === 'network' && (
+                  <NetworkSettings />
+                )}
+
+                {settingsTab === 'backup' && (
+                  <BackupSettings />
+                )}
               </div>
             </div>
           )}
@@ -764,7 +1027,18 @@ export default function App() {
       />
 
       {/* Persistent Bottom Status & Telemetry Bar */}
-      <TelemetryBar stats={stats} onOpenSettings={() => setCurrentView('settings')} />
+      <TelemetryBar 
+        stats={stats} 
+        networkProfile={networkProfile}
+        onOpenSettings={() => {
+          setCurrentView('settings');
+          setSettingsTab('cache');
+        }}
+        onOpenNetworkSettings={() => {
+          setCurrentView('settings');
+          setSettingsTab('network');
+        }}
+      />
     </div>
   );
 }

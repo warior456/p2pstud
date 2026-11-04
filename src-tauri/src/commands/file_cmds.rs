@@ -1,7 +1,7 @@
 // src-tauri/src/commands/file_cmds.rs
 // Tauri IPC commands for file operations: pin/unpin, read, add, delete, vote delete, and remote swarm download.
 
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use iroh_blobs::store::Store;
 use iroh_blobs::BlobFormat;
 
@@ -84,6 +84,17 @@ pub async fn read_file_bytes(
             let blob_rec = get_blob(&state.db, &hash).ok().flatten();
             let remotes: Vec<_> = engine.endpoint.remote_info_iter().collect();
             let mut download_ok = false;
+            let mut successful_seeder_id: Option<String> = None;
+
+            // Track in resume queue before download starts
+            let _ = crate::storage::blob_tracker::add_or_update_resume_queue(
+                &state.db,
+                &hash,
+                blob_rec.as_ref().and_then(|r| r.name.as_deref()),
+                blob_rec.as_ref().map(|r| r.size_bytes).unwrap_or(0),
+                0,
+                blob_rec.as_ref().and_then(|r| r.owner_node_id.as_deref()),
+            );
 
             // Try the owner node first if known
             if let Some(rec) = &blob_rec {
@@ -94,6 +105,7 @@ pub async fn read_file_bytes(
                             let _ = progress.finish().await;
                             if engine.blobs.clone().client().read_to_bytes(parsed_hash).await.is_ok() {
                                 download_ok = true;
+                                successful_seeder_id = Some(owner.clone());
                             }
                         }
                     }
@@ -108,6 +120,7 @@ pub async fn read_file_bytes(
                         let _ = progress.finish().await;
                         if engine.blobs.clone().client().read_to_bytes(parsed_hash).await.is_ok() {
                             download_ok = true;
+                            successful_seeder_id = Some(remote.node_id.to_string());
                             break;
                         }
                     }
@@ -131,8 +144,58 @@ pub async fn read_file_bytes(
             // Record dynamic network download throughput
             state.bandwidth.record_download(downloaded.len() as u64);
 
-            // Broadcast to swarm that this node is now actively seeding this blob!
+            // Remove from transfer resume queue on successful download completion
+            let _ = crate::storage::blob_tracker::remove_resume_queue(&state.db, &hash);
+
+            // Step 41: Bilateral seeding receipt issuance
             let my_node_id = engine.node_id().to_string();
+            if let Some(ref seeder_id) = successful_seeder_id {
+                if seeder_id != &my_node_id {
+                    let now_unix = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap()
+                        .as_secs() as i64;
+                    let bytes_count = downloaded.len() as u64;
+
+                    if let Ok(data_dir) = app.path().app_data_dir() {
+                        if let Ok(key) = crate::p2p::identity::load_or_create_secret_key(&data_dir) {
+                            let payload = crate::p2p::sync::create_receipt_payload(
+                                &hash,
+                                seeder_id,
+                                &my_node_id,
+                                bytes_count,
+                                now_unix,
+                            );
+                            let signature_hex = crate::p2p::sync::sign_receipt(&key, &payload);
+                            let _ = crate::storage::blob_tracker::store_seeding_receipt(
+                                &state.db,
+                                &hash,
+                                seeder_id,
+                                &my_node_id,
+                                bytes_count,
+                                now_unix,
+                                &signature_hex,
+                            );
+
+                            broadcast_catalog_event(
+                                &engine.endpoint,
+                                &engine.sync_alpn,
+                                SyncMessage::SeedingReceipt {
+                                    hash: hash.clone(),
+                                    seeder_node_id: seeder_id.clone(),
+                                    recipient_node_id: my_node_id.clone(),
+                                    bytes_transferred: bytes_count,
+                                    issued_at: now_unix,
+                                    signature_hex,
+                                },
+                            )
+                            .await;
+                        }
+                    }
+                }
+            }
+
+            // Broadcast to swarm that this node is now actively seeding this blob!
             broadcast_catalog_event(
                 &engine.endpoint,
                 &engine.sync_alpn,
@@ -257,6 +320,7 @@ pub async fn add_file(local_path: String, state: State<'_, AppState>) -> Result<
         deletion_scheduled_at: None,
         seed_count: 1,
         is_cached: true,
+        ..Default::default()
     };
     broadcast_catalog_event(&engine.endpoint, &engine.sync_alpn, SyncMessage::FileAdded(record)).await;
 
@@ -331,6 +395,7 @@ pub async fn upload_file_bytes(
         deletion_scheduled_at: None,
         seed_count: 1,
         is_cached: true,
+        ..Default::default()
     };
     broadcast_catalog_event(&engine.endpoint, &engine.sync_alpn, SyncMessage::FileAdded(record)).await;
 
@@ -571,10 +636,14 @@ pub async fn move_file(
 pub async fn export_file(
     hash: String,
     dest_path: String,
+    app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     if dest_path.contains('\0') {
         return Err("Invalid destination path: contains null byte".to_string());
+    }
+    if dest_path.contains("..") {
+        return Err("Directory traversal '..' detected in destination path".to_string());
     }
 
     let parsed_hash = hash
@@ -592,8 +661,20 @@ pub async fn export_file(
         .await
         .map_err(|e| format!("blob read failed: {e}"))?;
 
-    std::fs::write(&dest_path, data)
-        .map_err(|e| format!("failed to write destination file '{dest_path}': {e}"))?;
+    let path_buf = std::path::PathBuf::from(&dest_path);
+    let target = if path_buf.is_absolute() {
+        path_buf
+    } else {
+        let file_name = path_buf.file_name().ok_or("Invalid destination filename")?;
+        app.path().download_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")).join(file_name)
+    };
+
+    if let Some(parent) = target.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+
+    std::fs::write(&target, data)
+        .map_err(|e| format!("failed to write destination file '{}': {e}", target.display()))?;
 
     Ok(())
 }
@@ -740,6 +821,7 @@ pub async fn import_zip_bytes(
             deletion_scheduled_at: None,
             seed_count: 1,
             is_cached: true,
+            ..Default::default()
         };
 
         broadcast_catalog_event(&engine.endpoint, &engine.sync_alpn, SyncMessage::FileAdded(record)).await;
@@ -767,4 +849,83 @@ pub async fn import_zip_file(
     let path = std::path::Path::new(&file_path);
     let bytes = std::fs::read(path).map_err(|e| format!("cannot read zip file '{file_path}': {e}"))?;
     import_zip_bytes(bytes, target_folder, state).await
+}
+
+/// Cast a community rating on a file (-1, 0, or 1).
+#[tauri::command]
+pub async fn rate_file(
+    hash: String,
+    rating: i8,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let guard = state.engine.read().await;
+    let engine = guard.as_ref().ok_or("Iroh engine not started")?;
+    let my_id = engine.node_id().to_string();
+
+    crate::storage::blob_tracker::rate_file(&state.db, &hash, &my_id, rating)
+        .map_err(|e| e.to_string())?;
+
+    broadcast_catalog_event(
+        &engine.endpoint,
+        &engine.sync_alpn,
+        SyncMessage::FileRated {
+            hash,
+            voter_node_id: my_id,
+            rating,
+        },
+    )
+    .await;
+    Ok(())
+}
+
+/// Toggle bookmark / star state for a file locally.
+#[tauri::command]
+pub async fn toggle_star(
+    hash: String,
+    state: State<'_, AppState>,
+) -> Result<bool, String> {
+    crate::storage::blob_tracker::toggle_star(&state.db, &hash).map_err(|e| e.to_string())
+}
+
+/// Report a file as dangerous. Triggers emergency quarantine if 5 reports arrive in 1 hour.
+#[tauri::command]
+pub async fn report_dangerous(
+    hash: String,
+    state: State<'_, AppState>,
+) -> Result<crate::storage::blob_tracker::QuarantineStatus, String> {
+    let guard = state.engine.read().await;
+    let engine = guard.as_ref().ok_or("Iroh engine not started")?;
+    let my_id = engine.node_id().to_string();
+
+    let status = crate::storage::blob_tracker::report_dangerous(&state.db, &hash, &my_id)
+        .map_err(|e| e.to_string())?;
+
+    broadcast_catalog_event(
+        &engine.endpoint,
+        &engine.sync_alpn,
+        SyncMessage::FileQuarantineReport {
+            hash,
+            reporter_node_id: my_id,
+        },
+    )
+    .await;
+    Ok(status)
+}
+
+/// Delete an empty virtual folder. Returns an error if the folder contains any files.
+#[tauri::command]
+pub async fn delete_folder(
+    virtual_path: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    crate::storage::blob_tracker::check_folder_empty(&state.db, &virtual_path)
+        .map_err(|e| e.to_string())
+}
+
+/// Return the active transfer resume queue.
+#[tauri::command]
+pub async fn get_transfer_queue(
+    state: State<'_, AppState>,
+) -> Result<Vec<crate::storage::blob_tracker::TransferQueueItem>, String> {
+    crate::storage::blob_tracker::list_resume_queue(&state.db).map_err(|e| e.to_string())
 }

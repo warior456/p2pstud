@@ -14,7 +14,9 @@ use anyhow::Result;
 use iroh_blobs::store::Store as _;
 
 use crate::p2p::engine::IrohEngine;
-use crate::storage::blob_tracker::{delete_blob, oldest_unpinned, total_unpinned_bytes};
+use crate::storage::blob_tracker::{
+    delete_blob, get_seed_count, oldest_unpinned, total_unpinned_bytes, BlobRecord,
+};
 use crate::storage::db::Database;
 
 const EVICTION_INTERVAL_SECS: u64 = 60;
@@ -24,8 +26,43 @@ const EVICTION_HIGH_WATERMARK: f64 = 0.90;
 /// Fraction of quota that eviction drives usage down to.
 const EVICTION_LOW_WATERMARK: f64 = 0.80;
 
-/// Batch size — how many candidate blobs to fetch from SQLite per eviction pass.
-const EVICTION_BATCH: usize = 50;
+/// Select and sort eviction candidates according to Step 35 rules:
+/// 1. Dwell time guard: Skip blobs written < 24h ago.
+/// 2. Sole-seed hard block: Skip blobs with 0 remote seeds.
+/// 3. Seed-count-first order: Sort by (remote_seeds DESC, last_accessed_at ASC).
+pub fn select_eviction_candidates(
+    db: &Database,
+    local_node_id: Option<&str>,
+    now: i64,
+) -> Result<Vec<BlobRecord>> {
+    let unpinned = oldest_unpinned(db, 200)?;
+    let mut eligible = Vec::new();
+
+    for blob in unpinned {
+        // Rule 1: Dwell time guard (24 hours = 86400 seconds)
+        let written = blob.written_at.unwrap_or(blob.last_accessed_at);
+        if now.saturating_sub(written) < 86400 {
+            continue;
+        }
+
+        // Rule 2: Sole-seed hard block (remote seeds must be >= 1)
+        let remote_seeds = get_seed_count(db, &blob.hash, local_node_id, false).unwrap_or(0);
+        if remote_seeds == 0 {
+            continue;
+        }
+
+        eligible.push((blob, remote_seeds));
+    }
+
+    // Rule 3: Sort by remote_seeds DESC, then last_accessed_at ASC
+    eligible.sort_by(|(blob_a, seeds_a), (blob_b, seeds_b)| {
+        seeds_b
+            .cmp(seeds_a)
+            .then_with(|| blob_a.last_accessed_at.cmp(&blob_b.last_accessed_at))
+    });
+
+    Ok(eligible.into_iter().map(|(b, _)| b).collect())
+}
 
 /// Read the cache quota from the settings table.
 /// Returns `None` if full-mirror mode is enabled.
@@ -74,11 +111,16 @@ pub async fn run_eviction_pass(db: &Arc<Database>, engine: &IrohEngine) -> Resul
     );
 
     let mut deleted = 0usize;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    let my_node_id = engine.node_id().to_string();
 
     while used > low_mark {
-        let candidates = oldest_unpinned(db, EVICTION_BATCH)?;
+        let candidates = select_eviction_candidates(db, Some(&my_node_id), now)?;
         if candidates.is_empty() {
-            tracing::warn!("No unpinned blobs left to evict but still above low watermark");
+            tracing::warn!("No eligible unpinned blobs left to evict (protected by dwell guard or sole-seed) but still above low watermark");
             break;
         }
 
@@ -107,6 +149,8 @@ pub async fn run_eviction_pass(db: &Arc<Database>, engine: &IrohEngine) -> Resul
 
             tracing::debug!(hash = %hash_str, size = blob.size_bytes, "Evicted blob");
         }
+        // If we processed all candidates and couldn't evict enough, break to avoid infinite loop
+        break;
     }
 
     tracing::info!(deleted, remaining_bytes = used, "Eviction pass complete");
@@ -248,5 +292,79 @@ mod tests {
         assert_eq!(candidates.len(), 3);
         assert!(candidates[0].last_accessed_at <= candidates[1].last_accessed_at);
         assert!(candidates[1].last_accessed_at <= candidates[2].last_accessed_at);
+    }
+
+    #[test]
+    fn dwell_time_guard_skips_recent_blobs() {
+        let (_dir, db) = make_db();
+        let now = 1_000_000i64;
+
+        // Insert 3 blobs written "now"
+        for i in 1..=3 {
+            let hash = format!("recent_{i}");
+            upsert_blob(&db, &hash, None, 500, false, None).unwrap();
+            crate::storage::blob_tracker::record_peer_seed(&db, &hash, "peer1").unwrap();
+        }
+
+        // With now = current timestamp, now - written_at < 86400 -> select_eviction_candidates skips ALL 3
+        let candidates = select_eviction_candidates(&db, Some("my_node"), now).unwrap();
+        assert!(candidates.is_empty(), "All blobs within 24h dwell time must be skipped");
+    }
+
+    #[test]
+    fn seed_count_first_eviction_order() {
+        let (_dir, db) = make_db();
+        let now = 2_000_000i64;
+        let old_time = now - 100_000; // > 24 hours ago
+
+        // Blob A: accessed long ago (timestamp 100), but only 1 remote seed
+        upsert_blob(&db, "blob_rare", None, 500, false, None).unwrap();
+        {
+            let conn = db.lock();
+            conn.execute(
+                "UPDATE local_blobs SET written_at = ?1, last_accessed_at = ?2 WHERE hash = 'blob_rare'",
+                rusqlite::params![old_time, 100i64],
+            ).unwrap();
+        }
+        crate::storage::blob_tracker::record_peer_seed(&db, "blob_rare", "peer1").unwrap();
+
+        // Blob B: accessed recently (timestamp 500), but has 5 remote seeds (abundant)
+        upsert_blob(&db, "blob_abundant", None, 500, false, None).unwrap();
+        {
+            let conn = db.lock();
+            conn.execute(
+                "UPDATE local_blobs SET written_at = ?1, last_accessed_at = ?2 WHERE hash = 'blob_abundant'",
+                rusqlite::params![old_time, 500i64],
+            ).unwrap();
+        }
+        for p in 1..=5 {
+            crate::storage::blob_tracker::record_peer_seed(&db, "blob_abundant", &format!("peer_{p}")).unwrap();
+        }
+
+        let candidates = select_eviction_candidates(&db, Some("my_node"), now).unwrap();
+        assert_eq!(candidates.len(), 2);
+        // Abundant blob (5 seeds) MUST be evicted before rare blob (1 seed), even though accessed more recently
+        assert_eq!(candidates[0].hash, "blob_abundant");
+        assert_eq!(candidates[1].hash, "blob_rare");
+    }
+
+    #[test]
+    fn sole_seed_hard_block_never_evicted() {
+        let (_dir, db) = make_db();
+        let now = 2_000_000i64;
+        let old_time = now - 100_000; // > 24 hours ago
+
+        // Blob with 0 remote seeds (we are sole seed)
+        upsert_blob(&db, "sole_seed_blob", None, 500, false, None).unwrap();
+        {
+            let conn = db.lock();
+            conn.execute(
+                "UPDATE local_blobs SET written_at = ?1, last_accessed_at = ?2 WHERE hash = 'sole_seed_blob'",
+                rusqlite::params![old_time, 50i64],
+            ).unwrap();
+        }
+
+        let candidates = select_eviction_candidates(&db, Some("my_node"), now).unwrap();
+        assert!(candidates.is_empty(), "Sole seed blob (0 remote seeds) must NEVER be evicted");
     }
 }

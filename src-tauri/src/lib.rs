@@ -120,14 +120,19 @@ pub fn run() {
             let db_clone = db.clone();
             let engine_clone = engine.clone();
             let bw_clone = bandwidth.clone();
+            let app_handle_for_workers = app.handle().clone();
+
             tauri::async_runtime::spawn(async move {
                 match p2p::engine::IrohEngine::start(&data_dir_clone, db_clone.clone()).await {
                     Ok(e) => {
                         tracing::info!("Iroh node started: {}", e.node_id());
                         *engine_clone.write().await = Some(e);
-                        // Start background eviction worker and cooperative swarm hosting worker (~80% fill)
+                        // Start background eviction, hosting, scarcity, and pruning workers
                         storage::eviction::spawn_eviction_worker(db_clone.clone(), engine_clone.clone());
-                        storage::hosting_worker::spawn_hosting_worker(db_clone, engine_clone, bw_clone);
+                        storage::hosting_worker::spawn_hosting_worker(db_clone.clone(), engine_clone.clone(), bw_clone.clone());
+                        storage::scarcity::spawn_scarcity_worker(db_clone.clone(), engine_clone.clone(), bw_clone, app_handle_for_workers.clone());
+                        storage::pruning::spawn_lifecycle_pruning_worker(db_clone.clone(), engine_clone.clone());
+                        p2p::network_profile::spawn_network_profile_monitor(db_clone, app_handle_for_workers);
                     }
                     Err(err) => {
                         tracing::error!("Failed to start Iroh node: {:#}", err);
@@ -153,7 +158,10 @@ pub fn run() {
             commands::storage_cmds::set_cache_limit,
             commands::storage_cmds::set_full_mirror,
             commands::storage_cmds::purge_cache,
+            commands::storage_cmds::purge_unpinned_cache,
             commands::storage_cmds::open_data_dir,
+            commands::storage_cmds::get_setting,
+            commands::storage_cmds::set_setting,
             commands::file_cmds::pin_file,
             commands::file_cmds::unpin_file,
             commands::file_cmds::list_files,
@@ -170,11 +178,28 @@ pub fn run() {
             commands::file_cmds::evict_local_file,
             commands::file_cmds::export_file,
             commands::file_cmds::move_file,
+            commands::file_cmds::rate_file,
+            commands::file_cmds::toggle_star,
+            commands::file_cmds::report_dangerous,
+            commands::file_cmds::delete_folder,
+            commands::file_cmds::get_transfer_queue,
             commands::peer_cmds::list_peers,
             commands::peer_cmds::get_node_id,
             commands::peer_cmds::get_node_ticket,
             commands::peer_cmds::get_node_addr,
             commands::peer_cmds::connect_peer,
+            commands::peer_cmds::get_network_profile,
+            commands::peer_cmds::set_network_profile_override,
+            commands::peer_cmds::add_ssid_rule,
+            commands::peer_cmds::list_ssid_rules,
+            commands::peer_cmds::delete_ssid_rule,
+            commands::peer_cmds::get_sole_seed_files,
+            commands::peer_cmds::reconnect_swarm,
+            commands::diagnostic_cmds::run_connection_doctor,
+            commands::backup_cmds::export_app_backup,
+            commands::backup_cmds::export_folder_zip_preflight,
+            commands::backup_cmds::export_folder_zip,
+            commands::backup_cmds::check_app_update,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

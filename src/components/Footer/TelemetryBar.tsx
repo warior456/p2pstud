@@ -1,10 +1,11 @@
-import React from 'react';
-import { Users, Database } from 'lucide-react';
-import { StorageStats } from '../../types';
+import { Users, Database, Shield, Wifi } from 'lucide-react';
+import { StorageStats, NetworkProfileInfo } from '../../types';
 
 interface TelemetryBarProps {
   stats: StorageStats | null;
+  networkProfile?: NetworkProfileInfo | null;
   onOpenSettings?: () => void;
+  onOpenNetworkSettings?: () => void;
 }
 
 function formatGigabytes(bytes: number): string {
@@ -19,7 +20,12 @@ function formatSpeed(bytesPerSec: number): string {
   return `${(bytesPerSec / (1024 * 1024)).toFixed(1)} MB/s`;
 }
 
-export const TelemetryBar: React.FC<TelemetryBarProps> = ({ stats, onOpenSettings }) => {
+export const TelemetryBar: React.FC<TelemetryBarProps> = ({ 
+  stats, 
+  networkProfile,
+  onOpenSettings,
+  onOpenNetworkSettings 
+}) => {
   const isConnected = stats ? stats.peer_count > 0 : false;
   const peerCount = stats?.peer_count ?? 0;
 
@@ -33,9 +39,12 @@ export const TelemetryBar: React.FC<TelemetryBarProps> = ({ stats, onOpenSetting
   const upSpeed = formatSpeed(stats?.upload_bytes_per_sec ?? 0);
   const downSpeed = formatSpeed(stats?.download_bytes_per_sec ?? 0);
 
+  const isCampus = networkProfile?.profile === 'campus';
+  const ssidName = networkProfile?.ssid || 'Unknown SSID';
+
   return (
     <footer className="h-9 bg-gray-900 text-gray-300 text-xs px-4 flex items-center justify-between border-t border-gray-800 select-none">
-      {/* Peer Connection status */}
+      {/* Left: Peer Connection status & Network Profile Badge */}
       <div className="flex items-center gap-3">
         <div className="flex items-center gap-1.5 font-medium">
           <span
@@ -54,6 +63,37 @@ export const TelemetryBar: React.FC<TelemetryBarProps> = ({ stats, onOpenSetting
           <Users className="w-3.5 h-3.5" />
           <span>Peers: {peerCount}</span>
         </div>
+
+        {/* Network Stealth / Campus Profile Badge */}
+        {networkProfile && (
+          <>
+            <div className="h-3 w-px bg-gray-700" />
+            <button
+              onClick={onOpenNetworkSettings}
+              className={`flex items-center gap-1.5 px-2 py-0.5 rounded text-[11px] font-medium transition-colors cursor-pointer border ${
+                isCampus
+                  ? 'bg-amber-950/60 text-amber-300 border-amber-800/80 hover:bg-amber-900/60'
+                  : 'bg-emerald-950/60 text-emerald-300 border-emerald-800/80 hover:bg-emerald-900/60'
+              }`}
+              title={`Network: ${ssidName} (${isCampus ? 'Campus Stealth Mode - Relay only' : 'Trusted Network - LAN mDNS active'}). Click to manage SSID rules.`}
+            >
+              {isCampus ? (
+                <>
+                  <Shield className="w-3 h-3 text-amber-400" />
+                  <span>Campus Stealth ({ssidName})</span>
+                  {networkProfile.lecture_throttle_active && (
+                    <span className="text-[9px] bg-amber-500/30 text-amber-200 px-1 rounded">Lecture Hrs</span>
+                  )}
+                </>
+              ) : (
+                <>
+                  <Wifi className="w-3 h-3 text-emerald-400" />
+                  <span>Trusted ({ssidName})</span>
+                </>
+              )}
+            </button>
+          </>
+        )}
       </div>
 
       {/* Center: Live dynamic network speeds */}

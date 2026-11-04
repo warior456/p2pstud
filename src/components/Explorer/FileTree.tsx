@@ -1,5 +1,17 @@
-import React, { useState } from 'react';
-import { UploadCloud, Plus, FolderPlus, ArrowLeft, Loader2, AlertTriangle, Shield } from 'lucide-react';
+import React, { useState, useMemo } from 'react';
+import { 
+  UploadCloud, 
+  Plus, 
+  FolderPlus, 
+  ArrowLeft, 
+  Loader2, 
+  AlertTriangle, 
+  Shield, 
+  Trash2, 
+  Filter, 
+  Star, 
+  HardDrive
+} from 'lucide-react';
 import { FileEntry, UploadItem } from '../../types';
 import { FileRow } from './FileRow';
 
@@ -9,10 +21,12 @@ interface FileTreeProps {
   currentUserId?: string | null;
   uploadQueue?: UploadItem[];
   isRoot?: boolean;
+  currentFolderName?: string;
   onSelectFile: (file: FileEntry) => void;
   onNavigateFolder: (name: string) => void;
   onNavigateUp?: () => void;
   onCreateFolder?: () => void;
+  onDeleteFolder?: (folderName: string) => void;
   onPin: (hash: string) => void;
   onUnpin: (hash: string) => void;
   onDownload: (hash: string) => void;
@@ -28,6 +42,9 @@ interface FileTreeProps {
   onUploadFiles?: (files: FileList | File[]) => void;
   onMove?: (hash: string) => void;
   onMoveToFolder?: (sourceHash: string, targetFolderName: string) => void;
+  onRate?: (hash: string, rating: 1 | -1) => void;
+  onToggleStar?: (hash: string) => void;
+  onReportDangerous?: (hash: string, reason: string) => void;
 }
 
 function formatBytes(bytes: number): string {
@@ -44,10 +61,12 @@ export const FileTree: React.FC<FileTreeProps> = ({
   currentUserId,
   uploadQueue = [],
   isRoot = true,
+  currentFolderName,
   onSelectFile,
   onNavigateFolder,
   onNavigateUp,
   onCreateFolder,
+  onDeleteFolder,
   onPin,
   onUnpin,
   onDownload,
@@ -62,8 +81,13 @@ export const FileTree: React.FC<FileTreeProps> = ({
   onUploadFiles,
   onMove,
   onMoveToFolder,
+  onRate,
+  onToggleStar,
+  onReportDangerous,
 }) => {
   const [isDragging, setIsDragging] = useState(false);
+  const [offlineOnly, setOfflineOnly] = useState(false);
+  const [starredOnly, setStarredOnly] = useState(false);
 
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault();
@@ -95,6 +119,19 @@ export const FileTree: React.FC<FileTreeProps> = ({
     (f) => !f.is_dir && f.deletion_scheduled_at && f.deletion_scheduled_at > nowSecs
   );
 
+  const filteredFiles = useMemo(() => {
+    return files.filter((f) => {
+      if (f.is_dir) return true; // Keep folders visible
+      if (offlineOnly && f.sync_state !== 'pinned' && f.sync_state !== 'cached') {
+        return false;
+      }
+      if (starredOnly && !f.is_starred) {
+        return false;
+      }
+      return true;
+    });
+  }, [files, offlineOnly, starredOnly]);
+
   return (
     <div
       onDragOver={handleDragOver}
@@ -122,7 +159,7 @@ export const FileTree: React.FC<FileTreeProps> = ({
       )}
 
       {/* Action Toolbar */}
-      <div className="flex items-center justify-between px-4 py-2 bg-gray-50/70 border-b border-gray-100 text-xs">
+      <div className="flex items-center justify-between px-4 py-2 bg-gray-50/70 border-b border-gray-100 text-xs gap-2 flex-wrap">
         <div className="flex items-center gap-2">
           {!isRoot && onNavigateUp && (
             <button
@@ -134,12 +171,53 @@ export const FileTree: React.FC<FileTreeProps> = ({
               <span>Back</span>
             </button>
           )}
+
           <span className="text-gray-400 font-medium">
-            {files.length} {files.length === 1 ? 'item' : 'items'}
+            {filteredFiles.length} {filteredFiles.length === 1 ? 'item' : 'items'}
           </span>
+
+          {/* Quick Filters */}
+          <div className="flex items-center gap-1 border-l border-gray-200 pl-2 ml-1">
+            <button
+              onClick={() => setOfflineOnly(!offlineOnly)}
+              className={`flex items-center gap-1 px-2 py-0.5 rounded text-xs transition-colors ${
+                offlineOnly
+                  ? 'bg-blue-100 text-blue-700 font-semibold'
+                  : 'text-gray-500 hover:bg-gray-200'
+              }`}
+              title="Show only locally cached or pinned files available offline"
+            >
+              <HardDrive className="w-3 h-3" />
+              <span>Offline Ready</span>
+            </button>
+
+            <button
+              onClick={() => setStarredOnly(!starredOnly)}
+              className={`flex items-center gap-1 px-2 py-0.5 rounded text-xs transition-colors ${
+                starredOnly
+                  ? 'bg-amber-100 text-amber-800 font-semibold'
+                  : 'text-gray-500 hover:bg-gray-200'
+              }`}
+              title="Show only starred study files"
+            >
+              <Star className="w-3 h-3 text-amber-500 fill-amber-500" />
+              <span>Starred</span>
+            </button>
+          </div>
         </div>
 
         <div className="flex items-center gap-2">
+          {!isRoot && files.length === 0 && onDeleteFolder && currentFolderName && (
+            <button
+              onClick={() => onDeleteFolder(currentFolderName)}
+              className="flex items-center gap-1 px-2.5 py-1 text-red-600 bg-white border border-red-200 hover:bg-red-50 rounded-md font-medium transition-colors shadow-2xs"
+              title="Delete this empty folder"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+              <span>Delete Folder</span>
+            </button>
+          )}
+
           {onCreateFolder && (
             <button
               onClick={onCreateFolder}
@@ -189,18 +267,37 @@ export const FileTree: React.FC<FileTreeProps> = ({
         </div>
       )}
 
-      {files.length === 0 && activeUploads.length === 0 ? (
+      {filteredFiles.length === 0 && activeUploads.length === 0 ? (
         <div className="flex flex-col items-center justify-center flex-1 text-center p-8">
           <div className="w-16 h-16 rounded-full bg-blue-50 flex items-center justify-center text-blue-500 mb-4 shadow-xs">
-            <UploadCloud className="w-8 h-8" />
+            {offlineOnly || starredOnly ? <Filter className="w-8 h-8" /> : <UploadCloud className="w-8 h-8" />}
           </div>
           <h3 className="text-base font-semibold text-gray-800 mb-1">
-            {isRoot ? 'Shared Workspace is Empty' : 'This Folder is Empty'}
+            {offlineOnly
+              ? 'No offline files available'
+              : starredOnly
+              ? 'No starred files yet'
+              : isRoot
+              ? 'Shared Workspace is Empty'
+              : 'This Folder is Empty'}
           </h3>
           <p className="text-xs text-gray-400 max-w-sm mb-4">
-            Drag and drop study files, notes, or PDFs here to share them directly across the peer swarm.
+            {offlineOnly
+              ? 'Download or pin files from the cloud swarm to make them available offline.'
+              : starredOnly
+              ? 'Click the star icon on important study documents to highlight them here.'
+              : 'Drag and drop study files, notes, or PDFs here to share them directly across the peer swarm.'}
           </p>
           <div className="flex items-center gap-2">
+            {!isRoot && files.length === 0 && onDeleteFolder && currentFolderName && (
+              <button
+                onClick={() => onDeleteFolder(currentFolderName)}
+                className="px-3.5 py-2 bg-red-50 hover:bg-red-100 text-red-600 rounded-lg text-xs font-semibold flex items-center gap-2 transition-colors border border-red-200"
+              >
+                <Trash2 className="w-4 h-4 text-red-600" />
+                Delete This Empty Folder
+              </button>
+            )}
             {onCreateFolder && (
               <button
                 onClick={onCreateFolder}
@@ -223,7 +320,7 @@ export const FileTree: React.FC<FileTreeProps> = ({
         </div>
       ) : (
         <div className="divide-y divide-gray-100 flex-1">
-          {files.map((file) => (
+          {filteredFiles.map((file) => (
             <FileRow
               key={file.hash || file.name}
               file={file}
@@ -248,6 +345,9 @@ export const FileTree: React.FC<FileTreeProps> = ({
               onEvictLocal={onEvictLocal}
               onMove={onMove}
               onMoveToFolder={onMoveToFolder}
+              onRate={onRate}
+              onToggleStar={onToggleStar}
+              onReportDangerous={onReportDangerous}
             />
           ))}
         </div>

@@ -152,3 +152,134 @@ pub async fn connect_peer(
     tracing::info!(node_id = %node_id, "Connected to peer and synchronized catalog successfully");
     Ok(())
 }
+
+/// Retrieve current network profile, detected SSID, and active bandwidth throttle state.
+#[tauri::command]
+pub async fn get_network_profile(
+    state: State<'_, AppState>,
+) -> Result<crate::p2p::network_profile::NetworkProfileInfo, String> {
+    let ssid = crate::p2p::network_profile::get_cached_or_detect_ssid();
+    let (profile, override_active) =
+        crate::p2p::network_profile::resolve_network_profile(&state.db, ssid.as_deref());
+    let is_lecture = crate::p2p::network_profile::is_current_lecture_hours();
+
+    let cap = match profile {
+        crate::p2p::network_profile::NetworkProfile::Campus => {
+            if is_lecture {
+                crate::p2p::network_profile::MAX_LECTURE_BACKGROUND_BPS
+            } else {
+                crate::p2p::network_profile::MAX_CAMPUS_BACKGROUND_BPS
+            }
+        }
+        crate::p2p::network_profile::NetworkProfile::Trusted => u64::MAX,
+    };
+
+    Ok(crate::p2p::network_profile::NetworkProfileInfo {
+        profile: profile.as_str().to_string(),
+        ssid,
+        lecture_throttle_active: is_lecture
+            && profile == crate::p2p::network_profile::NetworkProfile::Campus,
+        override_active,
+        background_cap_bps: cap,
+    })
+}
+
+/// Manually force a profile override ('auto', 'campus', or 'trusted').
+#[tauri::command]
+pub async fn set_network_profile_override(
+    profile: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let p = profile.trim().to_lowercase();
+    if !["auto", "campus", "trusted"].contains(&p.as_str()) {
+        return Err("Override must be 'auto', 'campus', or 'trusted'".to_string());
+    }
+    state
+        .db
+        .set_setting("network_profile_override", &p)
+        .map_err(|e| e.to_string())?;
+    crate::p2p::network_profile::invalidate_ssid_cache();
+    Ok(())
+}
+
+/// Add or update an SSID classification rule ('campus' or 'trusted').
+#[tauri::command]
+pub async fn add_ssid_rule(
+    ssid: String,
+    profile: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    crate::p2p::network_profile::save_ssid_rule(&state.db, &ssid, &profile).map_err(|e| e.to_string())?;
+    crate::p2p::network_profile::invalidate_ssid_cache();
+    Ok(())
+}
+
+/// List all user-configured and default SSID classification rules.
+#[tauri::command]
+pub async fn list_ssid_rules(
+    state: State<'_, AppState>,
+) -> Result<Vec<crate::p2p::network_profile::SsidRule>, String> {
+    crate::p2p::network_profile::list_all_ssid_rules(&state.db).map_err(|e| e.to_string())
+}
+
+/// Delete an SSID classification rule.
+#[tauri::command]
+pub async fn delete_ssid_rule(ssid: String, state: State<'_, AppState>) -> Result<(), String> {
+    crate::p2p::network_profile::delete_ssid_rule_db(&state.db, &ssid).map_err(|e| e.to_string())?;
+    crate::p2p::network_profile::invalidate_ssid_cache();
+    Ok(())
+}
+
+/// Return all files for which this node is the sole known seed in the swarm.
+#[tauri::command]
+pub async fn get_sole_seed_files(
+    state: State<'_, AppState>,
+) -> Result<Vec<crate::storage::blob_tracker::SoleSeedFile>, String> {
+    let guard = state.engine.read().await;
+    let our_node_id = match guard.as_ref() {
+        Some(e) => e.node_id().to_string(),
+        None => return Ok(vec![]),
+    };
+    crate::storage::blob_tracker::get_sole_seed_files(&state.db, &our_node_id)
+        .map_err(|e| e.to_string())
+}
+
+/// Forcibly trigger an immediate swarm reconnection cycle.
+#[tauri::command]
+pub async fn reconnect_swarm(state: State<'_, AppState>) -> Result<(), String> {
+    let guard = state.engine.read().await;
+    let Some(engine) = guard.as_ref() else {
+        return Err("Iroh engine not started".to_string());
+    };
+    if let Ok(Some(bootstrap)) = state.db.get_setting("bootstrap_peer") {
+        let trimmed = bootstrap.trim();
+        if !trimmed.is_empty() {
+            if let Ok(ticket) = trimmed.parse::<iroh::ticket::NodeTicket>() {
+                let _ = engine
+                    .endpoint
+                    .connect(ticket.node_addr().clone(), iroh_blobs::ALPN)
+                    .await;
+                let _ = sync_catalog_with_peer(
+                    &engine.endpoint,
+                    &state.db,
+                    Some(&engine.store),
+                    ticket.node_addr().clone(),
+                )
+                .await;
+            } else if let Ok(id) = trimmed.parse::<iroh::NodeId>() {
+                let _ = engine
+                    .endpoint
+                    .connect(iroh::NodeAddr::new(id), iroh_blobs::ALPN)
+                    .await;
+                let _ = sync_catalog_with_peer(
+                    &engine.endpoint,
+                    &state.db,
+                    Some(&engine.store),
+                    iroh::NodeAddr::new(id),
+                )
+                .await;
+            }
+        }
+    }
+    Ok(())
+}

@@ -34,6 +34,8 @@ pub struct AppSettings {
     pub full_mirror: bool,
     pub node_id: Option<String>,
     pub network_secret: String,
+    #[serde(default)]
+    pub onboarding_complete: Option<String>,
 }
 
 /// Return current storage statistics to the frontend.
@@ -117,12 +119,18 @@ pub async fn get_app_settings(state: State<'_, AppState>) -> Result<AppSettings,
         .map_err(|e| e.to_string())?
         .unwrap_or_default();
 
+    let onboarding_complete = state
+        .db
+        .get_setting("onboarding_complete")
+        .map_err(|e| e.to_string())?;
+
     Ok(AppSettings {
         relay_url,
         cache_limit_bytes,
         full_mirror,
         node_id,
         network_secret,
+        onboarding_complete,
     })
 }
 
@@ -155,6 +163,13 @@ pub async fn update_app_settings(
         .set_setting("network_secret", settings.network_secret.trim())
         .map_err(|e| e.to_string())?;
 
+    if let Some(ref ob) = settings.onboarding_complete {
+        state
+            .db
+            .set_setting("onboarding_complete", ob.trim())
+            .map_err(|e| e.to_string())?;
+    }
+
     tracing::info!(?settings, "Updated application settings");
     Ok(())
 }
@@ -173,14 +188,28 @@ pub async fn set_network_secret(
     Ok(())
 }
 
-/// Update the cache limit quota.
+/// Update the cache limit quota. Accepts either `limit_bytes` or `bytes` / `full_mirror`.
 #[tauri::command]
-pub async fn set_cache_limit(limit_bytes: u64, state: State<'_, AppState>) -> Result<(), String> {
-    state
-        .db
-        .set_setting("cache_limit_bytes", &limit_bytes.to_string())
-        .map_err(|e| e.to_string())?;
-    tracing::info!(limit_bytes, "Updated cache limit bytes");
+pub async fn set_cache_limit(
+    limit_bytes: Option<u64>,
+    bytes: Option<Option<u64>>,
+    full_mirror: Option<bool>,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    if let Some(fm) = full_mirror {
+        state
+            .db
+            .set_setting("full_mirror", &fm.to_string())
+            .map_err(|e| e.to_string())?;
+    }
+    let target_limit = limit_bytes.or(bytes.flatten());
+    if let Some(val) = target_limit {
+        state
+            .db
+            .set_setting("cache_limit_bytes", &val.to_string())
+            .map_err(|e| e.to_string())?;
+        tracing::info!(val, "Updated cache limit bytes");
+    }
     Ok(())
 }
 
@@ -213,6 +242,12 @@ pub async fn purge_cache(state: State<'_, AppState>) -> Result<u64, String> {
 
     tracing::info!(freed_bytes, "Purged unpinned cache");
     Ok(freed_bytes)
+}
+
+/// Alias for purge_cache
+#[tauri::command]
+pub async fn purge_unpinned_cache(state: State<'_, AppState>) -> Result<u64, String> {
+    purge_cache(state).await
 }
 
 /// Open the local data storage folder in the system file manager.
@@ -249,4 +284,17 @@ pub async fn open_data_dir(app: tauri::AppHandle) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+
+/// Retrieve an arbitrary application setting by key.
+#[tauri::command]
+pub async fn get_setting(key: String, state: State<'_, AppState>) -> Result<Option<String>, String> {
+    state.db.get_setting(&key).map_err(|e| e.to_string())
+}
+
+/// Persist an arbitrary application setting by key.
+#[tauri::command]
+pub async fn set_setting(key: String, value: String, state: State<'_, AppState>) -> Result<(), String> {
+    state.db.set_setting(&key, &value).map_err(|e| e.to_string())
 }

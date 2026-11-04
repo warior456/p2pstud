@@ -2,5 +2,6 @@
 pub mod bandwidth;
 pub mod engine;
 pub mod identity;
+pub mod network_profile;
 pub mod relay;
 pub mod sync;

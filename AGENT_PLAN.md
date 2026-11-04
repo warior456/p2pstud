@@ -82,15 +82,15 @@ At the end of every session (or when interrupted), update the `## Progress Track
 | 30 | Single-Instance Integration & Multi-Instance WebView2 Crash Fix | Γ£à | Integrated `tauri-plugin-single-instance` to prevent 0x800700AA crash; safe SQLite forward-migration bounds check |
 | 31 | Security Audit & Comprehensive Hardening | Γ£à | Virtual path sanitization (`sanitize_virtual_path`), DOMPurify XSS mitigation in Markdown preview, authenticated QUIC vote verification, owner-only file moving, null-byte rejection |
 | 32 | P2P Swarm Network Secret & Dev Mode ZIP Import | Γ£à | Swarm passphrase derives dynamic QUIC ALPN isolating private student networks; Zip-Slip safe bulk ZIP archive import in dev mode |
-| 33 | Campus Wi-Fi Detection & Eduroam Stealth Mode | Γ¼£ | Auto-detect `eduroam`/`campusroam`, disable DHT/mDNS on campus, port 443 camouflage, LEDBAT & lecture throttling |
-| 34 | First-Run Onboarding Wizard & Connection Doctor | Γ¼£ | Simplified vs Advanced setup, modular credentials, interactive P2P network diagnostics test suite |
-| 35 | Smart Scarcity Replication & SSD Wear Defense | Γ¼£ | Auto-download 1-seed files, abundance-first eviction ($\ge 3$), 24-48h dwell time, daily write budget, in-memory buffer |
-| 36 | Sole Seed Presence & Desktop Alerts | Γ¼£ | Floating warning banner, flashing taskbar notification, highlighted tray state when hosting unique files |
-| 37 | Strict Immutability & Path Collision Resolution | Γ¼£ | Strict absolute path lock, timestamp-based offline conflict resolution, executable warning modal, cross-platform normalization |
-| 38 | Study Ratings, Empty Folder Rules & Emergency Quarantine | Γ¼£ | Star bookmarks, up/downvote quality signals, negative seeding demotion, 5-report emergency quarantine (1-week hold), empty-only folder deletion |
-| 39 | Transfer Resumption & Enhanced Offline Mode | Γ¼£ | Persistent SQLite transfer resume queue, offline header banner, 'Available Offline' filter toggle |
-| 40 | Workspace Backup, Folder ZIP Export & Updates | Γ¼£ | Settings full app backup, folder ZIP export with peer download prompt, startup/shutdown Tauri auto-updater |
-| 41 | Bilateral Seeding Receipts & Lifecycle Pruning | Γ¼£ | Hash-verified transfer receipts for Sybil-resistant voting, 5-year seeding deprioritization, 2-year dead file purge |
+| 33 | Campus Wi-Fi Detection & Eduroam Stealth Mode | ✅ | Auto-detect `eduroam`/`campusroam`, disable DHT/mDNS on campus, port 443 camouflage, LEDBAT & lecture throttling |
+| 34 | First-Run Onboarding Wizard & Connection Doctor | ✅ | Simplified vs Advanced setup, modular credentials, interactive P2P network diagnostics test suite |
+| 35 | Smart Scarcity Replication & SSD Wear Defense | ✅ | Auto-download 1-seed files, abundance-first eviction ($\ge 3$), 24-48h dwell time, daily write budget, in-memory buffer |
+| 36 | Sole Seed Presence & Desktop Alerts | ✅ | Floating warning banner, flashing taskbar notification, highlighted tray state when hosting unique files |
+| 37 | Strict Immutability & Path Collision Resolution | ✅ | Strict absolute path lock, timestamp-based offline conflict resolution, executable warning modal, cross-platform normalization |
+| 38 | Study Ratings, Empty Folder Rules & Emergency Quarantine | ✅ | Star bookmarks, up/downvote quality signals, negative seeding demotion, 5-report emergency quarantine (1-week hold), empty-only folder deletion |
+| 39 | Transfer Resumption & Enhanced Offline Mode | ✅ | Persistent SQLite transfer resume queue, offline header banner, 'Available Offline' filter toggle |
+| 40 | Workspace Backup, Folder ZIP Export & Updates | ✅ | Settings full app backup, folder ZIP export with peer download prompt, startup/shutdown Tauri auto-updater |
+| 41 | Bilateral Seeding Receipts & Lifecycle Pruning | ✅ | Hash-verified transfer receipts for Sybil-resistant voting, 5-year seeding deprioritization, 2-year dead file purge |
 
 ---
 

@@ -12,6 +12,12 @@ export interface FileEntry {
   deletion_scheduled_at?: number; // Unix timestamp when file will be permanently deleted (grace period)
   seeds_count?: number; // Active peer seeds hosting this file
   item_count?: number; // For virtual folders: number of nested items
+  is_quarantined?: boolean;
+  quarantine_expires_at?: number | null;
+  upvotes?: number;
+  downvotes?: number;
+  net_rating?: number;
+  is_starred?: boolean;
 }
 
 export interface UploadItem {
@@ -45,6 +51,55 @@ export interface AppSettings {
   full_mirror: boolean;
   node_id?: string;
   network_secret: string;
+  onboarding_complete?: string;
+  network_profile_override?: string;
+}
+
+export interface NetworkProfileInfo {
+  profile: 'campus' | 'trusted' | 'unknown';
+  ssid: string | null;
+  lecture_throttle_active: boolean;
+  override_active: string | null;
+  background_cap_bps: number;
+}
+
+export interface SsidRule {
+  ssid: string;
+  profile: 'campus' | 'trusted';
+  added_at: number;
+}
+
+export interface QuarantineStatus {
+  is_quarantined: boolean;
+  report_count: number;
+}
+
+export interface SoleSeedFile {
+  hash: string;
+  name: string | null;
+  size_bytes: number;
+}
+
+export interface TransferQueueItem {
+  hash: string;
+  name: string | null;
+  total_bytes: number;
+  received_bytes: number;
+  source_peer: string | null;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface ExportPreflightInfo {
+  locally_available: number;
+  needs_download: number;
+  total_size_bytes: number;
+}
+
+export interface DoctorTestResult {
+  test: string;
+  ok: boolean;
+  detail: string;
 }
 
 export interface ZipImportSummary {

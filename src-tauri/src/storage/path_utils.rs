@@ -5,6 +5,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Result};
+use unicode_normalization::UnicodeNormalization;
 
 fn strip_unc_prefix(path: PathBuf) -> PathBuf {
     #[cfg(windows)]
@@ -148,6 +149,86 @@ pub fn sanitize_virtual_path(raw: &str) -> Result<String> {
     Ok(parts.join("/"))
 }
 
+/// Normalize and validate a virtual file path component for cross-platform safety.
+/// Returns Err if any rule is violated; returns Ok(normalized) on success.
+///
+/// Rules applied in order:
+/// 1. Apply NFC Unicode normalization.
+/// 2. Reject strings containing null bytes (\0).
+/// 3. Reject strings containing Windows-illegal characters: < > : " \ | ? *
+/// 4. Reject strings whose last path component (after final '/') matches a Windows reserved
+///    device name (case-insensitive): CON, PRN, AUX, NUL, COM0-COM9, LPT0-LPT9.
+/// 5. Reject paths exceeding 200 characters total.
+/// 6. Strip leading and trailing whitespace and dots from each path component.
+/// 7. After normalization, perform a case-insensitive uniqueness check against existing
+///    entries in the same virtual folder. Return Err if a case-insensitive match is found.
+pub fn normalize_virtual_path(input: &str, folder_sibling_names: &[&str]) -> Result<String, String> {
+    // 1. Apply NFC Unicode normalization
+    let nfc_input: String = input.nfc().collect();
+
+    // 2. Reject strings containing null bytes
+    if nfc_input.contains('\0') {
+        return Err("Path contains null byte".to_string());
+    }
+
+    // 3. Reject strings containing Windows-illegal characters
+    const FORBIDDEN_CHARS: &[char] = &['<', '>', ':', '"', '\\', '|', '?', '*'];
+    if nfc_input.chars().any(|c| FORBIDDEN_CHARS.contains(&c) || c.is_control()) {
+        return Err("Path contains illegal characters: < > : \" \\ | ? *".to_string());
+    }
+
+    // Split components by forward slash
+    let raw_components: Vec<&str> = nfc_input.split('/').collect();
+    if raw_components.is_empty() {
+        return Err("Path cannot be empty".to_string());
+    }
+
+    // 6. Strip leading and trailing whitespace and dots from each path component
+    let mut normalized_components = Vec::new();
+    for comp in raw_components {
+        let cleaned = comp.trim().trim_matches('.');
+        if cleaned.is_empty() {
+            continue;
+        }
+        normalized_components.push(cleaned.to_string());
+    }
+
+    if normalized_components.is_empty() {
+        return Err("Path contains no valid components".to_string());
+    }
+
+    // 4. Check Windows reserved device names on the last component
+    const RESERVED_NAMES: &[&str] = &[
+        "CON", "PRN", "AUX", "NUL",
+        "COM0", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+        "LPT0", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+    ];
+
+    let last_comp = normalized_components.last().unwrap();
+    let base_name = last_comp.split('.').next().unwrap_or(last_comp).to_ascii_uppercase();
+    if RESERVED_NAMES.contains(&base_name.as_str()) {
+        return Err(format!("Reserved system device name '{last_comp}' is not allowed"));
+    }
+
+    let normalized_path = normalized_components.join("/");
+
+    // 5. Reject paths exceeding 200 characters total
+    if normalized_path.len() > 200 {
+        return Err("Path exceeds maximum length of 200 characters".to_string());
+    }
+
+    // 7. Case-insensitive uniqueness check against siblings
+    let target_name = normalized_components.last().unwrap().as_str();
+    for sibling in folder_sibling_names {
+        let sibling_name = sibling.split('/').last().unwrap_or(sibling).trim();
+        if sibling_name.eq_ignore_ascii_case(target_name) {
+            return Err(format!("Case collision detected with existing file '{sibling}'"));
+        }
+    }
+
+    Ok(normalized_path)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -211,5 +292,18 @@ mod tests {
         assert!(sanitize_virtual_path("COM1.txt").is_err());
         assert!(sanitize_virtual_path("CON").is_err());
         assert!(sanitize_virtual_path("bad*char.txt").is_err());
+    }
+
+    #[test]
+    fn test_normalize_virtual_path_rules() {
+        assert!(normalize_virtual_path("CON.pdf", &[]).is_err());
+        assert!(normalize_virtual_path("notes<1>.md", &[]).is_err());
+        assert!(normalize_virtual_path("notes.md", &["Notes.md"]).is_err());
+        assert_eq!(
+            normalize_virtual_path("  .folder. / ..file.txt.. ", &[]).unwrap(),
+            "folder/file.txt"
+        );
+        assert!(normalize_virtual_path("file\0name.txt", &[]).is_err());
+        assert!(normalize_virtual_path(&"a".repeat(201), &[]).is_err());
     }
 }

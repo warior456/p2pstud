@@ -91,6 +91,73 @@ pub enum SyncMessage {
         hash: String,
         seeder_node_id: String,
     },
+    /// A peer rated a file (+1, 0, or -1).
+    FileRated {
+        hash: String,
+        voter_node_id: String,
+        rating: i8,
+    },
+    /// A peer reported a file as dangerous.
+    FileQuarantineReport {
+        hash: String,
+        reporter_node_id: String,
+    },
+    /// Bilateral cryptographic receipt proving chunks were served by a seeder to a recipient.
+    SeedingReceipt {
+        hash: String,
+        seeder_node_id: String,
+        recipient_node_id: String,
+        bytes_transferred: u64,
+        issued_at: i64,
+        signature_hex: String,
+    },
+}
+
+/// Helper function to generate conflict-resolved filename preserving extension.
+pub fn resolve_path_conflict(original_path: &str, short_id: &str) -> String {
+    if let Some((base, ext)) = original_path.rsplit_once('.') {
+        format!("{base} ({short_id}).{ext}")
+    } else {
+        format!("{original_path} ({short_id})")
+    }
+}
+
+pub fn create_receipt_payload(
+    hash: &str,
+    seeder: &str,
+    recipient: &str,
+    bytes: u64,
+    issued_at: i64,
+) -> String {
+    format!("receipt:{hash}:{seeder}:{recipient}:{bytes}:{issued_at}")
+}
+
+pub fn sign_receipt(secret_key: &iroh::key::SecretKey, payload: &str) -> String {
+    let sig = secret_key.sign(payload.as_bytes());
+    let bytes = sig.to_bytes();
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+pub fn verify_receipt_signature(
+    recipient_node_id: &str,
+    payload: &str,
+    signature_hex: &str,
+) -> bool {
+    let Ok(pub_key) = recipient_node_id.parse::<iroh::NodeId>() else {
+        return false;
+    };
+    if signature_hex.len() != 128 {
+        return false;
+    }
+    let mut sig_bytes = [0u8; 64];
+    for i in 0..64 {
+        sig_bytes[i] = match u8::from_str_radix(&signature_hex[i * 2..i * 2 + 2], 16) {
+            Ok(b) => b,
+            Err(_) => return false,
+        };
+    }
+    let sig = iroh::key::Signature::from_bytes(&sig_bytes);
+    pub_key.verify(payload.as_bytes(), &sig).is_ok()
 }
 
 /// Protocol handler registered on the Iroh Router for incoming catalog sync streams.
@@ -154,14 +221,81 @@ impl CatalogSyncHandler {
                     return Ok(None);
                 }
                 let clean_name = sanitize_incoming_name(r.name.as_deref());
-                let _ = upsert_blob(
-                    &self.db,
-                    &r.hash,
-                    clean_name.as_deref(),
-                    r.size_bytes.min(100 * 1024 * 1024 * 1024),
-                    false,
-                    r.owner_node_id.as_deref(),
-                );
+
+                if let Some(target_name) = clean_name.as_deref() {
+                    let existing: Option<(String, i64)> = {
+                        let conn = self.db.lock();
+                        use rusqlite::OptionalExtension;
+                        conn.query_row(
+                            "SELECT hash, last_accessed_at FROM local_blobs WHERE name = ?1 LIMIT 1",
+                            rusqlite::params![target_name],
+                            |row| Ok((row.get(0)?, row.get(1)?)),
+                        )
+                        .optional()
+                        .unwrap_or(None)
+                    };
+
+                    if let Some((local_hash, local_time)) = existing {
+                        if local_hash != r.hash {
+                            // Offline split-brain conflict resolution (Step 37)
+                            let incoming_time = r.catalog_first_seen_at.unwrap_or(r.last_accessed_at);
+                            let incoming_wins = if incoming_time != local_time {
+                                incoming_time < local_time
+                            } else {
+                                r.hash < local_hash
+                            };
+
+                            let sender_short = sender_peer_id
+                                .map(|s| &s[..8.min(s.len())])
+                                .unwrap_or("peer");
+                            let local_short = &local_hash[..8.min(local_hash.len())];
+
+                            if incoming_wins {
+                                // Incoming file is older -> it wins original path
+                                let new_local_name = resolve_path_conflict(target_name, local_short);
+                                let _ = rename_blob(&self.db, &local_hash, &new_local_name);
+                                let _ = upsert_blob(
+                                    &self.db,
+                                    &r.hash,
+                                    Some(target_name),
+                                    r.size_bytes.min(100 * 1024 * 1024 * 1024),
+                                    false,
+                                    r.owner_node_id.as_deref(),
+                                );
+                            } else {
+                                // Local file is older -> it wins original path
+                                let new_incoming_name = resolve_path_conflict(target_name, sender_short);
+                                let _ = upsert_blob(
+                                    &self.db,
+                                    &r.hash,
+                                    Some(&new_incoming_name),
+                                    r.size_bytes.min(100 * 1024 * 1024 * 1024),
+                                    false,
+                                    r.owner_node_id.as_deref(),
+                                );
+                            }
+                        } else {
+                            let _ = upsert_blob(
+                                &self.db,
+                                &r.hash,
+                                Some(target_name),
+                                r.size_bytes.min(100 * 1024 * 1024 * 1024),
+                                false,
+                                r.owner_node_id.as_deref(),
+                            );
+                        }
+                    } else {
+                        let _ = upsert_blob(
+                            &self.db,
+                            &r.hash,
+                            Some(target_name),
+                            r.size_bytes.min(100 * 1024 * 1024 * 1024),
+                            false,
+                            r.owner_node_id.as_deref(),
+                        );
+                    }
+                }
+
                 for voter in r.delete_votes {
                     let _ = cast_delete_vote(&self.db, &r.hash, &voter);
                 }
@@ -305,6 +439,76 @@ impl CatalogSyncHandler {
             }
             SyncMessage::FileUnseeded { hash, seeder_node_id } => {
                 let _ = remove_peer_seed(&self.db, &hash, &seeder_node_id);
+                Ok(None)
+            }
+            SyncMessage::FileRated {
+                hash,
+                voter_node_id,
+                rating,
+            } => {
+                if !is_valid_blob_hash(&hash) {
+                    return Ok(None);
+                }
+                if sender_peer_id == Some(voter_node_id.as_str()) {
+                    let _ = crate::storage::blob_tracker::rate_file(&self.db, &hash, &voter_node_id, rating);
+                }
+                Ok(None)
+            }
+            SyncMessage::FileQuarantineReport {
+                hash,
+                reporter_node_id,
+            } => {
+                if !is_valid_blob_hash(&hash) {
+                    return Ok(None);
+                }
+                if sender_peer_id == Some(reporter_node_id.as_str()) {
+                    let _ = crate::storage::blob_tracker::report_dangerous(&self.db, &hash, &reporter_node_id);
+                }
+                Ok(None)
+            }
+            SyncMessage::SeedingReceipt {
+                hash,
+                seeder_node_id,
+                recipient_node_id,
+                bytes_transferred,
+                issued_at,
+                signature_hex,
+            } => {
+                if !is_valid_blob_hash(&hash) {
+                    return Ok(None);
+                }
+                // 1. Self-dealing check: reject if recipient is seeder
+                if recipient_node_id == seeder_node_id {
+                    tracing::warn!("Discarded self-dealing seeding receipt");
+                    return Ok(None);
+                }
+
+                // 2. Must exist in workspace catalog
+                if get_blob(&self.db, &hash).unwrap_or(None).is_none() {
+                    return Ok(None);
+                }
+
+                // 3. Cryptographic signature check
+                let payload = create_receipt_payload(&hash, &seeder_node_id, &recipient_node_id, bytes_transferred, issued_at);
+                if verify_receipt_signature(&recipient_node_id, &payload, &signature_hex) {
+                    let _ = crate::storage::blob_tracker::store_seeding_receipt(
+                        &self.db,
+                        &hash,
+                        &seeder_node_id,
+                        &recipient_node_id,
+                        bytes_transferred,
+                        issued_at,
+                        &signature_hex,
+                    );
+                    tracing::info!(seeder = %seeder_node_id, recipient = %recipient_node_id, "Verified and stored bilateral seeding receipt");
+                } else {
+                    tracing::warn!("Discarded seeding receipt with invalid signature");
+                }
+
+                // TODO(governance): When receipt-based governance is enforced, nodes with 0 verified receipts
+                // within 14 days will have no vote weight. For now, log this count alongside votes but do NOT
+                // reject votes based on receipt count.
+
                 Ok(None)
             }
         }
@@ -462,5 +666,72 @@ mod tests {
         assert!(!is_valid_blob_hash("invalid"));
         assert!(!is_valid_blob_hash(""));
         assert!(!is_valid_blob_hash("../../../etc/passwd"));
+    }
+
+    #[test]
+    fn test_seeding_receipt_signing_and_verification() {
+        let recipient_key = iroh::key::SecretKey::generate();
+        let recipient_node_id = recipient_key.public().to_string();
+        let seeder_key = iroh::key::SecretKey::generate();
+        let seeder_node_id = seeder_key.public().to_string();
+
+        let hash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        let payload = create_receipt_payload(hash, &seeder_node_id, &recipient_node_id, 1048576, 1700000000);
+
+        let signature_hex = sign_receipt(&recipient_key, &payload);
+        assert_eq!(signature_hex.len(), 128);
+
+        // Verification with correct key succeeds
+        assert!(verify_receipt_signature(&recipient_node_id, &payload, &signature_hex));
+
+        // Tampered payload fails
+        let tampered_payload = create_receipt_payload(hash, &seeder_node_id, &recipient_node_id, 2048576, 1700000000);
+        assert!(!verify_receipt_signature(&recipient_node_id, &tampered_payload, &signature_hex));
+
+        // Wrong signer key fails
+        assert!(!verify_receipt_signature(&seeder_node_id, &payload, &signature_hex));
+    }
+
+    #[tokio::test]
+    async fn test_offline_conflict_resolution_older_wins() {
+        let dir = TempDir::new().unwrap();
+        let db = Arc::new(Database::open(&dir.path().join("test.db")).unwrap());
+        let handler = CatalogSyncHandler::new(db.clone(), None);
+
+        let local_hash = "0000000000000000000000000000000000000000000000000000000000000001";
+        let incoming_hash = "0000000000000000000000000000000000000000000000000000000000000002";
+
+        // Local file created at timestamp 2000
+        upsert_blob(&db, local_hash, Some("notes.pdf"), 500, false, Some("nodeA")).unwrap();
+        {
+            let conn = db.lock();
+            conn.execute(
+                "UPDATE local_blobs SET last_accessed_at = 2000, catalog_first_seen_at = 2000 WHERE hash = ?1",
+                rusqlite::params![local_hash],
+            ).unwrap();
+        }
+
+        // Incoming file created earlier at timestamp 1000 with same name "notes.pdf"
+        let incoming_record = BlobRecord {
+            hash: incoming_hash.to_string(),
+            name: Some("notes.pdf".to_string()),
+            size_bytes: 600,
+            last_accessed_at: 1000,
+            is_pinned: false,
+            owner_node_id: Some("nodeB".to_string()),
+            catalog_first_seen_at: Some(1000),
+            ..Default::default()
+        };
+
+        let _ = handler.handle_message(SyncMessage::FileAdded(incoming_record), Some("nodeB_peer_id")).await;
+
+        // Incoming file wins original name "notes.pdf"
+        let incoming_blob = get_blob(&db, incoming_hash).unwrap().unwrap();
+        assert_eq!(incoming_blob.name.as_deref(), Some("notes.pdf"));
+
+        // Local file was deterministically renamed with its short ID
+        let local_blob = get_blob(&db, local_hash).unwrap().unwrap();
+        let local_name = local_blob.name.unwrap();
+        assert!(local_name.starts_with("notes (") && local_name.ends_with(").pdf"));
     }
 }
