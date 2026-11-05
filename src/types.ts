@@ -38,6 +38,30 @@ export interface StorageStats {
   upload_bytes_per_sec: number;
   download_bytes_per_sec: number;
   swarm_median_version?: string;
+  is_online?: boolean;
+  relay_connected?: boolean;
+}
+
+export interface ConnectionStatus {
+  is_online: boolean;
+  peer_count: number;
+  relay_connected: boolean;
+  relay_url?: string | null;
+}
+
+export interface NetworkDatabaseInfo {
+  network_secret: string;
+  display_name: string;
+  db_file: string;
+  file_count: number;
+  seedable_file_count: number;
+  is_active: boolean;
+}
+
+export interface TransferSummary {
+  transferred_count: number;
+  skipped_cloud_only_count: number;
+  total_bytes_transferred: number;
 }
 
 export interface PeerInfo {

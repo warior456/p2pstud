@@ -1,8 +1,9 @@
 // src-tauri/src/commands/storage_cmds.rs
 // Tauri IPC commands for cache quota management, settings, and storage statistics.
 
+use iroh::Watcher;
 use serde::{Deserialize, Serialize};
-use tauri::State;
+use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::storage::blob_tracker::{delete_blob, oldest_unpinned, total_bytes, total_pinned_bytes};
 use crate::AppState;
@@ -26,6 +27,19 @@ pub struct StorageStats {
     pub download_bytes_per_sec: u64,
     /// Calculated median software version across all active swarm peers + local node.
     pub swarm_median_version: Option<String>,
+    /// Whether swarm connectivity is currently active.
+    pub is_online: bool,
+    /// Whether connected to a working relay.
+    pub relay_connected: bool,
+}
+
+/// Swarm connection health and relay status.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ConnectionStatus {
+    pub is_online: bool,
+    pub peer_count: usize,
+    pub relay_connected: bool,
+    pub relay_url: Option<String>,
 }
 
 /// Global application settings.
@@ -65,14 +79,33 @@ pub async fn get_storage_stats(state: State<'_, AppState>) -> Result<StorageStat
             .unwrap_or(5_368_709_120)
     };
 
-    let peer_count = {
+    let (peer_count, relay_connected) = {
         let guard = state.engine.read().await;
         match guard.as_ref() {
-            Some(engine) => engine.peer_count().await,
-            None => 0,
+            Some(engine) => {
+                let mut home_status = engine.endpoint.home_relay_status();
+                let active_relays = home_status.get();
+                let relay_connected = !active_relays.is_empty();
+                let my_id = engine.node_id().to_string();
+                let fifteen_mins_ago = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs() as i64 - 900;
+                let count: i64 = {
+                    let conn = state.db.lock();
+                    conn.query_row(
+                        "SELECT COUNT(DISTINCT peer_node_id) FROM file_seeds WHERE peer_node_id != ?1 AND last_seen_at >= ?2",
+                        rusqlite::params![&my_id, fifteen_mins_ago],
+                        |r| r.get(0),
+                    ).unwrap_or(0)
+                };
+                (count.max(0) as usize, relay_connected)
+            }
+            None => (0, false),
         }
     };
 
+    let is_online = relay_connected || peer_count > 0;
     let (upload_bytes_per_sec, download_bytes_per_sec) = state.bandwidth.get_rates();
     let current_version = env!("CARGO_PKG_VERSION");
     let version_info = crate::storage::blob_tracker::calculate_swarm_median_version(&state.db, current_version);
@@ -86,6 +119,8 @@ pub async fn get_storage_stats(state: State<'_, AppState>) -> Result<StorageStat
         upload_bytes_per_sec,
         download_bytes_per_sec,
         swarm_median_version: Some(version_info.median_version),
+        is_online,
+        relay_connected,
     })
 }
 
@@ -179,17 +214,17 @@ pub async fn update_app_settings(
     Ok(())
 }
 
-/// Update the P2P network secret / workspace passphrase.
+/// Update the P2P network secret / workspace passphrase and isolate its database.
 #[tauri::command]
 pub async fn set_network_secret(
     secret: String,
     state: State<'_, AppState>,
+    app: AppHandle,
 ) -> Result<(), String> {
-    state
-        .db
-        .set_setting("network_secret", secret.trim())
-        .map_err(|e| e.to_string())?;
-    tracing::info!("Updated network secret / workspace passphrase");
+    let trimmed = secret.trim();
+    state.db.switch_network(trimmed).map_err(|e| e.to_string())?;
+    let _ = app.emit("network-database-switched", trimmed);
+    tracing::info!(trimmed, "Switched network secret and isolated database");
     Ok(())
 }
 
@@ -370,4 +405,121 @@ pub async fn set_cache_directory(
     state.db.set_setting("custom_blob_dir", trimmed).map_err(|e| e.to_string())?;
     tracing::info!(path = %trimmed, "Saved custom cache storage directory (will be used on next start)");
     Ok(trimmed.to_string())
+}
+
+/// Set custom relay server URL.
+#[tauri::command]
+pub async fn set_relay_url(relay_url: String, state: State<'_, AppState>) -> Result<(), String> {
+    state
+        .db
+        .set_setting("relay_url", relay_url.trim())
+        .map_err(|e| e.to_string())?;
+    tracing::info!(relay = %relay_url, "Saved relay URL setting");
+    Ok(())
+}
+
+/// Retrieve comprehensive swarm connectivity, peer counts, and relay status.
+#[tauri::command]
+pub async fn get_connection_status(state: State<'_, AppState>) -> Result<ConnectionStatus, String> {
+    let (peer_count, relay_connected, relay_url) = {
+        let guard = state.engine.read().await;
+        if let Some(engine) = guard.as_ref() {
+            let mut home_status = engine.endpoint.home_relay_status();
+            let active_relays = home_status.get();
+            let relay_connected = !active_relays.is_empty();
+            let first_relay = active_relays.first().map(|r| r.url().to_string());
+            let my_id = engine.node_id().to_string();
+            let fifteen_mins_ago = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs() as i64 - 900;
+            let count: i64 = {
+                let conn = state.db.lock();
+                conn.query_row(
+                    "SELECT COUNT(DISTINCT peer_node_id) FROM file_seeds WHERE peer_node_id != ?1 AND last_seen_at >= ?2",
+                    rusqlite::params![&my_id, fifteen_mins_ago],
+                    |r| r.get(0),
+                ).unwrap_or(0)
+            };
+            (count.max(0) as usize, relay_connected, first_relay)
+        } else {
+            (0, false, None)
+        }
+    };
+
+    let configured_relay = state.db.get_setting("relay_url").unwrap_or_default().unwrap_or_default();
+    let effective_relay = if !configured_relay.trim().is_empty() {
+        Some(configured_relay)
+    } else {
+        relay_url.or_else(|| Some(crate::p2p::relay::DEFAULT_RELAY_URL.to_string()))
+    };
+
+    let is_online = relay_connected || peer_count > 0;
+
+    Ok(ConnectionStatus {
+        is_online,
+        peer_count,
+        relay_connected,
+        relay_url: effective_relay,
+    })
+}
+
+/// Minimize / hide the main application window to the system tray.
+#[tauri::command]
+pub async fn hide_main_window(app: AppHandle) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.hide();
+    }
+    Ok(())
+}
+
+/// List all known and on-disk network databases.
+#[tauri::command]
+pub async fn list_network_databases(
+    state: State<'_, AppState>,
+) -> Result<Vec<crate::storage::db::NetworkDatabaseInfo>, String> {
+    state.db.list_network_databases().map_err(|e| e.to_string())
+}
+
+/// Switch the active network database and isolate workspace files.
+#[tauri::command]
+pub async fn switch_network_database(
+    secret: String,
+    state: State<'_, AppState>,
+    app: AppHandle,
+) -> Result<(), String> {
+    let trimmed = secret.trim();
+    state.db.switch_network(trimmed).map_err(|e| e.to_string())?;
+    let _ = app.emit("network-database-switched", trimmed);
+    tracing::info!(trimmed, "Switched network database");
+    Ok(())
+}
+
+/// Transfer files between networks (only seedable cached/pinned files; this node becomes owner).
+#[tauri::command]
+pub async fn transfer_network_files(
+    source_secret: String,
+    target_secret: String,
+    state: State<'_, AppState>,
+) -> Result<crate::storage::db::TransferSummary, String> {
+    let our_node_id = {
+        let guard = state.engine.read().await;
+        match guard.as_ref() {
+            Some(e) => e.node_id().to_string(),
+            None => "local_node".to_string(),
+        }
+    };
+    state
+        .db
+        .transfer_files_to_network(&source_secret, &target_secret, &our_node_id)
+        .map_err(|e| e.to_string())
+}
+
+/// Delete a non-active network database.
+#[tauri::command]
+pub async fn delete_network_database(
+    secret: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    state.db.delete_network_database(&secret).map_err(|e| e.to_string())
 }

@@ -46,7 +46,7 @@ export function OnboardingWizard({ onComplete }: OnboardingWizardProps) {
       // Also persist all current app settings in one go
       await invoke('update_app_settings', {
         settings: {
-          relay_url: settings.relayUrl || 'https://use1-1.relay.iroh.network/',
+          relay_url: settings.relayUrl || 'https://euw1-1.relay.iroh.network/',
           cache_limit_bytes: settings.cacheQuotaBytes || 5368709120,
           full_mirror: Boolean(settings.fullMirror),
           network_secret: settings.passphrase || '',

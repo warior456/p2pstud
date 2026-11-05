@@ -249,7 +249,7 @@ export function OnboardingAdvanced({ onFinish, onBackToModeSelect }: OnboardingA
                 type="text"
                 value={relayUrl}
                 onChange={(e) => setRelayUrl(e.target.value)}
-                placeholder="https://use1-1.relay.iroh.network/"
+                placeholder="https://euw1-1.relay.iroh.network/"
                 className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-blue-500"
               />
               <p className="text-[11px] text-slate-400">

@@ -4,24 +4,26 @@ import {
   Trash2, 
   Shield, 
   Home, 
-  Stethoscope,
-  Radio,
-  Activity,
-  Copy,
-  Check,
-  UserPlus,
-  Network,
-  RefreshCw,
-  Key,
-  Lock,
-  Eye,
-  EyeOff,
-  Server,
-  Globe,
-  Wifi
+  Stethoscope, 
+  Radio, 
+  Copy, 
+  Check, 
+  UserPlus, 
+  Network, 
+  RefreshCw, 
+  Key, 
+  Lock, 
+  Eye, 
+  EyeOff, 
+  Server, 
+  Globe, 
+  Wifi,
+  Database as DatabaseIcon,
+  ArrowRightLeft,
+  CheckCircle2
 } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
-import { NetworkProfileInfo, SsidRule, PeerInfo } from '../../types';
+import { NetworkProfileInfo, SsidRule, PeerInfo, NetworkDatabaseInfo, TransferSummary } from '../../types';
 import { ConnectionDoctor } from '../Onboarding/ConnectionDoctor';
 
 export function NetworkSettings() {
@@ -38,7 +40,7 @@ export function NetworkSettings() {
   const [nodeId, setNodeId] = useState<string>('');
   const [nodeTicket, setNodeTicket] = useState<string>('');
   const [nodeAddr, setNodeAddr] = useState<string>('');
-  const [relayUrl, setRelayUrl] = useState<string>('https://use1-1.relay.iroh.network/');
+  const [relayUrl, setRelayUrl] = useState<string>('https://euw1-1.relay.iroh.network/');
   const [peerInput, setPeerInput] = useState<string>('');
   const [peerRelayInput, setPeerRelayInput] = useState<string>('');
   const [networkSecret, setNetworkSecret] = useState<string>('');
@@ -50,6 +52,14 @@ export function NetworkSettings() {
   const [copiedId, setCopiedId] = useState<boolean>(false);
   const [copiedTicket, setCopiedTicket] = useState<boolean>(false);
   const [peers, setPeers] = useState<PeerInfo[]>([]);
+
+  // Network Databases & Multi-Swarm Workspaces
+  const [databases, setDatabases] = useState<NetworkDatabaseInfo[]>([]);
+  const [switchingDb, setSwitchingDb] = useState<string | null>(null);
+  const [transferSource, setTransferSource] = useState<string | null>(null);
+  const [transferTarget, setTransferTarget] = useState<string>('');
+  const [transferring, setTransferring] = useState<boolean>(false);
+  const [transferSummary, setTransferSummary] = useState<TransferSummary | null>(null);
 
   const fetchProfileAndRules = async () => {
     try {
@@ -64,28 +74,17 @@ export function NetworkSettings() {
     }
   };
 
-  const loadNetworkInfo = async () => {
+  const fetchDatabases = async () => {
     try {
-      const id = await invoke<string>('get_node_id');
-      if (id) setNodeId(id);
-    } catch {
-      // Starting
+      const list = await invoke<NetworkDatabaseInfo[]>('list_network_databases');
+      if (list) setDatabases(list);
+    } catch (err) {
+      console.warn('Failed to list network databases:', err);
     }
+  };
 
-    try {
-      const ticket = await invoke<string>('get_node_ticket');
-      if (ticket) setNodeTicket(ticket);
-    } catch {
-      // Starting
-    }
-
-    try {
-      const addr = await invoke<string>('get_node_addr');
-      if (addr) setNodeAddr(addr);
-    } catch {
-      // Optional
-    }
-
+  // Static settings are loaded ONCE on mount so background polling never overwrites user typing
+  const loadSettingsOnce = async () => {
     try {
       const settings = await invoke<{ relay_url: string; network_secret?: string }>('get_app_settings');
       if (settings?.relay_url) setRelayUrl(settings.relay_url);
@@ -93,17 +92,35 @@ export function NetworkSettings() {
     } catch {
       // Fallback
     }
+  };
+
+  // Only dynamic connection data is polled every 3s
+  const loadNetworkInfo = async () => {
+    try {
+      const id = await invoke<string>('get_node_id');
+      if (id) setNodeId(id);
+    } catch {}
+
+    try {
+      const ticket = await invoke<string>('get_node_ticket');
+      if (ticket) setNodeTicket(ticket);
+    } catch {}
+
+    try {
+      const addr = await invoke<string>('get_node_addr');
+      if (addr) setNodeAddr(addr);
+    } catch {}
 
     try {
       const peerList = await invoke<PeerInfo[]>('list_peers');
       if (peerList) setPeers(peerList);
-    } catch {
-      // Fallback
-    }
+    } catch {}
   };
 
   useEffect(() => {
     fetchProfileAndRules();
+    loadSettingsOnce();
+    fetchDatabases();
     loadNetworkInfo();
     const interval = setInterval(loadNetworkInfo, 3000);
     return () => clearInterval(interval);
@@ -152,10 +169,10 @@ export function NetworkSettings() {
     setConnectStatus(null);
     try {
       await invoke('connect_peer', {
-        nodeId: peerInput.trim(),
+        nodeAddrOrTicket: peerInput.trim(),
         relayUrl: peerRelayInput.trim() || null,
       });
-      setConnectStatus({ msg: 'Successfully connected and synced workspace catalog with peer!', isError: false });
+      setConnectStatus({ msg: 'Successfully connected and initiated sync!', isError: false });
       setPeerInput('');
       setPeerRelayInput('');
       await loadNetworkInfo();
@@ -171,11 +188,58 @@ export function NetworkSettings() {
     setSavingSecret(true);
     try {
       await invoke('set_network_secret', { secret: networkSecret.trim() });
-      alert('P2P Network Secret saved! Please restart the application to rejoin with the new secret.');
+      await fetchDatabases();
+      alert('P2P Network Secret saved! Active workspace database switched.');
     } catch (err) {
       alert(`Failed to save network secret: ${err}`);
     } finally {
       setSavingSecret(false);
+    }
+  };
+
+  const handleSwitchDatabase = async (secret: string) => {
+    setSwitchingDb(secret);
+    try {
+      await invoke('switch_network_database', { secret });
+      setNetworkSecret(secret);
+      await fetchDatabases();
+      await loadNetworkInfo();
+      alert(`Switched active network to: ${secret || 'Default Open Network'}`);
+    } catch (err) {
+      alert(`Failed to switch network: ${err}`);
+    } finally {
+      setSwitchingDb(null);
+    }
+  };
+
+  const handleDeleteDatabase = async (secret: string) => {
+    if (!confirm(`Are you sure you want to delete the database for "${secret || 'Default Network'}"? This removes its catalog index and file records.`)) return;
+    try {
+      await invoke('delete_network_database', { secret });
+      await fetchDatabases();
+    } catch (err) {
+      alert(`Failed to delete database: ${err}`);
+    }
+  };
+
+  const handleExecuteTransfer = async () => {
+    if (transferSource === null) return;
+    if (transferSource === transferTarget) {
+      alert('Source and target network cannot be the same.');
+      return;
+    }
+    setTransferring(true);
+    try {
+      const summary = await invoke<TransferSummary>('transfer_network_files', {
+        sourceSecret: transferSource,
+        targetSecret: transferTarget.trim(),
+      });
+      setTransferSummary(summary);
+      await fetchDatabases();
+    } catch (err) {
+      alert(`Transfer failed: ${err}`);
+    } finally {
+      setTransferring(false);
     }
   };
 
@@ -184,12 +248,16 @@ export function NetworkSettings() {
     setSavingRelay(true);
     try {
       await invoke('set_relay_url', { relayUrl: relayUrl.trim() });
-      alert('Relay URL saved. Restart app to connect through the new relay.');
+      alert('Relay URL saved. Active connection will use the new relay.');
     } catch (err) {
       alert(`Failed to save relay URL: ${err}`);
     } finally {
       setSavingRelay(false);
     }
+  };
+
+  const setPresetRelay = (url: string) => {
+    setRelayUrl(url);
   };
 
   const copyToClipboard = (text: string, isTicket: boolean) => {
@@ -204,178 +272,136 @@ export function NetworkSettings() {
   };
 
   return (
-    <div className="max-w-3xl mx-auto space-y-6">
+    <div className="max-w-3xl mx-auto space-y-6 pb-12">
       {/* Active network profile status banner */}
       <div className="bg-white border border-gray-200 rounded-xl p-4 flex items-center justify-between shadow-xs">
         <div className="space-y-1.5">
           <div className="flex items-center gap-2">
-            {profileInfo?.profile === 'campus' ? (
-              <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-amber-50 text-amber-800 border border-amber-300">
-                <Shield className="w-3.5 h-3.5 text-amber-600" />
-                <span>Campus Stealth Mode Active</span>
+            <span className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Current Wi-Fi Profile</span>
+            {profileInfo?.profile === 'campus' && (
+              <span className="px-2 py-0.5 bg-amber-50 text-amber-700 text-xs font-bold rounded-full flex items-center gap-1 border border-amber-200">
+                <Shield className="w-3 h-3 text-amber-600" />
+                Campus Stealth Active
               </span>
-            ) : (
-              <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-emerald-50 text-emerald-800 border border-emerald-300">
-                <Home className="w-3.5 h-3.5 text-emerald-600" />
-                <span>Trusted / Home Network</span>
+            )}
+            {profileInfo?.profile === 'trusted' && (
+              <span className="px-2 py-0.5 bg-emerald-50 text-emerald-700 text-xs font-bold rounded-full flex items-center gap-1 border border-emerald-200">
+                <Home className="w-3 h-3 text-emerald-600" />
+                Trusted Network Active
+              </span>
+            )}
+            {profileInfo?.profile === 'unknown' && (
+              <span className="px-2 py-0.5 bg-gray-100 text-gray-700 text-xs font-medium rounded-full">
+                Unclassified Network
               </span>
             )}
           </div>
-          <p className="text-xs text-gray-600">
-            Detected Wi-Fi SSID: <strong className="text-gray-900 font-mono font-semibold">{profileInfo?.ssid || 'Ethernet / Unknown'}</strong>
-            {profileInfo?.lecture_throttle_active && ' • (Lecture throttle 128 KB/s active)'}
-          </p>
+          <div className="text-sm font-medium text-gray-900 flex items-center gap-2">
+            <span>SSID: <strong className="font-mono">{profileInfo?.ssid || 'Ethernet / Unknown'}</strong></span>
+            {profileInfo?.lecture_throttle_active && (
+              <span className="text-xs text-amber-600 font-medium">
+                (Lecture Hours: Cap 512 KB/s)
+              </span>
+            )}
+          </div>
         </div>
 
         <button
           onClick={() => setShowDoctor(!showDoctor)}
-          className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 rounded-lg text-xs font-semibold transition cursor-pointer"
+          className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-50 text-blue-700 hover:bg-blue-100 rounded-lg text-xs font-semibold transition border border-blue-200 cursor-pointer"
         >
-          <Stethoscope className="w-4 h-4 text-blue-600" />
-          <span>{showDoctor ? 'Hide Diagnostics' : 'Connection Doctor'}</span>
+          <Stethoscope className="w-3.5 h-3.5" />
+          {showDoctor ? 'Hide Connection Doctor' : 'Connection Doctor'}
         </button>
       </div>
 
+      {/* Connection Doctor Diagnostic Tool */}
       {showDoctor && (
-        <div className="bg-white border border-gray-200 rounded-xl p-5 shadow-xs">
-          <ConnectionDoctor onClose={() => setShowDoctor(false)} />
+        <div className="animate-in fade-in slide-in-from-top duration-200">
+          <ConnectionDoctor />
         </div>
       )}
 
-      {/* Swarm Auto-Discovery Status */}
-      <div className="bg-gradient-to-r from-blue-50 to-indigo-50 p-4 rounded-xl border border-blue-200 shadow-xs">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <Globe className="w-4 h-4 text-blue-600" />
-            <span className="text-xs font-bold text-gray-900">Zero-Config Swarm Discovery</span>
-          </div>
-          <span className="text-[10px] font-semibold bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full border border-blue-200">
-            Active & Listening
-          </span>
-        </div>
-        <div className="mt-2 grid grid-cols-1 sm:grid-cols-3 gap-2 text-[11px] text-gray-600">
-          <div className="flex items-center gap-1.5 bg-white/70 p-2 rounded-lg border border-blue-100">
-            <Wifi className="w-3.5 h-3.5 text-green-600" />
-            <span>LAN Swarm (mDNS)</span>
-          </div>
-          <div className="flex items-center gap-1.5 bg-white/70 p-2 rounded-lg border border-blue-100">
-            <Radio className="w-3.5 h-3.5 text-blue-600" />
-            <span>WAN DNS / Pkarr</span>
-          </div>
-          <div className="flex items-center gap-1.5 bg-white/70 p-2 rounded-lg border border-blue-100">
-            <Server className="w-3.5 h-3.5 text-indigo-600" />
-            <span>BitTorrent DHT</span>
-          </div>
-        </div>
-        <p className="text-[11px] text-gray-500 mt-2">
-          Devices on the same Wi-Fi, Ethernet, or campus network discover each other automatically. For remote friends or cloud anchors, share your Node Ticket below.
-        </p>
-      </div>
-
-      {/* Identity Section */}
+      {/* Swarm Identity & Direct Linking Card */}
       <div className="bg-white p-6 rounded-xl border border-gray-200 shadow-xs space-y-4">
-        <div className="flex items-center justify-between border-b border-gray-100 pb-3">
-          <div className="flex items-center gap-2.5">
-            <Radio className="w-5 h-5 text-blue-600" />
-            <h3 className="text-sm font-bold text-gray-900">Your Node Identity & Ticket</h3>
+        <div className="flex items-center gap-2.5 border-b border-gray-100 pb-3">
+          <Radio className="w-5 h-5 text-indigo-600" />
+          <div>
+            <h3 className="text-sm font-bold text-gray-900">Your Swarm Identity</h3>
+            <p className="text-xs text-gray-500">Share your Node ID or Ticket with classmates to form direct mesh sync paths.</p>
           </div>
-          <span className="text-[10px] font-mono bg-green-50 text-green-700 px-2 py-0.5 rounded-full border border-green-200 flex items-center gap-1">
-            <Activity className="w-3 h-3 text-green-600" />
-            {nodeId ? 'Online' : 'Initializing...'}
-          </span>
         </div>
 
-        {nodeTicket && (
+        <div className="space-y-3">
           <div>
-            <label className="text-xs font-semibold text-gray-700">P2P Node Ticket (Recommended for Sharing)</label>
-            <div className="mt-1 flex items-center gap-2">
+            <label className="text-xs font-semibold text-gray-700">Public Node ID</label>
+            <div className="flex gap-2 mt-1">
               <input
                 type="text"
                 readOnly
-                value={nodeTicket}
-                className="w-full text-xs font-mono bg-blue-50/50 border border-blue-200 rounded-lg px-3 py-2 text-blue-900 select-all focus:outline-none truncate"
+                value={nodeId || 'Generating node identity...'}
+                className="w-full text-xs font-mono bg-gray-50 border border-gray-200 rounded-lg px-3 py-2 text-gray-600 select-all focus:outline-none"
+              />
+              <button
+                onClick={() => copyToClipboard(nodeId, false)}
+                disabled={!nodeId}
+                className="px-3 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-lg text-xs font-semibold transition flex items-center gap-1.5 shrink-0"
+              >
+                {copiedId ? <Check className="w-3.5 h-3.5 text-emerald-600" /> : <Copy className="w-3.5 h-3.5" />}
+                {copiedId ? 'Copied' : 'Copy'}
+              </button>
+            </div>
+          </div>
+
+          <div>
+            <label className="text-xs font-semibold text-gray-700">Complete Node Ticket (Recommended)</label>
+            <div className="flex gap-2 mt-1">
+              <input
+                type="text"
+                readOnly
+                value={nodeTicket || 'Generating ticket...'}
+                className="w-full text-xs font-mono bg-gray-50 border border-gray-200 rounded-lg px-3 py-2 text-gray-600 select-all focus:outline-none"
               />
               <button
                 onClick={() => copyToClipboard(nodeTicket, true)}
-                className="px-3 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-medium flex items-center gap-1.5 transition-colors"
-                title="Copy Node Ticket"
+                disabled={!nodeTicket}
+                className="px-3 py-2 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 rounded-lg text-xs font-semibold transition flex items-center gap-1.5 shrink-0"
               >
-                {copiedTicket ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
-                {copiedTicket ? 'Copied' : 'Copy'}
+                {copiedTicket ? <Check className="w-3.5 h-3.5 text-emerald-600" /> : <Copy className="w-3.5 h-3.5" />}
+                {copiedTicket ? 'Copied Ticket' : 'Copy Ticket'}
               </button>
             </div>
             <p className="text-[11px] text-gray-400 mt-1">
               This ticket encodes your Node ID, direct IPs, and relay addresses. Friends can paste this directly to link.
             </p>
           </div>
-        )}
-
-        <div>
-          <label className="text-xs font-semibold text-gray-700">Raw Node ID (Ed25519 Public Key)</label>
-          <div className="mt-1 flex items-center gap-2">
-            <input
-              type="text"
-              readOnly
-              value={nodeId || 'Initializing Iroh Quic Engine...'}
-              className="w-full text-xs font-mono bg-gray-50 border border-gray-200 rounded-lg px-3 py-2 text-gray-700 select-all focus:outline-none"
-            />
-            <button
-              onClick={() => nodeId && copyToClipboard(nodeId, false)}
-              disabled={!nodeId}
-              className="px-3 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-lg text-xs font-medium flex items-center gap-1.5 transition-colors disabled:opacity-50"
-              title="Copy Node ID"
-            >
-              {copiedId ? <Check className="w-3.5 h-3.5 text-green-600" /> : <Copy className="w-3.5 h-3.5" />}
-              {copiedId ? 'Copied' : 'Copy'}
-            </button>
-          </div>
+          {nodeAddr && (
+            <p className="text-[10px] font-mono text-gray-400 truncate">
+              Direct Socket Address: {nodeAddr}
+            </p>
+          )}
         </div>
-
-        {nodeAddr && (
-          <details className="text-xs text-gray-500 cursor-pointer pt-1">
-            <summary className="font-semibold text-gray-700 hover:text-gray-900">
-              Advanced: View Full JSON Address
-            </summary>
-            <div className="mt-2 flex items-center gap-2">
-              <input
-                type="text"
-                readOnly
-                value={nodeAddr}
-                className="w-full text-[11px] font-mono bg-gray-50 border border-gray-200 rounded-lg px-2.5 py-1.5 text-gray-600 select-all focus:outline-none truncate"
-              />
-              <button
-                onClick={() => copyToClipboard(nodeAddr, false)}
-                className="px-2.5 py-1.5 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-lg text-xs font-medium flex items-center gap-1 transition-colors"
-              >
-                <Copy className="w-3 h-3" />
-              </button>
-            </div>
-          </details>
-        )}
       </div>
 
-      {/* Connect to Peer / Anchor */}
+      {/* Manual Peer Link Form */}
       <div className="bg-white p-6 rounded-xl border border-gray-200 shadow-xs space-y-4">
         <div className="flex items-center gap-2.5 border-b border-gray-100 pb-3">
           <UserPlus className="w-5 h-5 text-blue-600" />
           <div>
-            <h3 className="text-sm font-bold text-gray-900">Connect to Peer or Anchor Node</h3>
-            <p className="text-xs text-gray-500">
-              Paste a Node Ticket, JSON address, or Node ID to connect and sync the shared cloud.
-            </p>
+            <h3 className="text-sm font-bold text-gray-900">Connect to Remote Peer</h3>
+            <p className="text-xs text-gray-500">Paste a peer's Node Ticket or raw Node ID to manually establish a sync link.</p>
           </div>
         </div>
 
         <form onSubmit={handleConnectPeer} className="space-y-3">
           <div>
-            <label className="text-xs font-semibold text-gray-700">Peer Address / Ticket *</label>
+            <label className="text-xs font-semibold text-gray-700">Peer Ticket or Node ID</label>
             <input
               type="text"
-              placeholder="Paste Node Ticket (node...), JSON address, or Node ID"
+              placeholder="node... or 64-char hex Node ID"
               value={peerInput}
               onChange={(e) => setPeerInput(e.target.value)}
               className="w-full mt-1 text-xs font-mono bg-gray-50 border border-gray-200 rounded-lg px-3 py-2 focus:bg-white focus:border-blue-500 focus:outline-none transition-all"
-              required
             />
           </div>
 
@@ -391,13 +417,7 @@ export function NetworkSettings() {
           </div>
 
           {connectStatus && (
-            <div
-              className={`p-2.5 rounded-lg text-xs font-medium ${
-                connectStatus.isError
-                  ? 'bg-red-50 text-red-700 border border-red-200'
-                  : 'bg-green-50 text-green-700 border border-green-200'
-              }`}
-            >
+            <div className={`p-3 rounded-lg text-xs font-medium ${connectStatus.isError ? 'bg-red-50 text-red-700 border border-red-200' : 'bg-emerald-50 text-emerald-700 border border-emerald-200'}`}>
               {connectStatus.msg}
             </div>
           )}
@@ -405,51 +425,51 @@ export function NetworkSettings() {
           <button
             type="submit"
             disabled={connecting || !peerInput.trim()}
-            className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-semibold flex items-center gap-2 shadow-xs transition-colors disabled:opacity-50"
+            className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-semibold shadow-xs transition-colors disabled:opacity-50 flex items-center gap-1.5"
           >
-            <UserPlus className="w-3.5 h-3.5" />
-            {connecting ? 'Connecting...' : 'Connect to Peer'}
+            <Plus className="w-3.5 h-3.5" />
+            {connecting ? 'Connecting...' : 'Add Peer to Swarm'}
           </button>
         </form>
       </div>
 
-      {/* Connected Peers List */}
+      {/* Connected Peers Swarm Table */}
       <div className="bg-white p-6 rounded-xl border border-gray-200 shadow-xs space-y-4">
         <div className="flex items-center justify-between border-b border-gray-100 pb-3">
           <div className="flex items-center gap-2.5">
-            <Network className="w-5 h-5 text-blue-600" />
+            <Network className="w-5 h-5 text-emerald-600" />
             <div>
-              <h3 className="text-sm font-bold text-gray-900">Connected Peers ({peers.length})</h3>
-              <p className="text-xs text-gray-500">Live peers actively connected in your P2P swarm.</p>
+              <h3 className="text-sm font-bold text-gray-900">Active Swarm Peers</h3>
+              <p className="text-xs text-gray-500">Live peers contributing and syncing documents with your local node.</p>
             </div>
           </div>
           <button
             onClick={loadNetworkInfo}
-            className="p-1.5 rounded-md hover:bg-gray-100 text-gray-500"
-            title="Refresh peer list"
+            className="p-1.5 hover:bg-gray-100 rounded-lg text-gray-500 hover:text-gray-700 transition"
+            title="Refresh Peers"
           >
-            <RefreshCw className="w-3.5 h-3.5" />
+            <RefreshCw className="w-4 h-4" />
           </button>
         </div>
 
         {peers.length === 0 ? (
-          <div className="text-center py-6 text-gray-400">
-            <p className="text-xs">No remote peers connected yet.</p>
-            <p className="text-[11px] text-gray-400 mt-1">
-              Once another node opens the app on your network or you connect to an anchor node, it will appear here.
-            </p>
+          <div className="text-center py-6 border border-dashed border-gray-200 rounded-lg">
+            <Radio className="w-8 h-8 text-gray-300 mx-auto mb-2" />
+            <p className="text-xs font-medium text-gray-500">No peers currently connected</p>
+            <p className="text-[11px] text-gray-400 mt-0.5">Share your Node Ticket above or join the same Wi-Fi to auto-discover peers.</p>
           </div>
         ) : (
-          <div className="divide-y divide-gray-100 border border-gray-100 rounded-lg overflow-hidden">
-            {peers.map((p) => (
-              <div key={p.node_id} className="p-3 bg-gray-50 flex items-center justify-between text-xs">
+          <div className="divide-y divide-gray-100">
+            {peers.map((p, idx) => (
+              <div key={idx} className="py-2.5 flex items-center justify-between text-xs">
                 <div>
-                  <span className="font-mono font-semibold text-gray-800">{p.node_id.slice(0, 16)}...</span>
+                  <span className="font-mono font-medium text-gray-900">{p.node_id.slice(0, 16)}...{p.node_id.slice(-8)}</span>
                   {p.relay_url && <p className="text-[10px] text-gray-400 truncate max-w-sm">{p.relay_url}</p>}
                 </div>
-                <div className="text-right">
-                  <span className="text-[10px] bg-green-100 text-green-700 px-2 py-0.5 rounded font-mono font-medium">
-                    {p.latency_ms ? `${p.latency_ms} ms` : 'Connected'}
+                <div className="flex items-center gap-2">
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-emerald-50 text-emerald-700 text-[10px] font-bold rounded-full">
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                    Connected
                   </span>
                 </div>
               </div>
@@ -458,115 +478,108 @@ export function NetworkSettings() {
         )}
       </div>
 
-      {/* Campus Wi-Fi Profile & Stealth Mode */}
+      {/* Network Profile Classification & SSID Rules */}
       <div className="bg-white p-6 rounded-xl border border-gray-200 shadow-xs space-y-4">
         <div className="flex items-center gap-2.5 border-b border-gray-100 pb-3">
-          <Shield className="w-5 h-5 text-amber-600" />
+          <Shield className="w-5 h-5 text-indigo-600" />
           <div>
-            <h3 className="text-sm font-bold text-gray-900">Campus Wi-Fi Stealth & SSID Rules</h3>
+            <h3 className="text-sm font-bold text-gray-900">Network Profiles & Campus Stealth</h3>
             <p className="text-xs text-gray-500">
               Configure profile detection on university Wi-Fi networks (disables mDNS/DHT, enforces port 443 relay).
             </p>
           </div>
         </div>
 
-        <div className="space-y-2">
-          <label className="block text-xs font-semibold text-gray-700">
-            Profile Enforcement Mode
-          </label>
+        {/* Override Buttons */}
+        <div>
+          <label className="text-xs font-semibold text-gray-700 block mb-1.5">Profile Override Mode</label>
           <div className="grid grid-cols-3 gap-2">
             <button
               onClick={() => handleSetOverride('auto')}
-              className={`px-3 py-2 text-xs rounded-lg border font-semibold transition text-center cursor-pointer ${
+              className={`p-2.5 rounded-lg border text-left transition cursor-pointer ${
                 overrideMode === 'auto'
-                  ? 'bg-blue-50 border-blue-600 text-blue-700 shadow-2xs ring-1 ring-blue-500/20'
-                  : 'bg-white border-gray-200 text-gray-700 hover:bg-gray-50'
+                  ? 'border-blue-600 bg-blue-50/50 ring-1 ring-blue-600'
+                  : 'border-gray-200 hover:bg-gray-50'
               }`}
             >
-              Auto-Detect SSID
+              <div className="flex items-center gap-1.5 text-xs font-bold text-gray-900">
+                <Globe className="w-3.5 h-3.5 text-blue-600" />
+                Auto-Detect
+              </div>
+              <p className="text-[11px] text-gray-500 mt-0.5">Detect via SSID rules</p>
             </button>
+
             <button
               onClick={() => handleSetOverride('campus')}
-              className={`px-3 py-2 text-xs rounded-lg border font-semibold transition text-center cursor-pointer ${
+              className={`p-2.5 rounded-lg border text-left transition cursor-pointer ${
                 overrideMode === 'campus'
-                  ? 'bg-amber-50 border-amber-600 text-amber-800 shadow-2xs ring-1 ring-amber-500/20'
-                  : 'bg-white border-gray-200 text-gray-700 hover:bg-gray-50'
+                  ? 'border-amber-600 bg-amber-50/50 ring-1 ring-amber-600'
+                  : 'border-gray-200 hover:bg-gray-50'
               }`}
             >
-              Force Campus Mode
+              <div className="flex items-center gap-1.5 text-xs font-bold text-amber-900">
+                <Shield className="w-3.5 h-3.5 text-amber-600" />
+                Force Campus
+              </div>
+              <p className="text-[11px] text-gray-500 mt-0.5">Always enable stealth</p>
             </button>
+
             <button
               onClick={() => handleSetOverride('trusted')}
-              className={`px-3 py-2 text-xs rounded-lg border font-semibold transition text-center cursor-pointer ${
+              className={`p-2.5 rounded-lg border text-left transition cursor-pointer ${
                 overrideMode === 'trusted'
-                  ? 'bg-emerald-50 border-emerald-600 text-emerald-800 shadow-2xs ring-1 ring-emerald-500/20'
-                  : 'bg-white border-gray-200 text-gray-700 hover:bg-gray-50'
+                  ? 'border-emerald-600 bg-emerald-50/50 ring-1 ring-emerald-600'
+                  : 'border-gray-200 hover:bg-gray-50'
               }`}
             >
-              Force Trusted Mode
+              <div className="flex items-center gap-1.5 text-xs font-bold text-emerald-900">
+                <Home className="w-3.5 h-3.5 text-emerald-600" />
+                Force Trusted
+              </div>
+              <p className="text-[11px] text-gray-500 mt-0.5">Unrestricted transfer</p>
             </button>
           </div>
         </div>
 
         {/* SSID Rules Table */}
         <div className="space-y-3 pt-2">
-          <h4 className="text-xs font-bold text-gray-600 uppercase tracking-wider">
-            Known Network SSID Rules
-          </h4>
-
-          <div className="border border-gray-200 rounded-xl overflow-hidden bg-white shadow-xs">
-            <table className="w-full text-left text-xs">
-              <thead className="bg-gray-50 text-gray-700 border-b border-gray-200">
-                <tr>
-                  <th className="px-4 py-2.5 font-semibold">SSID Name</th>
-                  <th className="px-4 py-2.5 font-semibold">Assigned Profile</th>
-                  <th className="px-4 py-2.5 font-semibold text-right">Actions</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-100">
-                {ssidRules.map((rule) => (
-                  <tr key={rule.ssid} className="hover:bg-gray-50/70 transition">
-                    <td className="px-4 py-2.5 font-mono font-medium text-gray-900">{rule.ssid}</td>
-                    <td className="px-4 py-2.5">
-                      <span
-                        className={`inline-block px-2 py-0.5 rounded text-[11px] font-semibold border ${
-                          rule.profile === 'campus'
-                            ? 'bg-amber-50 text-amber-800 border-amber-200'
-                            : 'bg-emerald-50 text-emerald-800 border-emerald-200'
-                        }`}
-                      >
-                        {rule.profile === 'campus' ? 'Campus Stealth' : 'Trusted / Home'}
-                      </span>
-                    </td>
-                    <td className="px-4 py-2.5 text-right">
-                      <button
-                        onClick={() => handleDeleteRule(rule.ssid)}
-                        className="p-1 text-gray-400 hover:text-red-600 rounded transition cursor-pointer"
-                        title="Delete this SSID rule"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-                {ssidRules.length === 0 && (
-                  <tr>
-                    <td colSpan={3} className="px-4 py-4 text-center text-xs text-gray-400">
-                      No custom SSID rules added. Unrecognized networks default to Campus Stealth Mode.
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
+          <label className="text-xs font-semibold text-gray-700 block">Configured SSID Rules</label>
+          <div className="border border-gray-200 rounded-lg overflow-hidden divide-y divide-gray-100">
+            {ssidRules.map((rule) => (
+              <div key={rule.ssid} className="p-3 flex items-center justify-between bg-white text-xs">
+                <div className="flex items-center gap-2">
+                  <Wifi className="w-3.5 h-3.5 text-gray-400" />
+                  <span className="font-mono font-medium text-gray-900">{rule.ssid}</span>
+                </div>
+                <div className="flex items-center gap-3">
+                  <span
+                    className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                      rule.profile === 'campus'
+                        ? 'bg-amber-50 text-amber-700 border border-amber-200'
+                        : 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                    }`}
+                  >
+                    {rule.profile === 'campus' ? 'Campus Stealth' : 'Trusted Network'}
+                  </span>
+                  <button
+                    onClick={() => handleDeleteRule(rule.ssid)}
+                    className="text-gray-400 hover:text-red-600 transition cursor-pointer p-0.5"
+                    title="Delete rule"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              </div>
+            ))}
           </div>
 
-          {/* Add SSID Rule Form */}
-          <form onSubmit={handleAddRule} className="flex gap-2 items-center">
+          {/* Add Rule Form */}
+          <form onSubmit={handleAddRule} className="flex gap-2 pt-1">
             <input
               type="text"
+              placeholder="Wi-Fi SSID name (e.g. eduroam, LibraryGuest)"
               value={newSsid}
               onChange={(e) => setNewSsid(e.target.value)}
-              placeholder="Add Wi-Fi SSID (e.g. eduroam-5g)"
               className="flex-1 bg-white border border-gray-300 rounded-lg px-3 py-1.5 text-xs text-gray-900 placeholder-gray-400 focus:outline-none focus:border-blue-500 shadow-2xs"
             />
             <select
@@ -589,7 +602,150 @@ export function NetworkSettings() {
         </div>
       </div>
 
-      {/* Swarm Network Secret / Workspace Passphrase */}
+      {/* Network Databases / Swarm Workspaces Manager (Per Issue Requirements) */}
+      <div className="bg-white p-6 rounded-xl border border-gray-200 shadow-xs space-y-4">
+        <div className="flex items-center justify-between border-b border-gray-100 pb-3">
+          <div className="flex items-center gap-2.5">
+            <DatabaseIcon className="w-5 h-5 text-purple-600" />
+            <div>
+              <h3 className="text-sm font-bold text-gray-900">Network Databases & Workspaces</h3>
+              <p className="text-xs text-gray-500">
+                Each P2P secret has its own isolated database. You can clear them or transfer files you seed between workspaces.
+              </p>
+            </div>
+          </div>
+          <button
+            onClick={fetchDatabases}
+            className="p-1.5 hover:bg-gray-100 rounded-lg text-gray-500 hover:text-gray-700 transition"
+            title="Refresh database list"
+          >
+            <RefreshCw className="w-4 h-4" />
+          </button>
+        </div>
+
+        <div className="space-y-3">
+          {databases.map((db) => (
+            <div
+              key={db.network_secret || '__default__'}
+              className={`p-4 rounded-xl border transition-all ${
+                db.is_active
+                  ? 'border-indigo-300 bg-indigo-50/40 shadow-xs'
+                  : 'border-gray-200 bg-white hover:border-gray-300'
+              }`}
+            >
+              <div className="flex items-center justify-between">
+                <div>
+                  <div className="flex items-center gap-2">
+                    <span className="font-semibold text-xs text-gray-900">
+                      {db.display_name}
+                    </span>
+                    {db.is_active && (
+                      <span className="px-2 py-0.5 bg-indigo-100 text-indigo-700 text-[10px] font-bold rounded-full">
+                        ACTIVE NETWORK
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-[11px] font-mono text-gray-400 mt-0.5">
+                    File: {db.db_file} • {db.file_count} total file(s) • <strong className="text-emerald-700">{db.seedable_file_count} seedable</strong>
+                  </p>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  {!db.is_active && (
+                    <button
+                      onClick={() => handleSwitchDatabase(db.network_secret)}
+                      disabled={switchingDb === db.network_secret}
+                      className="px-2.5 py-1 text-xs bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg font-medium transition cursor-pointer"
+                    >
+                      {switchingDb === db.network_secret ? 'Switching...' : 'Switch Network'}
+                    </button>
+                  )}
+                  <button
+                    onClick={() => {
+                      setTransferSource(db.network_secret);
+                      setTransferTarget(db.is_active ? '' : db.network_secret);
+                      setTransferSummary(null);
+                    }}
+                    className="px-2.5 py-1 text-xs bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-lg font-medium transition cursor-pointer flex items-center gap-1"
+                    title="Transfer files from this network to another"
+                  >
+                    <ArrowRightLeft className="w-3 h-3" />
+                    Transfer Files...
+                  </button>
+                  {!db.is_active && (
+                    <button
+                      onClick={() => handleDeleteDatabase(db.network_secret)}
+                      className="p-1 text-gray-400 hover:text-red-600 rounded transition cursor-pointer"
+                      title="Clear and delete this network database"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  )}
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+
+        {/* Transfer Modal / Card */}
+        {transferSource !== null && (
+          <div className="p-4 bg-gray-50 border border-gray-200 rounded-xl space-y-3">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-bold text-gray-900 flex items-center gap-1.5">
+                <ArrowRightLeft className="w-4 h-4 text-indigo-600" />
+                Transfer Seedable Files from: <code className="bg-white px-1.5 py-0.5 rounded border border-gray-200">{transferSource || 'Default Open Network'}</code>
+              </span>
+              <button
+                onClick={() => setTransferSource(null)}
+                className="text-gray-400 hover:text-gray-600 text-xs cursor-pointer"
+              >
+                ✕ Cancel
+              </button>
+            </div>
+
+            <p className="text-[11px] text-gray-600 leading-relaxed">
+              ⚠️ <strong>Strict Seed Guarantee:</strong> Only files you have cached or pinned will be transferred, and your node will become their authoritative owner and seeder in the target network. Cloud-only files are skipped to avoid creating dead files on the swarm.
+            </p>
+
+            <div className="space-y-1.5">
+              <label className="text-xs font-semibold text-gray-700">Destination Network Passphrase</label>
+              <input
+                type="text"
+                placeholder="Enter target network secret (or leave blank for Default Open Network)"
+                value={transferTarget}
+                onChange={(e) => setTransferTarget(e.target.value)}
+                className="w-full text-xs font-mono bg-white border border-gray-200 rounded-lg px-3 py-2 focus:border-indigo-500 focus:outline-none"
+              />
+            </div>
+
+            {transferSummary && (
+              <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-lg text-xs space-y-1">
+                <div className="flex items-center gap-1 text-emerald-800 font-bold">
+                  <CheckCircle2 className="w-4 h-4" />
+                  Transfer Completed!
+                </div>
+                <p className="text-emerald-700">
+                  Transferred <strong>{transferSummary.transferred_count}</strong> seedable file(s) ({Math.round(transferSummary.total_bytes_transferred / (1024 * 1024))} MB).
+                  {transferSummary.skipped_cloud_only_count > 0 && (
+                    <span> Skipped {transferSummary.skipped_cloud_only_count} cloud-only un-cached file(s).</span>
+                  )}
+                </p>
+              </div>
+            )}
+
+            <button
+              onClick={handleExecuteTransfer}
+              disabled={transferring}
+              className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-semibold shadow-xs transition flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+            >
+              <ArrowRightLeft className="w-3.5 h-3.5" />
+              {transferring ? 'Transferring Files...' : 'Execute Seedable File Transfer'}
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* P2P Network Secret Configuration Form */}
       <div className="bg-white p-6 rounded-xl border border-gray-200 shadow-xs space-y-4">
         <div className="flex items-center gap-2.5 border-b border-gray-100 pb-3">
           <Key className="w-5 h-5 text-indigo-600" />
@@ -615,7 +771,7 @@ export function NetworkSettings() {
               <button
                 type="button"
                 onClick={() => setShowSecret(!showSecret)}
-                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 cursor-pointer"
                 title={showSecret ? "Hide passphrase" : "Show passphrase"}
               >
                 {showSecret ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
@@ -629,7 +785,7 @@ export function NetworkSettings() {
           <button
             type="submit"
             disabled={savingSecret}
-            className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-semibold shadow-xs transition-colors flex items-center gap-1.5"
+            className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-semibold shadow-xs transition-colors flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
           >
             <Lock className="w-3.5 h-3.5" />
             {savingSecret ? 'Saving Secret...' : 'Save Network Secret'}
@@ -637,16 +793,53 @@ export function NetworkSettings() {
         </form>
       </div>
 
-      {/* Custom Relay Configuration */}
+      {/* Custom Relay Configuration with EU/US Quick-Picks */}
       <div className="bg-white p-6 rounded-xl border border-gray-200 shadow-xs space-y-4">
         <div className="flex items-center gap-2.5 border-b border-gray-100 pb-3">
           <Server className="w-5 h-5 text-blue-600" />
           <div>
             <h3 className="text-sm font-bold text-gray-900">Custom Swarm Relay</h3>
             <p className="text-xs text-gray-500">
-              Optional TLS 443 relay URL for bypassing restrictive campus firewalls.
+              Optional TLS 443 relay URL for bypassing restrictive campus firewalls. Select an EU or US relay or use the default global pool.
             </p>
           </div>
+        </div>
+
+        {/* Relay Preset Buttons */}
+        <div className="flex flex-wrap gap-2 pt-1">
+          <button
+            type="button"
+            onClick={() => setPresetRelay('https://euw1-1.relay.iroh.network/')}
+            className={`px-3 py-1.5 rounded-lg text-xs font-semibold border transition cursor-pointer ${
+              relayUrl === 'https://euw1-1.relay.iroh.network/'
+                ? 'bg-blue-50 border-blue-300 text-blue-700'
+                : 'bg-gray-50 border-gray-200 text-gray-700 hover:bg-gray-100'
+            }`}
+          >
+            🇪🇺 Western Europe (EU)
+          </button>
+          <button
+            type="button"
+            onClick={() => setPresetRelay('https://use1-1.relay.iroh.network/')}
+            className={`px-3 py-1.5 rounded-lg text-xs font-semibold border transition cursor-pointer ${
+              relayUrl === 'https://use1-1.relay.iroh.network/'
+                ? 'bg-blue-50 border-blue-300 text-blue-700'
+                : 'bg-gray-50 border-gray-200 text-gray-700 hover:bg-gray-100'
+            }`}
+          >
+            🇺🇸 US East (US)
+          </button>
+          <button
+            type="button"
+            onClick={() => setPresetRelay('default')}
+            className={`px-3 py-1.5 rounded-lg text-xs font-semibold border transition cursor-pointer ${
+              relayUrl === 'default'
+                ? 'bg-blue-50 border-blue-300 text-blue-700'
+                : 'bg-gray-50 border-gray-200 text-gray-700 hover:bg-gray-100'
+            }`}
+          >
+            🌐 Global Pool (EU & US Failover)
+          </button>
         </div>
 
         <form onSubmit={handleSaveRelay} className="space-y-3">
@@ -662,7 +855,7 @@ export function NetworkSettings() {
           <button
             type="submit"
             disabled={savingRelay}
-            className="px-4 py-2 bg-gray-800 hover:bg-gray-900 text-white rounded-lg text-xs font-semibold shadow-xs transition-colors"
+            className="px-4 py-2 bg-gray-800 hover:bg-gray-900 text-white rounded-lg text-xs font-semibold shadow-xs transition-colors cursor-pointer disabled:opacity-50"
           >
             {savingRelay ? 'Saving...' : 'Save Relay Configuration'}
           </button>

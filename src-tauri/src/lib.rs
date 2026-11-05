@@ -72,12 +72,14 @@ pub fn run() {
 
             // Create system tray icon and background persistence menu
             let show_item = MenuItem::with_id(app, "show", "Open P2P Campus Workspace", true, None::<&str>)?;
-            let quit_item = MenuItem::with_id(app, "quit", "Quit P2P Workspace", true, None::<&str>)?;
+            let quit_item = MenuItem::with_id(app, "quit", "Quit P2P Workspace...", true, None::<&str>)?;
+            let force_quit_item = MenuItem::with_id(app, "force_quit", "Force Close App", true, None::<&str>)?;
 
             let tray_menu = MenuBuilder::new(app)
                 .item(&show_item)
                 .separator()
                 .item(&quit_item)
+                .item(&force_quit_item)
                 .build()?;
 
             if let Some(icon) = app.default_window_icon() {
@@ -97,8 +99,20 @@ pub fn run() {
                                 let _ = window.show();
                                 let _ = window.unminimize();
                                 let _ = window.set_focus();
+                                let _ = window.emit("app-quit-requested", ());
                             }
                             let _ = app_handle.emit("app-quit-requested", ());
+                            let handle = app_handle.clone();
+                            tauri::async_runtime::spawn(async move {
+                                tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+                                if let Some(window) = handle.get_webview_window("main") {
+                                    let _ = window.emit("app-quit-requested", ());
+                                }
+                                let _ = handle.emit("app-quit-requested", ());
+                            });
+                        }
+                        "force_quit" => {
+                            app_handle.exit(0);
                         }
                         _ => {}
                     })
@@ -177,14 +191,20 @@ pub fn run() {
         })
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                // Background persistence: clicking [X] hides the window to the system tray
-                // so that background P2P file seeding continues uninterrupted.
-                let _ = window.hide();
+                // Intercept close button: prompt with quit modal (which allows minimizing to background tray or quitting)
                 api.prevent_close();
+                let _ = window.emit("app-quit-requested", ());
             }
         })
         .invoke_handler(tauri::generate_handler![
             commands::storage_cmds::get_storage_stats,
+            commands::storage_cmds::get_connection_status,
+            commands::storage_cmds::set_relay_url,
+            commands::storage_cmds::hide_main_window,
+            commands::storage_cmds::list_network_databases,
+            commands::storage_cmds::switch_network_database,
+            commands::storage_cmds::transfer_network_files,
+            commands::storage_cmds::delete_network_database,
             commands::storage_cmds::get_app_settings,
             commands::storage_cmds::update_app_settings,
             commands::storage_cmds::set_network_secret,

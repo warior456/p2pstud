@@ -8,12 +8,11 @@ use std::sync::Arc;
 use anyhow::Result;
 use iroh::endpoint::presets;
 use iroh::protocol::Router;
-use iroh::{Endpoint, EndpointAddr, EndpointId, RelayMap, RelayMode, SecretKey};
+use iroh::{Endpoint, EndpointAddr, EndpointId, SecretKey};
 use iroh_blobs::BlobsProtocol;
 use iroh_blobs::store::fs::FsStore as BlobStore;
 
 use crate::p2p::identity::load_or_create_secret_key;
-use crate::p2p::relay::parse_relay_url;
 use crate::p2p::sync::{get_sync_alpn, sync_catalog_with_peer, CatalogSyncHandler};
 use crate::storage::db::Database;
 
@@ -39,19 +38,13 @@ impl IrohEngine {
         let secret_key: SecretKey = load_or_create_secret_key(data_dir)?;
         let node_id = secret_key.public();
 
-        // 2. Resolve relay URL from settings (falls back to Iroh default).
+        // 2. Resolve relay URL from settings (defaults to EU/US global relay pool).
         let relay_url = db
             .get_setting("relay_url")
             .unwrap_or_default()
             .unwrap_or_default();
 
-        let (relay_mode, relay_display) = if relay_url.trim().is_empty() {
-            (RelayMode::Default, "default global relays".to_string())
-        } else {
-            let relay = parse_relay_url(&relay_url)?;
-            let map = RelayMap::from(relay.clone());
-            (RelayMode::Custom(map), relay.to_string())
-        };
+        let (relay_mode, relay_display) = crate::p2p::relay::build_relay_mode(&relay_url);
 
         tracing::info!(%node_id, relay = %relay_display, "Starting Iroh node");
 

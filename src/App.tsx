@@ -13,7 +13,8 @@ import {
   HardDrive,
   Sparkles,
   AlertTriangle,
-  X
+  X,
+  Power
 } from 'lucide-react';
 import { 
   FileEntry, 
@@ -101,7 +102,7 @@ export default function App() {
 
   const { stats, refetch: refetchStats } = useStorageStats();
   const { nodeId } = usePeerStatus();
-  const { isOnline } = useConnectionStatus();
+  const { isOnline, relayConnected, relayUrl, disconnectReason } = useConnectionStatus();
 
   // Listen for backend import progress events
   useEffect(() => {
@@ -223,6 +224,18 @@ export default function App() {
     let unlistenUpdate: (() => void) | undefined;
     let unlistenUpdateDownloaded: (() => void) | undefined;
     let unlistenQuitRequested: (() => void) | undefined;
+    let unlistenDbSwitched: (() => void) | undefined;
+
+    listen('network-database-switched', () => {
+      loadWorkspaceFiles();
+      loadWorkspaceFolders();
+      refetchStats();
+      refreshNetworkProfile();
+      setToastMessage('Switched active network database');
+      setTimeout(() => setToastMessage(null), 4000);
+    }).then((un) => {
+      unlistenDbSwitched = un;
+    });
 
     listen<UpdateInfo>('update-available', (e) => {
       setAvailableUpdate(e.payload);
@@ -237,6 +250,8 @@ export default function App() {
     });
 
     listen('app-quit-requested', async () => {
+      // Immediately display the modal so the user sees instant feedback
+      setShowQuitModal(true);
       try {
         const pending = await invoke<string | null>('get_setting', { key: 'update_pending' });
         const isPending = pending === 'true';
@@ -248,10 +263,7 @@ export default function App() {
         } catch (_) {}
 
         setSoleSeedsOnQuit(soleSeeds || []);
-        setShowQuitModal(true);
-      } catch (_) {
-        setShowQuitModal(true);
-      }
+      } catch (_) {}
     }).then((un) => {
       unlistenQuitRequested = un;
     });
@@ -266,6 +278,7 @@ export default function App() {
       if (unlistenUpdate) unlistenUpdate();
       if (unlistenUpdateDownloaded) unlistenUpdateDownloaded();
       if (unlistenQuitRequested) unlistenQuitRequested();
+      if (unlistenDbSwitched) unlistenDbSwitched();
     };
   }, []);
 
@@ -692,6 +705,21 @@ export default function App() {
     setAvailableUpdate(null);
     try {
       await invoke('dismiss_app_update');
+    } catch (_) {}
+  };
+
+  const handleRequestQuit = async () => {
+    setShowQuitModal(true);
+    try {
+      const soleSeeds = await invoke<any[]>('get_sole_seed_files');
+      setSoleSeedsOnQuit(soleSeeds || []);
+    } catch (_) {}
+  };
+
+  const handleMinimizeToTray = async () => {
+    setShowQuitModal(false);
+    try {
+      await invoke('hide_main_window');
     } catch (_) {}
   };
 
@@ -1283,6 +1311,13 @@ export default function App() {
           >
             <Settings className="w-4 h-4" />
           </button>
+          <button
+            onClick={handleRequestQuit}
+            className="p-1.5 hover:bg-rose-50 text-gray-500 hover:text-rose-600 rounded-lg transition-colors cursor-pointer"
+            title="Quit or Minimize P2P Workspace"
+          >
+            <Power className="w-4 h-4" />
+          </button>
         </div>
       </header>
 
@@ -1397,7 +1432,16 @@ export default function App() {
         <main className="flex-1 flex flex-col bg-white overflow-hidden">
           {/* Top Banners */}
           <SoleSeedBanner />
-          <OfflineBanner isOnline={isOnline} />
+          <OfflineBanner
+            isOnline={isOnline}
+            relayConnected={relayConnected}
+            disconnectReason={disconnectReason}
+            relayUrl={relayUrl}
+            onOpenSettings={() => {
+              setCurrentView('settings');
+              setSettingsTab('network');
+            }}
+          />
           <ImportingBanner progress={importProgress} onDismiss={() => setImportProgress(null)} />
 
           {/* Unrecognized Network Prompt (R17.4) */}
@@ -1670,6 +1714,13 @@ export default function App() {
                 className="px-3 py-1.5 text-xs text-gray-600 hover:bg-gray-100 rounded-lg font-medium cursor-pointer"
               >
                 Cancel
+              </button>
+              <button
+                onClick={handleMinimizeToTray}
+                className="px-3 py-1.5 text-xs bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-lg font-medium cursor-pointer"
+                title="Keep seeding in background while hiding the window"
+              >
+                Minimize to Tray
               </button>
               {isUpdatePending ? (
                 <>
