@@ -155,11 +155,16 @@ fn parse_peer_address(input: &str, relay_url: Option<String>) -> Result<iroh::En
 /// Connect to a remote peer or anchor node by Ticket, JSON address, or NodeId.
 #[tauri::command]
 pub async fn connect_peer(
-    node_id: String,
+    node_id: Option<String>,
+    node_addr_or_ticket: Option<String>,
     relay_url: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let addr = parse_peer_address(&node_id, relay_url)?;
+    let raw_input = node_addr_or_ticket
+        .or(node_id)
+        .ok_or_else(|| "Peer address or ticket cannot be empty".to_string())?;
+
+    let addr = parse_peer_address(&raw_input, relay_url)?;
 
     let guard = state.engine.read().await;
     let engine = guard.as_ref().ok_or("Iroh engine not yet started")?;
@@ -172,12 +177,12 @@ pub async fn connect_peer(
         .map_err(|e| format!("Connection to peer failed: {e}"))?;
 
     // Save as bootstrap peer in settings so connection is restored on restart
-    let _ = state.db.set_setting("bootstrap_peer", node_id.trim());
+    let _ = state.db.set_setting("bootstrap_peer", raw_input.trim());
 
     // Synchronize workspace catalog immediately
     let _ = sync_catalog_with_peer(&engine.endpoint, &state.db, Some(&engine.store), addr).await;
 
-    tracing::info!(node_id = %node_id, "Connected to peer and synchronized catalog successfully");
+    tracing::info!(node_id = %raw_input, "Connected to peer and synchronized catalog successfully");
     Ok(())
 }
 

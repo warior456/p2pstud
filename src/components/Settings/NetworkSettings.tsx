@@ -169,6 +169,7 @@ export function NetworkSettings() {
     setConnectStatus(null);
     try {
       await invoke('connect_peer', {
+        nodeId: peerInput.trim(),
         nodeAddrOrTicket: peerInput.trim(),
         relayUrl: peerRelayInput.trim() || null,
       });
