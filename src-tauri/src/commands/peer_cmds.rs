@@ -302,3 +302,12 @@ pub async fn reconnect_swarm(state: State<'_, AppState>) -> Result<(), String> {
     }
     Ok(())
 }
+
+/// Retrieve the current local version and calculated median application version across the active swarm.
+#[tauri::command]
+pub async fn get_swarm_version_info(
+    state: State<'_, AppState>,
+) -> Result<crate::storage::blob_tracker::SwarmVersionInfo, String> {
+    let current_version = env!("CARGO_PKG_VERSION");
+    Ok(crate::storage::blob_tracker::calculate_swarm_median_version(&state.db, current_version))
+}

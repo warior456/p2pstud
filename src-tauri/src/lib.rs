@@ -93,11 +93,12 @@ pub fn run() {
                             }
                         }
                         "quit" => {
-                            let _ = app_handle.emit("app-quit-requested", ());
                             if let Some(window) = app_handle.get_webview_window("main") {
                                 let _ = window.show();
+                                let _ = window.unminimize();
                                 let _ = window.set_focus();
                             }
+                            let _ = app_handle.emit("app-quit-requested", ());
                         }
                         _ => {}
                     })
@@ -236,6 +237,7 @@ pub fn run() {
             commands::peer_cmds::list_ssid_rules,
             commands::peer_cmds::delete_ssid_rule,
             commands::peer_cmds::get_sole_seed_files,
+            commands::peer_cmds::get_swarm_version_info,
             commands::peer_cmds::reconnect_swarm,
             commands::diagnostic_cmds::run_connection_doctor,
             commands::backup_cmds::export_app_backup,

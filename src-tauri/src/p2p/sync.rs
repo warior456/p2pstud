@@ -117,6 +117,11 @@ pub enum SyncMessage {
     FolderDeleted {
         path: String,
     },
+    /// Announce node application version for swarm statistics and median tracking.
+    NodeAnnounce {
+        node_id: String,
+        app_version: String,
+    },
 }
 
 /// Helper function to generate conflict-resolved filename preserving extension.
@@ -526,6 +531,15 @@ impl CatalogSyncHandler {
                 let _ = crate::storage::blob_tracker::delete_virtual_folder(&self.db, &path);
                 Ok(None)
             }
+            SyncMessage::NodeAnnounce { node_id, app_version } => {
+                let _ = crate::storage::blob_tracker::record_peer_version(&self.db, &node_id, &app_version);
+                let my_version = env!("CARGO_PKG_VERSION").to_string();
+                let my_id = sender_peer_id.unwrap_or_default();
+                Ok(Some(SyncMessage::NodeAnnounce {
+                    node_id: my_id.to_string(),
+                    app_version: my_version,
+                }))
+            }
         }
     }
 }
@@ -582,6 +596,26 @@ pub async fn sync_catalog_with_peer(
     register_active_peer(peer_addr.id);
     let alpn = get_sync_alpn(db);
     let connection = endpoint.connect(peer_addr.clone(), &alpn).await?;
+
+    // Exchange version announcements for swarm median version calculation
+    let my_node_id = endpoint.id().to_string();
+    let my_version = env!("CARGO_PKG_VERSION").to_string();
+    if let Ok((mut ann_send, mut ann_recv)) = connection.open_bi().await {
+        let ann_msg = SyncMessage::NodeAnnounce {
+            node_id: my_node_id,
+            app_version: my_version,
+        };
+        if let Ok(ann_bytes) = serde_json::to_vec(&ann_msg) {
+            let _ = ann_send.write_all(&ann_bytes).await;
+            let _ = ann_send.finish();
+            if let Ok(reply) = ann_recv.read_to_end(64 * 1024).await {
+                if let Ok(SyncMessage::NodeAnnounce { node_id, app_version }) = serde_json::from_slice(&reply) {
+                    let _ = crate::storage::blob_tracker::record_peer_version(db, &node_id, &app_version);
+                }
+            }
+        }
+    }
+
     let (mut send, mut recv) = connection.open_bi().await?;
 
     let mut my_records = list_all_blobs(db)?;

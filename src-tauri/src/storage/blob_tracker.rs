@@ -1106,6 +1106,81 @@ pub fn count_verified_receipts_for_seeder(
     Ok(count as usize)
 }
 
+// ---------------------------------------------------------------------------
+// Step 41: Peer Version Tracking & Swarm Median Version
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SwarmVersionInfo {
+    pub local_version: String,
+    pub median_version: String,
+    pub peer_count: usize,
+    pub peer_versions: Vec<String>,
+}
+
+/// Record or update an announced application version for a swarm peer.
+pub fn record_peer_version(db: &Database, node_id: &str, app_version: &str) -> Result<()> {
+    let now = now_unix();
+    let conn = db.lock();
+    conn.execute(
+        "INSERT INTO peer_versions (node_id, app_version, last_seen_at)
+         VALUES (?1, ?2, ?3)
+         ON CONFLICT(node_id) DO UPDATE SET
+             app_version  = excluded.app_version,
+             last_seen_at = excluded.last_seen_at",
+        params![node_id, app_version, now],
+    )?;
+    Ok(())
+}
+
+/// Retrieve all active peer versions (seen in the last 30 minutes).
+pub fn get_active_peer_versions(db: &Database) -> Result<Vec<String>> {
+    let threshold = now_unix() - 1800; // 30 minutes
+    let conn = db.lock();
+    let mut stmt = conn.prepare(
+        "SELECT app_version FROM peer_versions WHERE last_seen_at >= ?1 ORDER BY app_version ASC"
+    )?;
+    let rows = stmt.query_map(params![threshold], |r| r.get(0))?;
+    let mut versions = Vec::new();
+    for row in rows {
+        if let Ok(v) = row {
+            versions.push(v);
+        }
+    }
+    Ok(versions)
+}
+
+/// Calculate the true median version across the swarm (active peers + local node).
+pub fn calculate_swarm_median_version(db: &Database, local_version: &str) -> SwarmVersionInfo {
+    let mut all_versions = get_active_peer_versions(db).unwrap_or_default();
+    let peer_count = all_versions.len();
+    all_versions.push(local_version.to_string());
+
+    // Sort versions using semver if valid, falling back to lexicographical order
+    all_versions.sort_by(|a, b| {
+        let clean_a = a.trim_start_matches('v');
+        let clean_b = b.trim_start_matches('v');
+        match (semver::Version::parse(clean_a), semver::Version::parse(clean_b)) {
+            (Ok(va), Ok(vb)) => va.cmp(&vb),
+            _ => a.cmp(b),
+        }
+    });
+
+    let median_version = if all_versions.is_empty() {
+        local_version.to_string()
+    } else {
+        let mid = all_versions.len() / 2;
+        all_versions[mid].clone()
+    };
+
+    SwarmVersionInfo {
+        local_version: local_version.to_string(),
+        median_version,
+        peer_count,
+        peer_versions: all_versions,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1362,5 +1437,20 @@ mod tests {
         store_seeding_receipt(&db, "receipt_blob", "seeder_1", "recipient_2", 5000, 1000, "sig123").unwrap();
         let count = count_verified_receipts_for_seeder(&db, "seeder_1", 500).unwrap();
         assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn test_swarm_median_version() {
+        let (_dir, db) = make_db();
+        // Record multiple peer versions
+        record_peer_version(&db, "peer_old", "0.1.9").unwrap();
+        record_peer_version(&db, "peer_new1", "0.1.12").unwrap();
+        record_peer_version(&db, "peer_new2", "0.2.0").unwrap();
+
+        // Local version is 0.1.11. Sorted list: [0.1.9, 0.1.11, 0.1.12, 0.2.0]
+        // Mid index is 4 / 2 = 2 -> 0.1.12
+        let info = calculate_swarm_median_version(&db, "0.1.11");
+        assert_eq!(info.median_version, "0.1.12");
+        assert_eq!(info.peer_count, 3);
     }
 }

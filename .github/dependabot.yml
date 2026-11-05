@@ -6,6 +6,12 @@ updates:
     schedule:
       interval: "weekly"
 
+  # Tauri workspace crate
+  - package-ecosystem: "cargo"
+    directory: "/src-tauri"
+    schedule:
+      interval: "weekly"
+
   # Frontend npm packages
   - package-ecosystem: "npm"
     directory: "/"

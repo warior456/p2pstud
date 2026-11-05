@@ -46,8 +46,8 @@ At the end of every session (or when interrupted), update the `## Progress Track
 ## Progress Tracker
 
 > **Last session:** 2026-11-05
-> **Last completed task:** Step 44 completed: Separated local disk import and file addition throughput from network upload bandwidth (`state.bandwidth.record_upload`); added dedicated `ImportingBanner` ("importing balk") with live disk import speed, file counters, and animated progress bar; added separate import badge in `TelemetryBar` footer alongside isolated pure peer network speed indicators; eliminated redundant "Network & Swarm Peers" sub-menu from "Cache & Quota" tab and consolidated all peer connectivity, identity, and stealth configuration into the main "Network & Swarm" settings tab. Version bumped to 0.1.6 across `package.json`, `src-tauri/Cargo.toml`, and `src-tauri/tauri.conf.json`.
-> **Next action:** Continued verification and feature maintenance.
+> **Last completed task:** Step 45 completed: Fully implemented live GitHub Releases auto-updater targeting `https://github.com/warior456/p2pstud/releases` with asset detection and streaming installer execution; resolved Sole-Seed & Update Quit Intercept Modal (R16.2/3, R23.3) ensuring the confirmation dialog is never bypassed on tray quit; calculated and displayed Swarm Median Version in telemetry bar and settings; updated `build.yml` CI workflow to automatically publish release builds on tag or workflow_dispatch; upgraded `zip` crate to `v9.4.0` resolving Dependabot CVE-2026-115905, updated `Cargo.lock` and synced `src-tauri/Cargo.lock`. Version bumped to 0.1.12 across `package.json`, `src-tauri/Cargo.toml`, and `src-tauri/tauri.conf.json`.
+> **Next action:** Production release testing and distribution.
 
 | # | Step | Status | Notes |
 |---|---|---|---|
@@ -95,6 +95,7 @@ At the end of every session (or when interrupted), update the `## Progress Track
 | 42 | Multi-GB Streaming ZIP Import, Multi-File Selection & Cross-Platform Autostart | ✅ | Streaming disk BufReader & `add_from_path` for multi-GB ZIPs (`semester1.zip`), native `rfd` picker, batch multi-file delete/move/download, cross-platform boot autostart & custom cache location |
 | 43 | Dependabot Alert Fix (CVE-2026-115905, zip 9.3.0) & Lockfile Tracking | ✅ | Upgraded `zip` crate to 9.3.0 with Cow string unwrapping, un-ignored and committed `Cargo.lock` so Dependabot can audit installed crates |
 | 44 | Import Bandwidth Isolation, Dedicated Importing Banner & Unified Network Tab | ✅ | Excluded local disk imports from P2P network speed metrics, added dedicated `ImportingBanner` ("importing balk") with animated progress & disk speed, added separate footer import badge, and moved network sub-menu from "Cache & Quota" into main "Network & Swarm" tab |
+| 45 | GitHub Releases Auto-Updater, Quit Intercept Modal, Swarm Median Version & Dependabot Security Upgrades | ✅ | Fully implemented live GitHub Releases updater targeting `https://github.com/warior456/p2pstud/releases` with real installer download and execution; fixed Sole-Seed & Update Quit Intercept Modal (R16.2/3, R23.3) ensuring the confirmation modal is never bypassed; calculated and displayed Swarm Median Version in telemetry bar and settings; updated `build.yml` CI workflow to automatically publish release builds on tag or workflow_dispatch; updated `zip` crate to `v9.4.0` resolving Dependabot CVE-2026-115905, updated `Cargo.lock` and synced `src-tauri/Cargo.lock`. Version bumped to 0.1.12. |
 
 ---
 

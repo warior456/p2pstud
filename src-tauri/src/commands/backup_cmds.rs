@@ -369,7 +369,21 @@ pub async fn export_folder_zip(
     Ok(())
 }
 
-/// Check for application updates (non-intrusive).
+/// Check for application updates against https://github.com/warior456/p2pstud/releases.
+#[derive(Debug, Deserialize)]
+struct GitHubRelease {
+    tag_name: String,
+    body: Option<String>,
+    assets: Vec<GitHubAsset>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GitHubAsset {
+    name: String,
+    size: u64,
+    browser_download_url: String,
+}
+
 #[tauri::command]
 pub async fn check_app_update(_app: AppHandle, state: State<'_, AppState>) -> Result<UpdateInfo, String> {
     let current_version = env!("CARGO_PKG_VERSION").to_string();
@@ -382,12 +396,23 @@ pub async fn check_app_update(_app: AppHandle, state: State<'_, AppState>) -> Re
         .unwrap_or_default()
         == "true";
 
+    let pending_version = state
+        .db
+        .get_setting("update_target_version")
+        .unwrap_or_default()
+        .unwrap_or_else(|| current_version.clone());
+
     if pending {
         return Ok(UpdateInfo {
             current_version: current_version.clone(),
-            version: "0.2.0".to_string(),
+            version: pending_version,
             notes: "Pending update ready to apply upon app restart".to_string(),
-            download_size_bytes: 14_500_000,
+            download_size_bytes: state
+                .db
+                .get_setting("update_asset_size")
+                .unwrap_or_default()
+                .and_then(|s| s.parse::<u64>().ok())
+                .unwrap_or(0),
             is_pending: true,
             update_available: true,
         });
@@ -401,36 +426,242 @@ pub async fn check_app_update(_app: AppHandle, state: State<'_, AppState>) -> Re
         .unwrap_or_default()
         == "true";
 
-    // Latest version can be configured or fetched; mock latest 0.2.0 if needed
-    let latest_version = "0.2.0".to_string();
-    let update_available = !dismissed && latest_version != current_version;
+    // Query GitHub releases for https://github.com/warior456/p2pstud/releases
+    let client = match reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(8))
+        .build()
+    {
+        Ok(c) => c,
+        Err(e) => return Err(e.to_string()),
+    };
 
-    Ok(UpdateInfo {
-        current_version,
-        version: latest_version,
-        notes: "Major update with enhanced P2P swarm speeds, zero-config discovery & multi-file operations."
-            .to_string(),
-        download_size_bytes: 14_500_000,
-        is_pending: false,
-        update_available,
-    })
+    let resp = match client
+        .get("https://api.github.com/repos/warior456/p2pstud/releases/latest")
+        .header("User-Agent", format!("p2pstud/{current_version}"))
+        .header("Accept", "application/vnd.github.v3+json")
+        .send()
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::warn!(error = %e, "Failed to connect to GitHub releases API (possibly offline)");
+            return Ok(UpdateInfo {
+                current_version: current_version.clone(),
+                version: current_version,
+                notes: "Could not reach update server (offline or rate-limited)".to_string(),
+                download_size_bytes: 0,
+                is_pending: false,
+                update_available: false,
+            });
+        }
+    };
+
+    if !resp.status().is_success() {
+        tracing::warn!(status = %resp.status(), "GitHub releases API returned non-success status");
+        return Ok(UpdateInfo {
+            current_version: current_version.clone(),
+            version: current_version,
+            notes: format!("Update server returned status {}", resp.status()),
+            download_size_bytes: 0,
+            is_pending: false,
+            update_available: false,
+        });
+    }
+
+    let release = match resp.json::<GitHubRelease>().await {
+        Ok(rel) => rel,
+        Err(e) => {
+            tracing::warn!(error = %e, "Failed to parse GitHub release JSON");
+            return Ok(UpdateInfo {
+                current_version: current_version.clone(),
+                version: current_version,
+                notes: "Failed to parse update manifest from GitHub".to_string(),
+                download_size_bytes: 0,
+                is_pending: false,
+                update_available: false,
+            });
+        }
+    };
+
+    let remote_ver_str = release.tag_name.trim().trim_start_matches('v');
+    let remote_semver = semver::Version::parse(remote_ver_str).ok();
+    let current_semver = semver::Version::parse(&current_version).ok();
+
+    let is_newer = match (remote_semver, current_semver) {
+        (Some(remote), Some(curr)) => remote > curr,
+        _ => remote_ver_str != current_version,
+    };
+
+    // Find matching installer asset for host platform
+    let matched_asset = release.assets.iter().find(|a| {
+        let name = a.name.to_lowercase();
+        #[cfg(target_os = "windows")]
+        {
+            (name.ends_with(".msi") || name.ends_with(".exe")) && !name.starts_with("anchor")
+        }
+        #[cfg(target_os = "macos")]
+        {
+            name.ends_with(".dmg") || name.ends_with(".tar.gz")
+        }
+        #[cfg(target_os = "linux")]
+        {
+            (name.ends_with(".appimage") || name.ends_with(".deb")) && !name.starts_with("anchor")
+        }
+        #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+        {
+            false
+        }
+    });
+
+    if is_newer && !dismissed && matched_asset.is_some() {
+        let asset = matched_asset.unwrap();
+        let _ = state.db.set_setting("update_target_version", remote_ver_str);
+        let _ = state.db.set_setting("update_download_url", &asset.browser_download_url);
+        let _ = state.db.set_setting("update_asset_name", &asset.name);
+        let _ = state.db.set_setting("update_asset_size", &asset.size.to_string());
+
+        Ok(UpdateInfo {
+            current_version,
+            version: remote_ver_str.to_string(),
+            notes: release
+                .body
+                .unwrap_or_else(|| "New release available on GitHub.".to_string()),
+            download_size_bytes: asset.size,
+            is_pending: false,
+            update_available: true,
+        })
+    } else {
+        Ok(UpdateInfo {
+            current_version: current_version.clone(),
+            version: remote_ver_str.to_string(),
+            notes: if is_newer && matched_asset.is_none() {
+                "New version found, but no compatible installer artifact was found for this platform.".to_string()
+            } else {
+                "P2P Workspace is up to date.".to_string()
+            },
+            download_size_bytes: 0,
+            is_pending: false,
+            update_available: false,
+        })
+    }
 }
 
-/// Mark update as downloaded and pending install upon next restart.
+/// Download application update installer from GitHub releases to disk.
 #[tauri::command]
 pub async fn download_app_update(app: AppHandle, state: State<'_, AppState>) -> Result<String, String> {
+    let download_url = state
+        .db
+        .get_setting("update_download_url")
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "No update download URL found. Please check for updates first.".to_string())?;
+
+    let asset_name = state
+        .db
+        .get_setting("update_asset_name")
+        .map_err(|e| e.to_string())?
+        .unwrap_or_else(|| "p2pstud-update-installer.exe".to_string());
+
+    let data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("Failed to resolve app data dir: {e}"))?;
+
+    let updates_dir = data_dir.join("updates");
+    tokio::fs::create_dir_all(&updates_dir)
+        .await
+        .map_err(|e| format!("Failed to create updates directory: {e}"))?;
+
+    let dest_path = updates_dir.join(&asset_name);
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(120))
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    tracing::info!(url = %download_url, dest = %dest_path.display(), "Downloading application update installer");
+
+    let resp = client
+        .get(&download_url)
+        .header("User-Agent", "p2pstud")
+        .send()
+        .await
+        .map_err(|e| format!("Failed to download update installer: {e}"))?;
+
+    if !resp.status().is_success() {
+        return Err(format!("Download failed with HTTP status: {}", resp.status()));
+    }
+
+    let bytes = resp
+        .bytes()
+        .await
+        .map_err(|e| format!("Failed reading update data: {e}"))?;
+
+    tokio::fs::write(&dest_path, &bytes)
+        .await
+        .map_err(|e| format!("Failed writing update installer to disk: {e}"))?;
+
+    let _ = state.db.set_setting("update_installer_path", &dest_path.to_string_lossy());
     let _ = state.db.set_setting("update_pending", "true");
     let _ = app.emit("update-downloaded", ());
-    tracing::info!("Downloaded update payload; scheduled for installation on restart");
+
+    tracing::info!(dest = %dest_path.display(), "Application update successfully downloaded and staged");
     Ok("Update downloaded successfully. It will install automatically on next app restart.".to_string())
 }
 
-/// Apply the pending update and restart the application.
+/// Apply the pending update by spawning the installer and exiting the app.
 #[tauri::command]
 pub async fn install_app_update(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+    let installer_path_str = state
+        .db
+        .get_setting("update_installer_path")
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "No downloaded update installer found.".to_string())?;
+
+    let installer_path = PathBuf::from(&installer_path_str);
+    if !installer_path.exists() {
+        let _ = state.db.set_setting("update_pending", "false");
+        return Err(format!("Installer file not found at: {}", installer_path.display()));
+    }
+
     let _ = state.db.set_setting("update_pending", "false");
-    tracing::info!("Applying pending update and restarting application");
-    app.restart();
+    tracing::info!(path = %installer_path.display(), "Launching installer and restarting application");
+
+    #[cfg(target_os = "windows")]
+    {
+        if installer_path_str.ends_with(".msi") {
+            let _ = std::process::Command::new("msiexec")
+                .arg("/i")
+                .arg(&installer_path)
+                .arg("/passive")
+                .spawn();
+        } else {
+            let _ = std::process::Command::new(&installer_path).spawn();
+        }
+        app.exit(0);
+        return Ok(());
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let _ = std::process::Command::new("open")
+            .arg(&installer_path)
+            .spawn();
+        app.exit(0);
+        return Ok(());
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        let _ = std::process::Command::new(&installer_path).spawn();
+        app.exit(0);
+        return Ok(());
+    }
+
+    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+    {
+        app.restart();
+        Ok(())
+    }
 }
 
 /// Dismiss the update notification for the current session.
@@ -448,8 +679,7 @@ pub async fn confirm_app_exit(
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     if install_update {
-        let _ = state.db.set_setting("update_pending", "false");
-        app.restart();
+        install_app_update(app, state).await?;
     } else {
         app.exit(0);
     }

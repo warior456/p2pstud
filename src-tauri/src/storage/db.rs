@@ -167,6 +167,14 @@ const MIGRATIONS: &[&str] = &[
         created_at INTEGER NOT NULL
     );
     "#,
+    // Migration 0014 — Swarm peer version tracking for median swarm version calculation
+    r#"
+    CREATE TABLE IF NOT EXISTS peer_versions (
+        node_id      TEXT PRIMARY KEY,
+        app_version  TEXT NOT NULL,
+        last_seen_at INTEGER NOT NULL
+    );
+    "#,
 ];
 
 /// Thread-safe SQLite database wrapper.

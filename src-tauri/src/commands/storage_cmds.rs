@@ -24,6 +24,8 @@ pub struct StorageStats {
     pub upload_bytes_per_sec: u64,
     /// Instantaneous inbound network transfer rate (bytes per second).
     pub download_bytes_per_sec: u64,
+    /// Calculated median software version across all active swarm peers + local node.
+    pub swarm_median_version: Option<String>,
 }
 
 /// Global application settings.
@@ -72,6 +74,8 @@ pub async fn get_storage_stats(state: State<'_, AppState>) -> Result<StorageStat
     };
 
     let (upload_bytes_per_sec, download_bytes_per_sec) = state.bandwidth.get_rates();
+    let current_version = env!("CARGO_PKG_VERSION");
+    let version_info = crate::storage::blob_tracker::calculate_swarm_median_version(&state.db, current_version);
 
     Ok(StorageStats {
         used_bytes,
@@ -81,6 +85,7 @@ pub async fn get_storage_stats(state: State<'_, AppState>) -> Result<StorageStat
         full_mirror,
         upload_bytes_per_sec,
         download_bytes_per_sec,
+        swarm_median_version: Some(version_info.median_version),
     })
 }
 

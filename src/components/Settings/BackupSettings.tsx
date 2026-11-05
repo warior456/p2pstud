@@ -28,6 +28,7 @@ export function BackupSettings() {
 
   // Update states
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
+  const [swarmMedian, setSwarmMedian] = useState<string | null>(null);
   const [isCheckingUpdate, setIsCheckingUpdate] = useState<boolean>(false);
   const [isDownloadingUpdate, setIsDownloadingUpdate] = useState<boolean>(false);
   const [updateActionMsg, setUpdateActionMsg] = useState<string | null>(null);
@@ -39,6 +40,12 @@ export function BackupSettings() {
     } catch (err) {
       console.warn('Could not check update status:', err);
     }
+    try {
+      const swarmInfo = await invoke<any>('get_swarm_version_info');
+      if (swarmInfo?.median_version) {
+        setSwarmMedian(swarmInfo.median_version);
+      }
+    } catch (_) {}
   };
 
   useEffect(() => {
@@ -169,10 +176,16 @@ export function BackupSettings() {
           </button>
         </div>
 
-        <div className="flex items-center gap-3 text-xs text-gray-700 bg-gray-50 p-3 rounded-lg border border-gray-100">
-          <span>Current Installed Version: <strong className="font-mono font-semibold text-gray-900">{updateInfo?.current_version || 'v0.1.6'}</strong></span>
+        <div className="flex items-center gap-3 text-xs text-gray-700 bg-gray-50 p-3 rounded-lg border border-gray-100 flex-wrap">
+          <span>Current Installed Version: <strong className="font-mono font-semibold text-gray-900">{updateInfo?.current_version || '...'}</strong></span>
+          {swarmMedian && (
+            <>
+              <span>•</span>
+              <span>Swarm Median: <strong className="font-mono font-semibold text-blue-700">v{swarmMedian}</strong></span>
+            </>
+          )}
           <span>•</span>
-          <span>Target Swarm Version: <strong className="font-mono font-semibold text-gray-900">{updateInfo?.version || 'v0.2.0'}</strong></span>
+          <span>Latest Available: <strong className="font-mono font-semibold text-gray-900">{updateInfo?.version || '...'}</strong></span>
         </div>
 
         {updateInfo?.update_available && (

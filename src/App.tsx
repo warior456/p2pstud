@@ -248,12 +248,7 @@ export default function App() {
         } catch (_) {}
 
         setSoleSeedsOnQuit(soleSeeds || []);
-
-        if (!isPending && (!soleSeeds || soleSeeds.length === 0)) {
-          await invoke('confirm_app_exit', { installUpdate: false });
-        } else {
-          setShowQuitModal(true);
-        }
+        setShowQuitModal(true);
       } catch (_) {
         setShowQuitModal(true);
       }
@@ -1653,14 +1648,18 @@ export default function App() {
               </div>
               <div>
                 <h3 className="text-sm font-bold text-gray-900">
-                  {isUpdatePending ? 'Update Ready to Install' : 'Application Shutdown Warning'}
+                  {isUpdatePending
+                    ? 'Update Ready to Install'
+                    : soleSeedsOnQuit.length > 0
+                    ? 'Sole Seed Shutdown Warning'
+                    : 'Exit P2P Workspace'}
                 </h3>
                 <p className="text-xs text-gray-600 mt-1 leading-relaxed">
                   {isUpdatePending
                     ? 'A downloaded update is ready to install. Do you want to apply it now and restart, or close without installing?'
                     : soleSeedsOnQuit.length > 0
                     ? `Warning: You are currently the ONLY active online seed for ${soleSeedsOnQuit.length} course file(s). If you close the app now, these files will be unavailable to your peers until you return.`
-                    : 'Are you sure you want to exit P2PStud?'}
+                    : 'Are you sure you want to exit P2PStud? Background seeding will stop.'}
                 </p>
               </div>
             </div>
@@ -1690,9 +1689,11 @@ export default function App() {
               ) : (
                 <button
                   onClick={() => handleConfirmExit(false)}
-                  className="px-4 py-1.5 text-xs bg-red-600 hover:bg-red-700 text-white rounded-lg font-semibold shadow-xs cursor-pointer"
+                  className={`px-4 py-1.5 text-xs text-white rounded-lg font-semibold shadow-xs cursor-pointer ${
+                    soleSeedsOnQuit.length > 0 ? 'bg-red-600 hover:bg-red-700' : 'bg-gray-900 hover:bg-gray-800'
+                  }`}
                 >
-                  Quit Anyway
+                  {soleSeedsOnQuit.length > 0 ? 'Quit Anyway' : 'Quit'}
                 </button>
               )}
             </div>
