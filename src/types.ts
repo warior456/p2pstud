@@ -137,6 +137,11 @@ export interface DoctorTestResult {
   detail: string;
 }
 
+export interface DoctorReport {
+  results: DoctorTestResult[];
+  advice: string[];
+}
+
 export interface ZipImportSummary {
   files_imported: number;
   total_bytes: number;

@@ -213,12 +213,25 @@ export function NetworkSettings() {
   };
 
   const handleDeleteDatabase = async (secret: string) => {
-    if (!confirm(`Are you sure you want to delete the database for "${secret || 'Default Network'}"? This removes its catalog index and file records.`)) return;
+    const target = databases.find((d) => d.network_secret === secret);
+    const label = target ? target.display_name : (secret || 'Default Network');
+    if (!confirm(`Are you sure you want to permanently delete the database for "${label}"? This removes its catalog index and file records.`)) return;
     try {
       await invoke('delete_network_database', { secret });
       await fetchDatabases();
     } catch (err) {
       alert(`Failed to delete database: ${err}`);
+    }
+  };
+
+  const handleClearActiveDatabase = async () => {
+    if (!confirm('Are you sure you want to clear all file records from this active network database?\n\nThis will reset the workspace file catalog for this network back to empty.')) return;
+    try {
+      await invoke('clear_active_database');
+      await fetchDatabases();
+      alert('Active network database has been cleared.');
+    } catch (err) {
+      alert(`Failed to clear database: ${err}`);
     }
   };
 
@@ -672,13 +685,23 @@ export function NetworkSettings() {
                     <ArrowRightLeft className="w-3 h-3" />
                     Transfer Files...
                   </button>
-                  {!db.is_active && (
+                  {db.is_active ? (
+                    <button
+                      onClick={handleClearActiveDatabase}
+                      className="px-2.5 py-1 text-xs bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 rounded-lg font-medium transition cursor-pointer flex items-center gap-1"
+                      title="Clear and reset all files in this active network"
+                    >
+                      <Trash2 className="w-3.5 h-3.5 text-rose-600" />
+                      Clear Database
+                    </button>
+                  ) : (
                     <button
                       onClick={() => handleDeleteDatabase(db.network_secret)}
-                      className="p-1 text-gray-400 hover:text-red-600 rounded transition cursor-pointer"
-                      title="Clear and delete this network database"
+                      className="px-2.5 py-1 text-xs bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 rounded-lg font-medium transition cursor-pointer flex items-center gap-1"
+                      title="Permanently delete this network database"
                     >
-                      <Trash2 className="w-3.5 h-3.5" />
+                      <Trash2 className="w-3.5 h-3.5 text-rose-600" />
+                      Delete Database
                     </button>
                   )}
                 </div>
@@ -793,53 +816,28 @@ export function NetworkSettings() {
         </form>
       </div>
 
-      {/* Custom Relay Configuration with EU/US Quick-Picks */}
+      {/* Swarm Relay Configuration (Western Europe EU Relay) */}
       <div className="bg-white p-6 rounded-xl border border-gray-200 shadow-xs space-y-4">
         <div className="flex items-center gap-2.5 border-b border-gray-100 pb-3">
           <Server className="w-5 h-5 text-blue-600" />
           <div>
-            <h3 className="text-sm font-bold text-gray-900">Custom Swarm Relay</h3>
+            <h3 className="text-sm font-bold text-gray-900">Encrypted Swarm Relay</h3>
             <p className="text-xs text-gray-500">
-              Optional TLS 443 relay URL for bypassing restrictive campus firewalls. Select an EU or US relay or use the default global pool.
+              High-speed encrypted fallback tunnel (TLS 443) for university firewalls. Uses the official Western Europe relay.
             </p>
           </div>
         </div>
 
-        {/* Relay Preset Buttons */}
-        <div className="flex flex-wrap gap-2 pt-1">
-          <button
-            type="button"
-            onClick={() => setPresetRelay('https://euw1-1.relay.iroh.network/')}
-            className={`px-3 py-1.5 rounded-lg text-xs font-semibold border transition cursor-pointer ${
-              relayUrl === 'https://euw1-1.relay.iroh.network/'
-                ? 'bg-blue-50 border-blue-300 text-blue-700'
-                : 'bg-gray-50 border-gray-200 text-gray-700 hover:bg-gray-100'
-            }`}
-          >
-            🇪🇺 Western Europe (EU)
-          </button>
-          <button
-            type="button"
-            onClick={() => setPresetRelay('https://use1-1.relay.iroh.network/')}
-            className={`px-3 py-1.5 rounded-lg text-xs font-semibold border transition cursor-pointer ${
-              relayUrl === 'https://use1-1.relay.iroh.network/'
-                ? 'bg-blue-50 border-blue-300 text-blue-700'
-                : 'bg-gray-50 border-gray-200 text-gray-700 hover:bg-gray-100'
-            }`}
-          >
-            🇺🇸 US East (US)
-          </button>
-          <button
-            type="button"
-            onClick={() => setPresetRelay('default')}
-            className={`px-3 py-1.5 rounded-lg text-xs font-semibold border transition cursor-pointer ${
-              relayUrl === 'default'
-                ? 'bg-blue-50 border-blue-300 text-blue-700'
-                : 'bg-gray-50 border-gray-200 text-gray-700 hover:bg-gray-100'
-            }`}
-          >
-            🌐 Global Pool (EU & US Failover)
-          </button>
+        {/* Informative EU Relay badge and ToS note */}
+        <div className="space-y-2">
+          <div className="flex items-center gap-2">
+            <span className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-blue-50 text-blue-700 text-xs font-semibold rounded-lg border border-blue-200">
+              🇪🇺 Western Europe (EU) Active: <code className="font-mono">https://euw1-1.relay.iroh.network/</code>
+            </span>
+          </div>
+          <p className="text-[11px] text-gray-500 leading-relaxed">
+            🛡️ <strong>Relay Privacy & Terms of Service:</strong> Traffic is end-to-end encrypted (QUIC TLS 1.3). The relay operated by n0 serves strictly as a blind packet forwarder; relay operators cannot inspect or read your document contents. Used in compliance with official Iroh network acceptable use policies.
+          </p>
         </div>
 
         <form onSubmit={handleSaveRelay} className="space-y-3">
@@ -849,16 +847,28 @@ export function NetworkSettings() {
               type="text"
               value={relayUrl}
               onChange={(e) => setRelayUrl(e.target.value)}
+              placeholder="https://euw1-1.relay.iroh.network/"
               className="w-full mt-1 text-xs font-mono bg-gray-50 border border-gray-200 rounded-lg px-3 py-2 focus:bg-white focus:border-blue-500 focus:outline-none transition-all"
             />
           </div>
-          <button
-            type="submit"
-            disabled={savingRelay}
-            className="px-4 py-2 bg-gray-800 hover:bg-gray-900 text-white rounded-lg text-xs font-semibold shadow-xs transition-colors cursor-pointer disabled:opacity-50"
-          >
-            {savingRelay ? 'Saving...' : 'Save Relay Configuration'}
-          </button>
+
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setPresetRelay('https://euw1-1.relay.iroh.network/')}
+              className="px-3 py-1.5 bg-gray-100 hover:bg-gray-200 text-gray-700 text-xs font-medium rounded-lg transition cursor-pointer"
+            >
+              Reset to Official EU Relay
+            </button>
+            <button
+              type="submit"
+              disabled={savingRelay || !relayUrl.trim()}
+              className="px-4 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-semibold shadow-xs transition-colors disabled:opacity-50 flex items-center gap-1.5 cursor-pointer"
+            >
+              <Server className="w-3.5 h-3.5" />
+              {savingRelay ? 'Saving...' : 'Save Relay Configuration'}
+            </button>
+          </div>
         </form>
       </div>
     </div>

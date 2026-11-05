@@ -72,14 +72,12 @@ pub fn run() {
 
             // Create system tray icon and background persistence menu
             let show_item = MenuItem::with_id(app, "show", "Open P2P Campus Workspace", true, None::<&str>)?;
-            let quit_item = MenuItem::with_id(app, "quit", "Quit P2P Workspace...", true, None::<&str>)?;
-            let force_quit_item = MenuItem::with_id(app, "force_quit", "Force Close App", true, None::<&str>)?;
+            let quit_item = MenuItem::with_id(app, "quit", "Quit P2P Workspace", true, None::<&str>)?;
 
             let tray_menu = MenuBuilder::new(app)
                 .item(&show_item)
                 .separator()
                 .item(&quit_item)
-                .item(&force_quit_item)
                 .build()?;
 
             if let Some(icon) = app.default_window_icon() {
@@ -95,24 +93,35 @@ pub fn run() {
                             }
                         }
                         "quit" => {
-                            if let Some(window) = app_handle.get_webview_window("main") {
-                                let _ = window.show();
-                                let _ = window.unminimize();
-                                let _ = window.set_focus();
-                                let _ = window.emit("app-quit-requested", ());
-                            }
-                            let _ = app_handle.emit("app-quit-requested", ());
-                            let handle = app_handle.clone();
+                            let state = app_handle.state::<AppState>();
+                            let db = state.db.clone();
+                            let engine = state.engine.clone();
+                            let app_handle_clone = app_handle.clone();
                             tauri::async_runtime::spawn(async move {
-                                tokio::time::sleep(std::time::Duration::from_millis(150)).await;
-                                if let Some(window) = handle.get_webview_window("main") {
-                                    let _ = window.emit("app-quit-requested", ());
+                                let our_node_id = {
+                                    let guard = engine.read().await;
+                                    guard.as_ref().map(|e| e.node_id().to_string()).unwrap_or_default()
+                                };
+                                let sole_seeds = crate::storage::blob_tracker::get_sole_seed_files(&db, &our_node_id).unwrap_or_default();
+                                if sole_seeds.is_empty() {
+                                    // Direct shutdown when not the sole active seed for any files
+                                    app_handle_clone.exit(0);
+                                } else {
+                                    // Sole seed: open window and show warning confirmation popup
+                                    if let Some(window) = app_handle_clone.get_webview_window("main") {
+                                        let _ = window.show();
+                                        let _ = window.unminimize();
+                                        let _ = window.set_focus();
+                                        let _ = window.emit("app-quit-requested", ());
+                                    }
+                                    let _ = app_handle_clone.emit("app-quit-requested", ());
+                                    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+                                    if let Some(window) = app_handle_clone.get_webview_window("main") {
+                                        let _ = window.emit("app-quit-requested", ());
+                                    }
+                                    let _ = app_handle_clone.emit("app-quit-requested", ());
                                 }
-                                let _ = handle.emit("app-quit-requested", ());
                             });
-                        }
-                        "force_quit" => {
-                            app_handle.exit(0);
                         }
                         _ => {}
                     })
@@ -191,9 +200,9 @@ pub fn run() {
         })
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                // Intercept close button: prompt with quit modal (which allows minimizing to background tray or quitting)
+                // Minimize to system tray like before
                 api.prevent_close();
-                let _ = window.emit("app-quit-requested", ());
+                let _ = window.hide();
             }
         })
         .invoke_handler(tauri::generate_handler![
@@ -205,6 +214,7 @@ pub fn run() {
             commands::storage_cmds::switch_network_database,
             commands::storage_cmds::transfer_network_files,
             commands::storage_cmds::delete_network_database,
+            commands::storage_cmds::clear_active_database,
             commands::storage_cmds::get_app_settings,
             commands::storage_cmds::update_app_settings,
             commands::storage_cmds::set_network_secret,

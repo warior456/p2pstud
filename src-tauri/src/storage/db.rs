@@ -197,6 +197,11 @@ const MIGRATIONS: &[&str] = &[
         last_seen_at INTEGER NOT NULL
     );
     "#,
+    // Migration 0015 — Enforce Western Europe (EU) relay default
+    r#"
+    UPDATE settings SET value = 'https://euw1-1.relay.iroh.network/'
+    WHERE key = 'relay_url' AND (value LIKE '%use1-1%' OR value = '' OR value = 'default' OR value = 'global');
+    "#,
 ];
 
 fn apply_migrations_to_conn(conn: &Connection) -> Result<()> {
@@ -586,6 +591,23 @@ impl Database {
             let _ = fs::write(&registry_path, json);
         }
 
+        Ok(())
+    }
+
+    /// Clear all file catalog records, virtual folders, and seeds from the active network database.
+    pub fn clear_active_database(&self) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute_batch(
+            "DELETE FROM file_seeds;
+             DELETE FROM files;
+             DELETE FROM local_blobs;
+             DELETE FROM virtual_folders;
+             DELETE FROM file_keep_votes;
+             DELETE FROM file_ratings;
+             DELETE FROM file_stars;
+             DELETE FROM quarantine_reports;
+             DELETE FROM transfer_resume_queue;",
+        )?;
         Ok(())
     }
 

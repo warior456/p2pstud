@@ -1,6 +1,6 @@
 // src-tauri/src/p2p/relay.rs
 // Helpers for building the RelayMode configuration used by the Iroh node.
-// Default relay is now EU (euw1-1), with fallback support for US and global relays.
+// Default relay is strictly EU (euw1-1).
 
 use iroh::{RelayMode, RelayUrl};
 
@@ -10,13 +10,10 @@ pub const DEFAULT_RELAY_URL: &str = "https://euw1-1.relay.iroh.network/";
 /// European primary public relay.
 pub const EU_RELAY_URL: &str = "https://euw1-1.relay.iroh.network/";
 
-/// US primary public relay.
-pub const US_RELAY_URL: &str = "https://use1-1.relay.iroh.network/";
-
 /// Parse a single relay URL string into an `iroh::RelayUrl`.
 /// Returns the EU default relay if the input string is empty.
 pub fn parse_relay_url(url_str: &str) -> anyhow::Result<RelayUrl> {
-    let s = if url_str.is_empty() {
+    let s = if url_str.is_empty() || url_str.contains("use1-1") {
         DEFAULT_RELAY_URL
     } else {
         url_str
@@ -26,30 +23,27 @@ pub fn parse_relay_url(url_str: &str) -> anyhow::Result<RelayUrl> {
 }
 
 /// Build appropriate RelayMode based on configuration.
-/// If empty, "default", or "global": RelayMode::Default uses Iroh's global relay pool (EU, US, Asia).
-/// If "eu": uses the EU relay.
-/// If "us": uses the US relay.
-/// Otherwise, parses custom relay URL.
+/// Only keeps the EU relay as the standard relay.
 pub fn build_relay_mode(configured: &str) -> (RelayMode, String) {
     let trimmed = configured.trim();
-    if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("default") || trimmed.eq_ignore_ascii_case("global") {
-        (RelayMode::Default, "global default relays (EU & US)".to_string())
-    } else if trimmed.eq_ignore_ascii_case("eu") {
-        match parse_relay_url(EU_RELAY_URL) {
-            Ok(url) => (RelayMode::Custom(iroh::RelayMap::from(url)), EU_RELAY_URL.to_string()),
-            Err(_) => (RelayMode::Default, "global default relays (EU & US)".to_string()),
-        }
-    } else if trimmed.eq_ignore_ascii_case("us") {
-        match parse_relay_url(US_RELAY_URL) {
-            Ok(url) => (RelayMode::Custom(iroh::RelayMap::from(url)), US_RELAY_URL.to_string()),
-            Err(_) => (RelayMode::Default, "global default relays (EU & US)".to_string()),
-        }
+    let target_url = if trimmed.is_empty()
+        || trimmed.eq_ignore_ascii_case("default")
+        || trimmed.eq_ignore_ascii_case("global")
+        || trimmed.eq_ignore_ascii_case("eu")
+        || trimmed.contains("use1-1")
+    {
+        EU_RELAY_URL
     } else {
-        match parse_relay_url(trimmed) {
-            Ok(url) => (RelayMode::Custom(iroh::RelayMap::from(url)), trimmed.to_string()),
-            Err(e) => {
-                tracing::warn!("Failed to parse custom relay URL '{}': {}. Falling back to global relays.", trimmed, e);
-                (RelayMode::Default, "global default relays (EU & US)".to_string())
+        trimmed
+    };
+
+    match parse_relay_url(target_url) {
+        Ok(url) => (RelayMode::Custom(iroh::RelayMap::from(url)), target_url.to_string()),
+        Err(e) => {
+            tracing::warn!("Failed to parse relay URL '{}': {}. Falling back to default EU relay.", target_url, e);
+            match parse_relay_url(EU_RELAY_URL) {
+                Ok(url) => (RelayMode::Custom(iroh::RelayMap::from(url)), EU_RELAY_URL.to_string()),
+                Err(_) => (RelayMode::Default, "Default EU Relay".to_string()),
             }
         }
     }

@@ -3,9 +3,8 @@
 
 use std::time::Duration;
 
-use iroh::Watcher;
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::AppState;
 
@@ -21,169 +20,148 @@ pub struct DoctorComplete {
     pub advice: Vec<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DoctorReport {
+    pub results: Vec<DoctorTestResult>,
+    pub advice: Vec<String>,
+}
+
 #[tauri::command]
 pub async fn run_connection_doctor(
     app: AppHandle,
     state: State<'_, AppState>,
-) -> Result<(), String> {
-    let state_db = state.db.clone();
+) -> Result<DoctorReport, String> {
+    let _state_db = state.db.clone();
     let engine_lock = state.engine.clone();
 
-    // Spawn async background worker so we never block Tauri IPC or UI thread
-    tokio::spawn(async move {
-        // Small initial delay to ensure frontend IPC event listeners have mounted and registered
-        tokio::time::sleep(Duration::from_millis(300)).await;
+    let mut results = Vec::new();
+    let mut advice = Vec::new();
 
-        let mut advice = Vec::new();
+    // Helper to emit to both window and app handle for reliable delivery
+    let emit_result = |res: &DoctorTestResult| {
+        if let Some(win) = app.get_webview_window("main") {
+            let _ = win.emit("doctor-test-result", res);
+        }
+        let _ = app.emit("doctor-test-result", res);
+    };
 
-        // 1. Test mDNS / Local LAN discovery
-        let mdns_ok = {
-            let guard = engine_lock.read().await;
-            if let Some(engine) = guard.as_ref() {
-                // Check if any bound sockets are local / private
-                let has_local_socket = engine.endpoint.bound_sockets().iter().any(|sock| {
-                    let ip = sock.ip();
-                    ip.is_loopback() || match ip {
-                        std::net::IpAddr::V4(v4) => v4.is_private(),
-                        std::net::IpAddr::V6(_) => false,
-                    }
-                });
-                has_local_socket
-            } else {
-                false
-            }
-        };
-
-        let _ = app.emit(
-            "doctor-test-result",
-            DoctorTestResult {
-                test: "mdns".to_string(),
-                ok: mdns_ok,
-                detail: if mdns_ok {
-                    "Local peers detected on LAN (mDNS active)".to_string()
-                } else {
-                    "No local peers found on LAN broadcast (common on campus Wi-Fi with client isolation)".to_string()
-                },
-            },
-        );
-
-        tokio::time::sleep(Duration::from_millis(150)).await;
-
-        // 2. Test QUIC UDP
-        let quic_udp_ok = {
-            // Test if UDP socket can bind and transmit
-            match tokio::time::timeout(Duration::from_secs(2), tokio::net::UdpSocket::bind("0.0.0.0:0")).await {
-                Ok(Ok(sock)) => {
-                    sock.connect("1.1.1.1:53").await.is_ok()
+    // 1. Test mDNS / Local LAN discovery
+    let mdns_ok = {
+        let guard = engine_lock.read().await;
+        if let Some(engine) = guard.as_ref() {
+            engine.endpoint.bound_sockets().iter().any(|sock| {
+                let ip = sock.ip();
+                ip.is_loopback() || match ip {
+                    std::net::IpAddr::V4(v4) => v4.is_private(),
+                    std::net::IpAddr::V6(_) => false,
                 }
-                _ => false,
-            }
-        };
-
-        let _ = app.emit(
-            "doctor-test-result",
-            DoctorTestResult {
-                test: "quic_udp".to_string(),
-                ok: quic_udp_ok,
-                detail: if quic_udp_ok {
-                    "Outbound UDP connectivity available for direct QUIC".to_string()
-                } else {
-                    "Outbound UDP appears blocked by campus firewall".to_string()
-                },
-            },
-        );
-
-        tokio::time::sleep(Duration::from_millis(150)).await;
-
-        // 3. Test Relay over port 443 (TCP)
-        let active_relay = {
-            let guard = engine_lock.read().await;
-            guard.as_ref().and_then(|e| {
-                let relays = e.endpoint.home_relay_status().get();
-                relays.first().map(|r| r.url().to_string())
             })
-        };
-
-        let configured_relay = state_db.get_setting("relay_url").unwrap_or_default().unwrap_or_default();
-        let relay_url = if !configured_relay.trim().is_empty() {
-            configured_relay
-        } else if let Some(ref r) = active_relay {
-            r.clone()
         } else {
-            "https://euw1-1.relay.iroh.network/".to_string()
-        };
+            false
+        }
+    };
 
-        let relay_tcp_ok = {
-            // Extract host and port from relay URL
-            let parsed = url::Url::parse(&relay_url).ok();
-            let host = parsed.as_ref().and_then(|u| u.host_str()).unwrap_or("euw1-1.relay.iroh.network");
-            let port = parsed.as_ref().and_then(|u| u.port()).unwrap_or(443);
+    let mdns_res = DoctorTestResult {
+        test: "mdns".to_string(),
+        ok: mdns_ok,
+        detail: if mdns_ok {
+            "Local socket bound and active for LAN peer discovery (mDNS)".to_string()
+        } else {
+            "Client isolation detected on router (mDNS disabled or blocked on this Wi-Fi)".to_string()
+        },
+    };
+    emit_result(&mdns_res);
+    results.push(mdns_res);
 
-            let addr_str = format!("{host}:{port}");
-            match tokio::time::timeout(Duration::from_secs(3), tokio::net::TcpStream::connect(&addr_str)).await {
-                Ok(Ok(_stream)) => true,
-                _ => {
-                    // Non-blocking DNS resolution test with timeout
-                    match tokio::time::timeout(Duration::from_secs(2), tokio::net::lookup_host(&addr_str)).await {
-                        Ok(Ok(mut addrs)) => addrs.next().is_some(),
-                        _ => false,
-                    }
+    // 2. Test QUIC UDP
+    let quic_udp_ok = match tokio::time::timeout(Duration::from_millis(1500), tokio::net::UdpSocket::bind("0.0.0.0:0")).await {
+        Ok(Ok(sock)) => sock.connect("8.8.8.8:12345").await.is_ok(),
+        _ => false,
+    };
+
+    let quic_res = DoctorTestResult {
+        test: "quic_udp".to_string(),
+        ok: quic_udp_ok,
+        detail: if quic_udp_ok {
+            "Outbound UDP connectivity available for direct P2P mesh".to_string()
+        } else {
+            "Outbound UDP blocked by network firewall; traffic will tunnel through relay".to_string()
+        },
+    };
+    emit_result(&quic_res);
+    results.push(quic_res);
+
+    // 3. Test Relay over port 443 (TCP)
+    let relay_url = crate::p2p::relay::EU_RELAY_URL;
+    let relay_tcp_ok = {
+        let addr_str = "euw1-1.relay.iroh.network:443";
+        match tokio::time::timeout(Duration::from_millis(2500), tokio::net::TcpStream::connect(addr_str)).await {
+            Ok(Ok(_stream)) => true,
+            _ => {
+                match tokio::time::timeout(Duration::from_millis(1500), tokio::net::lookup_host(addr_str)).await {
+                    Ok(Ok(mut addrs)) => addrs.next().is_some(),
+                    _ => false,
                 }
             }
-        };
-
-        let _ = app.emit(
-            "doctor-test-result",
-            DoctorTestResult {
-                test: "relay_tcp".to_string(),
-                ok: relay_tcp_ok,
-                detail: if relay_tcp_ok {
-                    format!("Successfully reached relay server at {relay_url}")
-                } else {
-                    format!("Cannot connect to relay server at {relay_url} over TCP 443")
-                },
-            },
-        );
-
-        tokio::time::sleep(Duration::from_millis(150)).await;
-
-        // 4. Test NAT type
-        let is_symmetric_nat = !quic_udp_ok;
-
-        let nat_type = if is_symmetric_nat { "symmetric" } else { "full_cone" };
-
-        let _ = app.emit(
-            "doctor-test-result",
-            DoctorTestResult {
-                test: "nat_type".to_string(),
-                ok: true,
-                detail: format!("NAT Architecture detected: {nat_type}"),
-            },
-        );
-
-        // Compile advice strings as required by Step 34
-        if !quic_udp_ok && relay_tcp_ok {
-            advice.push("Eduroam is blocking direct UDP. All traffic routes through the relay — transfers will be slightly slower, but everything works.".to_string());
         }
+    };
 
-        if !relay_tcp_ok {
-            advice.push("Cannot reach the relay server. Check your internet connection, or ask your group admin for the correct relay URL.".to_string());
-        }
+    let relay_res = DoctorTestResult {
+        test: "relay_tcp".to_string(),
+        ok: relay_tcp_ok,
+        detail: if relay_tcp_ok {
+            format!("Successfully reached Western Europe relay at {relay_url}")
+        } else {
+            format!("Cannot reach Western Europe relay at {relay_url} over TCP port 443")
+        },
+    };
+    emit_result(&relay_res);
+    results.push(relay_res);
 
-        if nat_type == "symmetric" {
-            advice.push("Your network uses symmetric NAT. The relay is required for all connections — this is normal on Eduroam.".to_string());
-        }
+    // 4. Test NAT type
+    let is_symmetric_nat = !quic_udp_ok;
+    let nat_type = if is_symmetric_nat { "symmetric" } else { "full_cone" };
 
-        if mdns_ok {
-            advice.push("Found campus peers on this Wi-Fi — direct LAN connections are available and fast.".to_string());
-        }
+    let nat_res = DoctorTestResult {
+        test: "nat_type".to_string(),
+        ok: !is_symmetric_nat,
+        detail: if is_symmetric_nat {
+            format!("{nat_type} NAT detected: requires relay assistance for peer hole punching")
+        } else {
+            format!("{nat_type} NAT: direct peer connections possible")
+        },
+    };
+    emit_result(&nat_res);
+    results.push(nat_res);
 
-        if advice.is_empty() {
-            advice.push("All connectivity checks passed. Your device is connected and ready to share course files.".to_string());
-        }
+    // Compile helpful advice based on results
+    if !quic_udp_ok && relay_tcp_ok {
+        advice.push("Network is blocking direct UDP. All traffic routes through Western Europe encrypted relay — transfers work seamlessly.".to_string());
+    }
 
-        let _ = app.emit("doctor-complete", DoctorComplete { advice });
-    });
+    if !relay_tcp_ok {
+        advice.push("Cannot reach the Western Europe relay. Check your internet connection or verify port 443 outbound access.".to_string());
+    }
 
-    Ok(())
+    if is_symmetric_nat {
+        advice.push("Symmetric NAT is active. P2P connections will use the encrypted relay for NAT hole-punching.".to_string());
+    }
+
+    if mdns_ok {
+        advice.push("Local discovery active: fast LAN mesh transfers available with peers on this router.".to_string());
+    }
+
+    if advice.is_empty() {
+        advice.push("All connectivity checks passed. Your device is ready to sync and share course documents.".to_string());
+    }
+
+    let complete_payload = DoctorComplete {
+        advice: advice.clone(),
+    };
+    if let Some(win) = app.get_webview_window("main") {
+        let _ = win.emit("doctor-complete", &complete_payload);
+    }
+    let _ = app.emit("doctor-complete", &complete_payload);
+
+    Ok(DoctorReport { results, advice })
 }

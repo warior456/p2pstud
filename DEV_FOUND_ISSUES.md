@@ -45,3 +45,44 @@
     - Added `Database::delete_network_database(secret)`: removes database files for non-active networks.
   - `src-tauri/src/commands/storage_cmds.rs`: Registered IPC commands `list_network_databases`, `switch_network_database`, `transfer_network_files`, `delete_network_database`.
   - `src/components/Settings/NetworkSettings.tsx`: Added **Network Databases & Workspaces** management UI card with live network database listings, switch button, seed-only transfer executor with summary report, and delete actions.
+
+---
+
+## Issues & Resolutions (Version 0.1.15)
+
+### 1. Swarm Connection Reachability & Western Europe (EU) Relay Standard
+- **Issue:** The app displayed a false "Relay Unreachable" banner even when the relay website was reachable on HTTPS port 443; the user requested reverting to EU relay only and checking the relay Terms of Service.
+- **Fix:**
+  - `src-tauri/src/storage/db.rs`: Added Migration 0015 resetting any stale or non-EU relay settings in SQLite to `https://euw1-1.relay.iroh.network/`.
+  - `src-tauri/src/p2p/relay.rs`: Reverted all relay presets to strictly use the official Western Europe EU relay (`https://euw1-1.relay.iroh.network/`).
+  - `src-tauri/src/commands/storage_cmds.rs`: Updated `get_connection_status` to perform real TCP port 443 handshake probes against `euw1-1.relay.iroh.network:443` in addition to checking Iroh's internal connection state. This ensures that when the user has working internet access to the server, `relay_connected` is immediately recognized as `true`.
+  - `src/components/Settings/NetworkSettings.tsx`: Removed US East and Global preset buttons; retained the official EU relay with full Terms of Service & acceptable use documentation.
+  - **Relay Terms of Service (ToS) Review**: Verified with official n0 documentation that all traffic over `*.relay.iroh.network` is end-to-end encrypted (QUIC/TLS 1.3) with zero payload inspection, zero advertising tracking, and no content storage on relay servers.
+
+### 2. Streamlined Shutdown vs Sole-Seed Warning Popup (Removed Force Quit)
+- **Issue:** Tray menu had "Force Close App"; clicking "Quit" was expected to quit directly unless the local node is the sole active seeder of files (in which case a warning popup should appear).
+- **Fix:**
+  - `src-tauri/src/lib.rs`:
+    - Removed `force_quit` item from the system tray menu.
+    - Tray "Quit P2P Workspace" checks `blob_tracker::get_sole_seed_files`. If sole seeds count is 0, calls `app_handle.exit(0)` directly. If sole seeds > 0, opens window, unminimizes, focuses, and emits `app-quit-requested` to display the warning confirmation popup.
+  - `src/App.tsx`: Header Power icon button checks sole seeds: if 0, cleanly quits immediately; if sole seeds exist, displays warning modal.
+
+### 3. Windows [X] Button Restored to Minimize to Tray
+- **Issue:** The window `[X]` button was not minimizing to tray as expected.
+- **Fix:**
+  - `src-tauri/src/lib.rs`: Restored `WindowEvent::CloseRequested` to call `api.prevent_close()` followed by `window.hide()`. Window `[X]` now smoothly hides the window to the system tray without quitting or blocking.
+
+### 4. Connection Doctor Diagnostics: Real Results & No Indefinite Testing/Queued
+- **Issue:** Diagnostic tests stayed on "Testing..." or remained "Queued" without showing "Pass" or "Blocked".
+- **Fix:**
+  - `src-tauri/src/commands/diagnostic_cmds.rs`: Updated `run_connection_doctor` to return `DoctorReport { results, advice }` directly from the IPC invoke and emit to both webview window and app handle.
+  - `src/components/Onboarding/ConnectionDoctor.tsx`: Safely handles report results, populates state on completion, and ensures that any test that does not pass renders with a clear, red "Blocked" badge with diagnostic explanation rather than "Queued".
+
+### 5. Visible Database Delete / Clear Actions in Settings
+- **Issue:** In the Network Databases card, there was no visible delete button for the active database, and delete buttons were hidden.
+- **Fix:**
+  - `src-tauri/src/storage/db.rs` & `commands/storage_cmds.rs`: Added `clear_active_database` command to safely clear all file records from the active database.
+  - `src/components/Settings/NetworkSettings.tsx`: Added prominent, clearly styled buttons on every database card:
+    - Active database: `[Clear Database]` (red button with trash icon & confirmation dialog).
+    - Inactive database: `[Delete Database]` (red button with trash icon & confirmation dialog to remove the database file).
+

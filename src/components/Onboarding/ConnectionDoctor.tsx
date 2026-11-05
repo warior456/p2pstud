@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { CheckCircle2, XCircle, RefreshCw, AlertCircle, Stethoscope } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import { DoctorTestResult } from '../../types';
+import { DoctorTestResult, DoctorReport } from '../../types';
 
 interface ConnectionDoctorProps {
   onClose?: () => void;
@@ -26,9 +26,27 @@ export function ConnectionDoctor({ onClose: _onClose }: ConnectionDoctorProps) {
     setAdviceList([]);
 
     try {
-      await invoke('run_connection_doctor');
+      const report = await invoke<DoctorReport>('run_connection_doctor');
+      const map: Record<string, { ok: boolean; detail: string }> = {};
+      const results = report?.results || [];
+      for (const res of results) {
+        map[res.test] = { ok: res.ok, detail: res.detail };
+      }
+      for (const t of tests) {
+        if (!map[t.id]) {
+          map[t.id] = { ok: false, detail: 'Connection test failed or blocked by network' };
+        }
+      }
+      setTestResults(map);
+      setAdviceList(report?.advice || []);
     } catch (err) {
       console.error('Failed to trigger connection doctor:', err);
+      const map: Record<string, { ok: boolean; detail: string }> = {};
+      for (const t of tests) {
+        map[t.id] = { ok: false, detail: `Diagnostic blocked: ${err}` };
+      }
+      setTestResults(map);
+    } finally {
       setIsRunning(false);
     }
   };
@@ -37,7 +55,6 @@ export function ConnectionDoctor({ onClose: _onClose }: ConnectionDoctorProps) {
     let mounted = true;
     let unlistenResult: (() => void) | undefined;
     let unlistenComplete: (() => void) | undefined;
-    let timeoutId: any;
 
     listen<DoctorTestResult>('doctor-test-result', (event) => {
       if (!mounted) return;
@@ -56,29 +73,14 @@ export function ConnectionDoctor({ onClose: _onClose }: ConnectionDoctorProps) {
       if (!mounted) return;
       setAdviceList(event.payload.advice || []);
       setIsRunning(false);
-      clearTimeout(timeoutId);
     }).then((unlisten) => {
       unlistenComplete = unlisten;
     });
 
-    setIsRunning(true);
-    setTestResults({});
-    setAdviceList([]);
-    invoke('run_connection_doctor').catch((err) => {
-      console.error('Failed to trigger connection doctor:', err);
-      if (mounted) setIsRunning(false);
-    });
-
-    // Safety timeout: ensure button and status never stay stuck on "Analyzing..."
-    timeoutId = setTimeout(() => {
-      if (mounted) {
-        setIsRunning(false);
-      }
-    }, 8000);
+    startDiagnostics();
 
     return () => {
       mounted = false;
-      clearTimeout(timeoutId);
       if (unlistenResult) unlistenResult();
       if (unlistenComplete) unlistenComplete();
     };
@@ -122,8 +124,13 @@ export function ConnectionDoctor({ onClose: _onClose }: ConnectionDoctorProps) {
                 </div>
                 <p className="text-[11px] text-gray-500">{t.desc}</p>
                 {res && (
-                  <p className={`text-[11px] mt-1 font-mono font-medium ${res.ok ? 'text-teal-700' : 'text-amber-700'}`}>
+                  <p className={`text-[11px] mt-1 font-mono font-medium ${res.ok ? 'text-teal-700' : 'text-rose-700'}`}>
                     {res.detail}
+                  </p>
+                )}
+                {!isPending && !res && (
+                  <p className="text-[11px] mt-1 font-mono font-medium text-rose-700">
+                    Connection blocked or timed out
                   </p>
                 )}
               </div>
@@ -135,21 +142,25 @@ export function ConnectionDoctor({ onClose: _onClose }: ConnectionDoctorProps) {
                     <span>Testing...</span>
                   </div>
                 )}
-                {!isPending && res && (
-                  res.ok ? (
-                    <div className="flex items-center gap-1 text-xs text-teal-700 font-semibold bg-teal-50 px-2 py-0.5 rounded border border-teal-200">
-                      <CheckCircle2 className="w-4 h-4 text-teal-600" />
-                      <span>Pass</span>
-                    </div>
+                {!isPending && (
+                  res ? (
+                    res.ok ? (
+                      <div className="flex items-center gap-1 text-xs text-teal-700 font-semibold bg-teal-50 px-2 py-0.5 rounded border border-teal-200">
+                        <CheckCircle2 className="w-4 h-4 text-teal-600" />
+                        <span>Pass</span>
+                      </div>
+                    ) : (
+                      <div className="flex items-center gap-1 text-xs text-rose-700 font-semibold bg-rose-50 px-2 py-0.5 rounded border border-rose-200">
+                        <XCircle className="w-4 h-4 text-rose-600" />
+                        <span>Blocked</span>
+                      </div>
+                    )
                   ) : (
                     <div className="flex items-center gap-1 text-xs text-rose-700 font-semibold bg-rose-50 px-2 py-0.5 rounded border border-rose-200">
                       <XCircle className="w-4 h-4 text-rose-600" />
                       <span>Blocked</span>
                     </div>
                   )
-                )}
-                {!isPending && !res && (
-                  <span className="text-xs text-gray-400">Queued</span>
                 )}
               </div>
             </div>

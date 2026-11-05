@@ -250,20 +250,23 @@ export default function App() {
     });
 
     listen('app-quit-requested', async () => {
-      // Immediately display the modal so the user sees instant feedback
-      setShowQuitModal(true);
       try {
+        const soleSeeds = await invoke<any[]>('get_sole_seed_files');
         const pending = await invoke<string | null>('get_setting', { key: 'update_pending' });
         const isPending = pending === 'true';
-        setIsUpdatePending(isPending);
 
-        let soleSeeds: any[] = [];
-        try {
-          soleSeeds = await invoke<any[]>('get_sole_seed_files');
-        } catch (_) {}
-
-        setSoleSeedsOnQuit(soleSeeds || []);
-      } catch (_) {}
+        if ((!soleSeeds || soleSeeds.length === 0) && !isPending) {
+          // Not the only one seeding and no update pending: cleanly quit
+          await invoke('confirm_app_exit', { installUpdate: false });
+        } else {
+          // Only one seeding or update pending: open warning popup
+          setSoleSeedsOnQuit(soleSeeds || []);
+          setIsUpdatePending(isPending);
+          setShowQuitModal(true);
+        }
+      } catch (_) {
+        setShowQuitModal(true);
+      }
     }).then((un) => {
       unlistenQuitRequested = un;
     });
@@ -709,11 +712,23 @@ export default function App() {
   };
 
   const handleRequestQuit = async () => {
-    setShowQuitModal(true);
     try {
       const soleSeeds = await invoke<any[]>('get_sole_seed_files');
-      setSoleSeedsOnQuit(soleSeeds || []);
-    } catch (_) {}
+      const pending = await invoke<string | null>('get_setting', { key: 'update_pending' });
+      const isPending = pending === 'true';
+
+      if ((!soleSeeds || soleSeeds.length === 0) && !isPending) {
+        // Not sole seeder: cleanly exit immediately
+        await invoke('confirm_app_exit', { installUpdate: false });
+      } else {
+        // Only one seeding: display warning confirmation popup
+        setSoleSeedsOnQuit(soleSeeds || []);
+        setIsUpdatePending(isPending);
+        setShowQuitModal(true);
+      }
+    } catch (_) {
+      await invoke('confirm_app_exit', { installUpdate: false });
+    }
   };
 
   const handleMinimizeToTray = async () => {

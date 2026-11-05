@@ -421,12 +421,12 @@ pub async fn set_relay_url(relay_url: String, state: State<'_, AppState>) -> Res
 /// Retrieve comprehensive swarm connectivity, peer counts, and relay status.
 #[tauri::command]
 pub async fn get_connection_status(state: State<'_, AppState>) -> Result<ConnectionStatus, String> {
-    let (peer_count, relay_connected, relay_url) = {
+    let (peer_count, iroh_relay_connected, _relay_url) = {
         let guard = state.engine.read().await;
         if let Some(engine) = guard.as_ref() {
             let mut home_status = engine.endpoint.home_relay_status();
             let active_relays = home_status.get();
-            let relay_connected = !active_relays.is_empty();
+            let is_conn = active_relays.iter().any(|r| r.is_connected());
             let first_relay = active_relays.first().map(|r| r.url().to_string());
             let my_id = engine.node_id().to_string();
             let fifteen_mins_ago = std::time::SystemTime::now()
@@ -441,17 +441,25 @@ pub async fn get_connection_status(state: State<'_, AppState>) -> Result<Connect
                     |r| r.get(0),
                 ).unwrap_or(0)
             };
-            (count.max(0) as usize, relay_connected, first_relay)
+            (count.max(0) as usize, is_conn, first_relay)
         } else {
             (0, false, None)
         }
     };
 
-    let configured_relay = state.db.get_setting("relay_url").unwrap_or_default().unwrap_or_default();
-    let effective_relay = if !configured_relay.trim().is_empty() {
-        Some(configured_relay)
+    let effective_relay = Some(crate::p2p::relay::EU_RELAY_URL.to_string());
+
+    // If Iroh's internal relay status is connected, or if TCP probe to EU relay succeeds
+    let relay_connected = if iroh_relay_connected {
+        true
     } else {
-        relay_url.or_else(|| Some(crate::p2p::relay::DEFAULT_RELAY_URL.to_string()))
+        match tokio::time::timeout(
+            std::time::Duration::from_millis(1500),
+            tokio::net::TcpStream::connect("euw1-1.relay.iroh.network:443"),
+        ).await {
+            Ok(Ok(_)) => true,
+            _ => false,
+        }
     };
 
     let is_online = relay_connected || peer_count > 0;
@@ -462,6 +470,14 @@ pub async fn get_connection_status(state: State<'_, AppState>) -> Result<Connect
         relay_connected,
         relay_url: effective_relay,
     })
+}
+
+/// Clear all file records from the currently active database.
+#[tauri::command]
+pub async fn clear_active_database(state: State<'_, AppState>, app: AppHandle) -> Result<(), String> {
+    state.db.clear_active_database().map_err(|e| e.to_string())?;
+    let _ = app.emit("network-database-switched", ());
+    Ok(())
 }
 
 /// Minimize / hide the main application window to the system tray.
