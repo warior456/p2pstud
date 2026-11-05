@@ -11,7 +11,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
-use iroh_blobs::store::Store as _;
 
 use crate::p2p::engine::IrohEngine;
 use crate::storage::blob_tracker::{
@@ -130,16 +129,17 @@ pub async fn run_eviction_pass(db: &Arc<Database>, engine: &IrohEngine) -> Resul
             }
             let hash_str = &blob.hash;
 
-            // Parse BLAKE3 hash from hex string.
-            let Ok(hash) = hash_str.parse::<iroh_blobs::Hash>() else {
+            // Validate BLAKE3 hash from hex string.
+            let Ok(_hash) = hash_str.parse::<iroh_blobs::Hash>() else {
                 tracing::warn!(hash = %hash_str, "invalid hash in DB, skipping eviction of this entry");
                 delete_blob(db, hash_str)?;
                 continue;
             };
 
-            // Remove from iroh-blobs store (this is the actual disk deletion).
-            if let Err(e) = engine.blobs.store().delete(vec![hash]).await {
-                tracing::warn!(hash = %hash_str, "iroh-blobs delete failed: {e:#}");
+            // Remove from iroh-blobs store tags (un-tag so data can be garbage collected).
+            let _ = engine.store.tags().delete(hash_str.as_bytes()).await;
+            if let Some(name) = &blob.name {
+                let _ = engine.store.tags().delete(name.as_bytes()).await;
             }
 
             // Remove from our SQLite tracker.

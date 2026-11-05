@@ -37,17 +37,15 @@ pub async fn run_connection_doctor(
         let mdns_ok = {
             let guard = engine_lock.read().await;
             if let Some(engine) = guard.as_ref() {
-                // Check if any peer has a direct local LAN address
-                let has_local_peer = engine.endpoint.remote_info_iter().any(|info| {
-                    info.addrs.iter().any(|addr| {
-                        let ip = addr.addr.ip();
-                        ip.is_loopback() || match ip {
-                            std::net::IpAddr::V4(v4) => v4.is_private(),
-                            std::net::IpAddr::V6(_) => false,
-                        }
-                    })
+                // Check if any bound sockets are local / private
+                let has_local_socket = engine.endpoint.bound_sockets().iter().any(|sock| {
+                    let ip = sock.ip();
+                    ip.is_loopback() || match ip {
+                        std::net::IpAddr::V4(v4) => v4.is_private(),
+                        std::net::IpAddr::V6(_) => false,
+                    }
                 });
-                has_local_peer
+                has_local_socket
             } else {
                 false
             }
@@ -133,15 +131,7 @@ pub async fn run_connection_doctor(
         tokio::time::sleep(Duration::from_millis(150)).await;
 
         // 4. Test NAT type
-        let is_symmetric_nat = !quic_udp_ok || {
-            let guard = engine_lock.read().await;
-            if let Some(engine) = guard.as_ref() {
-                // If all active connections route strictly through relay, symmetric NAT / Eduroam firewall is active
-                engine.endpoint.remote_info_iter().any(|info| info.relay_url.is_some() && info.addrs.is_empty())
-            } else {
-                false
-            }
-        };
+        let is_symmetric_nat = !quic_udp_ok;
 
         let nat_type = if is_symmetric_nat { "symmetric" } else { "full_cone" };
 

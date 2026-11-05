@@ -233,11 +233,12 @@ pub async fn purge_cache(state: State<'_, AppState>) -> Result<u64, String> {
 
     let mut freed_bytes: u64 = 0;
     for blob in unpinned {
-        if let Ok(hash) = blob.hash.parse::<iroh_blobs::Hash>() {
-            let _ = engine.blobs.clone().client().delete_blob(hash).await;
-            let _ = delete_blob(&state.db, &blob.hash);
-            freed_bytes += blob.size_bytes;
+        let _ = engine.store.tags().delete(blob.hash.as_bytes()).await;
+        if let Some(name) = &blob.name {
+            let _ = engine.store.tags().delete(name.as_bytes()).await;
         }
+        let _ = delete_blob(&state.db, &blob.hash);
+        freed_bytes += blob.size_bytes;
     }
 
     tracing::info!(freed_bytes, "Purged unpinned cache");

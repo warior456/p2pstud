@@ -3,13 +3,11 @@
 // ALPN: /p2pstud/sync/1
 
 use std::future::Future;
-use std::pin::Pin;
 use std::sync::Arc;
 
 use anyhow::Result;
-use iroh::endpoint::{Connecting, Endpoint, NodeAddr};
+use iroh::{Endpoint, EndpointAddr, PublicKey, SecretKey, Signature};
 use iroh::protocol::ProtocolHandler;
-use iroh_blobs::store::Map;
 use serde::{Deserialize, Serialize};
 
 use crate::storage::blob_tracker::{
@@ -140,7 +138,7 @@ pub fn create_receipt_payload(
     format!("receipt:{hash}:{seeder}:{recipient}:{bytes}:{issued_at}")
 }
 
-pub fn sign_receipt(secret_key: &iroh::key::SecretKey, payload: &str) -> String {
+pub fn sign_receipt(secret_key: &SecretKey, payload: &str) -> String {
     let sig = secret_key.sign(payload.as_bytes());
     let bytes = sig.to_bytes();
     bytes.iter().map(|b| format!("{b:02x}")).collect()
@@ -151,7 +149,7 @@ pub fn verify_receipt_signature(
     payload: &str,
     signature_hex: &str,
 ) -> bool {
-    let Ok(pub_key) = recipient_node_id.parse::<iroh::NodeId>() else {
+    let Ok(pub_key) = recipient_node_id.parse::<PublicKey>() else {
         return false;
     };
     if signature_hex.len() != 128 {
@@ -164,7 +162,7 @@ pub fn verify_receipt_signature(
             Err(_) => return false,
         };
     }
-    let sig = iroh::key::Signature::from_bytes(&sig_bytes);
+    let sig = Signature::from_bytes(&sig_bytes);
     pub_key.verify(payload.as_bytes(), &sig).is_ok()
 }
 
@@ -172,11 +170,11 @@ pub fn verify_receipt_signature(
 #[derive(Debug, Clone)]
 pub struct CatalogSyncHandler {
     db: Arc<Database>,
-    store: Option<iroh_blobs::store::fs::Store>,
+    store: Option<iroh_blobs::store::fs::FsStore>,
 }
 
 impl CatalogSyncHandler {
-    pub fn new(db: Arc<Database>, store: Option<iroh_blobs::store::fs::Store>) -> Self {
+    pub fn new(db: Arc<Database>, store: Option<iroh_blobs::store::fs::FsStore>) -> Self {
         Self { db, store }
     }
 
@@ -216,9 +214,10 @@ impl CatalogSyncHandler {
                 if let Some(ref s) = self.store {
                     for rec in &mut my_records {
                         if let Ok(parsed) = rec.hash.parse::<iroh_blobs::Hash>() {
-                            if let Ok(Some(entry)) = s.get(&parsed).await {
-                                rec.is_cached = entry.is_complete();
-                            }
+                            rec.is_cached = matches!(
+                                s.blobs().status(parsed).await,
+                                Ok(iroh_blobs::api::blobs::BlobStatus::Complete { .. })
+                            );
                         }
                     }
                 }
@@ -533,27 +532,43 @@ impl CatalogSyncHandler {
 
 impl ProtocolHandler for CatalogSyncHandler {
     fn accept(
-        self: Arc<Self>,
-        conn: Connecting,
-    ) -> Pin<Box<dyn Future<Output = Result<()>> + Send>> {
+        &self,
+        connection: iroh::endpoint::Connection,
+    ) -> impl Future<Output = std::result::Result<(), iroh::protocol::AcceptError>> + Send {
         let this = self.clone();
-        Box::pin(async move {
-            let connection = conn.await?;
-            let sender_peer = iroh::endpoint::get_remote_node_id(&connection).ok().map(|id| id.to_string());
+        async move {
+            let remote_id = connection.remote_id();
+            register_active_peer(remote_id);
+            let sender_peer = Some(remote_id.to_string());
             let (mut send, mut recv) = connection.accept_bi().await?;
 
             // Read incoming message with 2MB limit (plenty for thousands of catalog entries)
-            let bytes = recv.read_to_end(2 * 1024 * 1024).await?;
+            let bytes = recv
+                .read_to_end(2 * 1024 * 1024)
+                .await
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
             if let Ok(msg) = serde_json::from_slice::<SyncMessage>(&bytes) {
                 if let Ok(Some(reply)) = this.handle_message(msg, sender_peer.as_deref()).await {
                     if let Ok(reply_bytes) = serde_json::to_vec(&reply) {
-                        send.write_all(&reply_bytes).await?;
+                        send.write_all(&reply_bytes)
+                            .await
+                            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
                     }
                 }
             }
             let _ = send.finish();
             Ok(())
-        })
+        }
+    }
+}
+
+static ACTIVE_SWARM_PEERS: std::sync::RwLock<Vec<iroh::EndpointId>> = std::sync::RwLock::new(Vec::new());
+
+pub fn register_active_peer(peer_id: iroh::EndpointId) {
+    if let Ok(mut lock) = ACTIVE_SWARM_PEERS.write() {
+        if !lock.contains(&peer_id) {
+            lock.push(peer_id);
+        }
     }
 }
 
@@ -561,9 +576,10 @@ impl ProtocolHandler for CatalogSyncHandler {
 pub async fn sync_catalog_with_peer(
     endpoint: &Endpoint,
     db: &Arc<Database>,
-    store: Option<&iroh_blobs::store::fs::Store>,
-    peer_addr: NodeAddr,
+    store: Option<&iroh_blobs::store::fs::FsStore>,
+    peer_addr: EndpointAddr,
 ) -> Result<()> {
+    register_active_peer(peer_addr.id);
     let alpn = get_sync_alpn(db);
     let connection = endpoint.connect(peer_addr.clone(), &alpn).await?;
     let (mut send, mut recv) = connection.open_bi().await?;
@@ -572,8 +588,8 @@ pub async fn sync_catalog_with_peer(
     if let Some(s) = store {
         for rec in &mut my_records {
             if let Ok(parsed) = rec.hash.parse::<iroh_blobs::Hash>() {
-                if let Ok(Some(entry)) = s.get(&parsed).await {
-                    rec.is_cached = entry.is_complete();
+                if let Ok(status) = s.blobs().status(parsed).await {
+                    rec.is_cached = matches!(status, iroh_blobs::api::blobs::BlobStatus::Complete { .. });
                 }
             }
         }
@@ -589,7 +605,7 @@ pub async fn sync_catalog_with_peer(
         if let Ok(SyncMessage::CatalogDump(remote_records)) =
             serde_json::from_slice::<SyncMessage>(&reply_bytes)
         {
-            let peer_id_str = peer_addr.node_id.to_string();
+            let peer_id_str = peer_addr.id.to_string();
             for r in remote_records {
                 if !is_valid_blob_hash(&r.hash) {
                     continue;
@@ -629,9 +645,16 @@ pub async fn broadcast_catalog_event(endpoint: &Endpoint, alpn: &[u8], msg: Sync
     };
 
     let alpn_vec = alpn.to_vec();
-    let remotes: Vec<_> = endpoint.remote_info_iter().collect();
-    for remote in remotes {
-        let peer_addr = NodeAddr::new(remote.node_id);
+    let peers: Vec<iroh::EndpointId> = {
+        if let Ok(lock) = ACTIVE_SWARM_PEERS.read() {
+            lock.clone()
+        } else {
+            Vec::new()
+        }
+    };
+
+    for peer_id in peers {
+        let peer_addr = EndpointAddr::from(peer_id);
         let ep = endpoint.clone();
         let payload = bytes.clone();
         let proto = alpn_vec.clone();
@@ -686,9 +709,9 @@ mod tests {
 
     #[test]
     fn test_seeding_receipt_signing_and_verification() {
-        let recipient_key = iroh::key::SecretKey::generate();
+        let recipient_key = SecretKey::generate();
         let recipient_node_id = recipient_key.public().to_string();
-        let seeder_key = iroh::key::SecretKey::generate();
+        let seeder_key = SecretKey::generate();
         let seeder_node_id = seeder_key.public().to_string();
 
         let hash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";

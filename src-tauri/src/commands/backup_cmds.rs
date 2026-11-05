@@ -346,7 +346,7 @@ pub async fn export_folder_zip(
         }
 
         if let Ok(hash) = blob.hash.parse::<iroh_blobs::Hash>() {
-            if let Ok(data_bytes) = engine.blobs.clone().client().read_to_bytes(hash).await {
+            if let Ok(data_bytes) = engine.store.blobs().get_bytes(hash).await {
                 if !data_bytes.is_empty() {
                     zip.start_file(&safe_zip_entry, options)
                         .map_err(|e| format!("Failed to add '{safe_zip_entry}' to ZIP: {e}"))?;

@@ -6,6 +6,7 @@ export interface ZipFileItem {
   size_bytes: number;
   path?: string;
   file?: File;
+  data?: Uint8Array;
 }
 
 export type ZipTarget = File | ZipFileItem;

@@ -326,8 +326,67 @@ export default function App() {
     return () => clearInterval(interval);
   }, []);
 
-  const handleTriggerUpload = () => {
+  const handleTriggerUpload = async () => {
+    try {
+      const selected = await invoke<SelectedFileInfo[] | null>('pick_files_dialog');
+      if (selected && selected.length > 0) {
+        await handleUploadSelectedFiles(selected);
+        return;
+      }
+    } catch (err) {
+      console.warn('Native file picker dialog error, falling back to input:', err);
+    }
     fileInputRef.current?.click();
+  };
+
+  const handleUploadSelectedFiles = async (selected: SelectedFileInfo[]) => {
+    if (!selected || selected.length === 0) return;
+
+    const newItems: UploadItem[] = selected.map((f) => ({
+      id: `${f.name}-${Date.now()}-${Math.random()}`,
+      name: currentPrefix ? `${currentPrefix}${f.name}` : f.name,
+      size_bytes: f.size_bytes,
+      progress: 10,
+      status: 'reading',
+    }));
+
+    setUploadQueue((prev) => [...prev, ...newItems]);
+
+    for (let i = 0; i < selected.length; i++) {
+      const f = selected[i];
+      const item = newItems[i];
+      const targetName = item.name;
+
+      if (f.name.toLowerCase().endsWith('.zip')) {
+        setPendingZipFile({
+          name: f.name,
+          size_bytes: f.size_bytes,
+          path: f.path,
+        });
+        setShowZipModal(true);
+        continue;
+      }
+
+      try {
+        setUploadQueue((prev) =>
+          prev.map((q) => (q.id === item.id ? { ...q, progress: 65, status: 'uploading' } : q))
+        );
+        await invoke('upload_file_path', { filePath: f.path, targetName });
+        setUploadQueue((prev) =>
+          prev.map((q) => (q.id === item.id ? { ...q, progress: 100, status: 'completed' } : q))
+        );
+      } catch (err) {
+        console.error('Failed to upload file by path:', err);
+        setUploadQueue((prev) =>
+          prev.map((q) =>
+            q.id === item.id ? { ...q, progress: 100, status: 'error', error: String(err) } : q
+          )
+        );
+      }
+    }
+
+    await loadWorkspaceFiles();
+    refetchStats();
   };
 
   const currentPrefix = paths.length > 1 ? paths.slice(1).join('/') + '/' : '';
@@ -354,11 +413,21 @@ export default function App() {
       // If user uploaded a ZIP file, prompt with security & extraction warning modal
       if (file.name.toLowerCase().endsWith('.zip')) {
         const filePath = (file as any).path as string | undefined;
+        let data: Uint8Array | undefined = undefined;
+        if (!filePath) {
+          try {
+            const ab = await file.arrayBuffer();
+            data = new Uint8Array(ab);
+          } catch (err) {
+            console.warn('Could not read zip buffer in advance:', err);
+          }
+        }
         setPendingZipFile({
           name: file.name,
           size_bytes: file.size,
           path: filePath,
           file,
+          data,
         });
         setShowZipModal(true);
         continue;
@@ -396,7 +465,7 @@ export default function App() {
       }
     }
 
-    if (fileInputRef.current) {
+    if (fileInputRef.current && !fileList.some((f) => f.name.toLowerCase().endsWith('.zip'))) {
       fileInputRef.current.value = '';
     }
 
@@ -427,15 +496,25 @@ export default function App() {
     }
   };
 
-  const handleZipInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleZipInputChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
     const filePath = (file as any).path as string | undefined;
+    let data: Uint8Array | undefined = undefined;
+    if (!filePath) {
+      try {
+        const ab = await file.arrayBuffer();
+        data = new Uint8Array(ab);
+      } catch (err) {
+        console.warn('Could not read zip buffer in handleZipInputChange:', err);
+      }
+    }
     setPendingZipFile({
       name: file.name,
       size_bytes: file.size,
       path: filePath,
       file,
+      data,
     });
     setShowZipModal(true);
   };
@@ -465,6 +544,12 @@ export default function App() {
         // High-performance streaming disk import for multi-GB ZIPs (BufReader, zero webview RAM)
         summary = await invoke<ZipImportSummary>('import_zip_file', {
           filePath: resolvedPath,
+          targetFolder,
+        });
+      } else if (target.data) {
+        const bytes = Array.from(target.data);
+        summary = await invoke<ZipImportSummary>('import_zip_bytes', {
+          data: bytes,
           targetFolder,
         });
       } else if (target.file) {
@@ -506,6 +591,9 @@ export default function App() {
       if (zipInputRef.current) {
         zipInputRef.current.value = '';
       }
+      if (fileInputRef.current) {
+        fileInputRef.current.value = '';
+      }
     }
   };
 
@@ -518,6 +606,9 @@ export default function App() {
     try {
       if (resolvedPath) {
         await invoke('upload_file_path', { filePath: resolvedPath, targetName });
+      } else if (target.data) {
+        const bytes = Array.from(target.data);
+        await invoke('upload_file_bytes', { name: targetName, data: bytes });
       } else if (target.file) {
         const buffer = await target.file.arrayBuffer();
         const bytes = Array.from(new Uint8Array(buffer));
@@ -532,6 +623,9 @@ export default function App() {
       setPendingZipFile(null);
       if (zipInputRef.current) {
         zipInputRef.current.value = '';
+      }
+      if (fileInputRef.current) {
+        fileInputRef.current.value = '';
       }
     }
   };
@@ -618,6 +712,9 @@ export default function App() {
     setPendingZipFile(null);
     if (zipInputRef.current) {
       zipInputRef.current.value = '';
+    }
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
     }
   };
 

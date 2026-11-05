@@ -24,15 +24,39 @@ pub async fn list_peers(state: State<'_, AppState>) -> Result<Vec<PeerInfo>, Str
         return Ok(vec![]);
     };
 
-    let peers: Vec<PeerInfo> = engine
-        .endpoint
-        .remote_info_iter()
-        .map(|info| PeerInfo {
-            node_id: info.node_id.to_string(),
-            relay_url: info.relay_url.as_ref().map(|u| u.relay_url.to_string()),
-            latency_ms: info.latency.map(|d| d.as_millis() as u64),
-        })
-        .collect();
+    let my_node_id = engine.node_id().to_string();
+    let peer_ids: Vec<String> = {
+        let conn = state.db.lock();
+        let mut stmt = conn
+            .prepare("SELECT DISTINCT peer_node_id FROM file_seeds WHERE peer_node_id != ?1 AND last_seen_at >= ?2")
+            .map_err(|e| e.to_string())?;
+        let thirty_mins_ago = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64 - 1800;
+        let rows = stmt
+            .query_map(rusqlite::params![&my_node_id, thirty_mins_ago], |r| r.get(0))
+            .map_err(|e| e.to_string())?;
+        rows.filter_map(|r| r.ok()).collect()
+    };
+
+    let mut peers = Vec::new();
+    for peer_id_str in peer_ids {
+        if let Ok(endpoint_id) = peer_id_str.parse::<iroh::EndpointId>() {
+            let remote_info = engine.endpoint.remote_info(endpoint_id).await;
+            let relay_url = remote_info.as_ref().and_then(|info| {
+                info.addrs().find_map(|a| match a.addr() {
+                    iroh::TransportAddr::Relay(url) => Some(url.to_string()),
+                    _ => None,
+                })
+            });
+            peers.push(PeerInfo {
+                node_id: peer_id_str,
+                relay_url,
+                latency_ms: None,
+            });
+        }
+    }
 
     Ok(peers)
 }
@@ -52,8 +76,8 @@ pub async fn get_node_id(state: State<'_, AppState>) -> Result<String, String> {
 pub async fn get_node_ticket(state: State<'_, AppState>) -> Result<String, String> {
     let guard = state.engine.read().await;
     let engine = guard.as_ref().ok_or("Iroh engine not yet started")?;
-    let addr = engine.endpoint.node_addr().await.map_err(|e| e.to_string())?;
-    let ticket = iroh::ticket::NodeTicket::new(addr);
+    let addr = engine.endpoint.addr();
+    let ticket = iroh_tickets::endpoint::EndpointTicket::new(addr);
     Ok(ticket.to_string())
 }
 
@@ -62,30 +86,30 @@ pub async fn get_node_ticket(state: State<'_, AppState>) -> Result<String, Strin
 pub async fn get_node_addr(state: State<'_, AppState>) -> Result<String, String> {
     let guard = state.engine.read().await;
     let engine = guard.as_ref().ok_or("Iroh engine not yet started")?;
-    let addr = engine.endpoint.node_addr().await.map_err(|e| e.to_string())?;
+    let addr = engine.endpoint.addr();
     serde_json::to_string(&addr).map_err(|e| e.to_string())
 }
 
-/// Parse any user-provided peer address representation into an `iroh::NodeAddr`.
+/// Parse any user-provided peer address representation into an `iroh::EndpointAddr`.
 /// Supports:
-/// 1. NodeTicket ("node...")
-/// 2. JSON NodeAddr ({"node_id":"...","info":{...}})
+/// 1. NodeTicket / EndpointTicket
+/// 2. JSON EndpointAddr
 /// 3. node_id@ip:port or node_id@relay_url
 /// 4. Bare NodeId + optional relay_url
-fn parse_peer_address(input: &str, relay_url: Option<String>) -> Result<iroh::NodeAddr, String> {
+fn parse_peer_address(input: &str, relay_url: Option<String>) -> Result<iroh::EndpointAddr, String> {
     let trimmed = input.trim();
     if trimmed.is_empty() {
         return Err("Peer address cannot be empty".to_string());
     }
 
-    // 1. Try parsing as NodeTicket
-    if let Ok(ticket) = iroh::ticket::NodeTicket::from_str(trimmed) {
-        return Ok(ticket.node_addr().clone());
+    // 1. Try parsing as EndpointTicket
+    if let Ok(ticket) = iroh_tickets::endpoint::EndpointTicket::from_str(trimmed) {
+        return Ok(ticket.into());
     }
 
-    // 2. Try parsing as JSON NodeAddr
+    // 2. Try parsing as JSON EndpointAddr
     if trimmed.starts_with('{') {
-        if let Ok(addr) = serde_json::from_str::<iroh::NodeAddr>(trimmed) {
+        if let Ok(addr) = serde_json::from_str::<iroh::EndpointAddr>(trimmed) {
             return Ok(addr);
         }
     }
@@ -94,12 +118,12 @@ fn parse_peer_address(input: &str, relay_url: Option<String>) -> Result<iroh::No
     if let Some((node_str, endpoint_str)) = trimmed.split_once('@') {
         let node_id = node_str
             .trim()
-            .parse::<iroh::NodeId>()
+            .parse::<iroh::EndpointId>()
             .map_err(|e| format!("Invalid Node ID in '@' format: {e}"))?;
-        let mut addr = iroh::NodeAddr::new(node_id);
+        let mut addr = iroh::EndpointAddr::from(node_id);
         let ep = endpoint_str.trim();
         if let Ok(socket) = ep.parse::<std::net::SocketAddr>() {
-            addr = addr.with_direct_addresses(vec![socket]);
+            addr = addr.with_ip_addr(socket);
         } else if let Ok(relay) = ep.parse::<iroh::RelayUrl>() {
             addr = addr.with_relay_url(relay);
         }
@@ -108,10 +132,10 @@ fn parse_peer_address(input: &str, relay_url: Option<String>) -> Result<iroh::No
 
     // 4. Try parsing as bare NodeId
     let node_id = trimmed
-        .parse::<iroh::NodeId>()
+        .parse::<iroh::EndpointId>()
         .map_err(|e| format!("Could not parse as Node Ticket, JSON address, or Node ID: {e}"))?;
 
-    let mut addr = iroh::NodeAddr::new(node_id);
+    let mut addr = iroh::EndpointAddr::from(node_id);
     if let Some(r) = relay_url {
         let r_trimmed = r.trim();
         if !r_trimmed.is_empty() {
@@ -261,28 +285,16 @@ pub async fn reconnect_swarm(state: State<'_, AppState>) -> Result<(), String> {
     if let Ok(Some(bootstrap)) = state.db.get_setting("bootstrap_peer") {
         let trimmed = bootstrap.trim();
         if !trimmed.is_empty() {
-            if let Ok(ticket) = trimmed.parse::<iroh::ticket::NodeTicket>() {
+            if let Ok(addr) = parse_peer_address(trimmed, None) {
                 let _ = engine
                     .endpoint
-                    .connect(ticket.node_addr().clone(), iroh_blobs::ALPN)
+                    .connect(addr.clone(), iroh_blobs::ALPN)
                     .await;
                 let _ = sync_catalog_with_peer(
                     &engine.endpoint,
                     &state.db,
                     Some(&engine.store),
-                    ticket.node_addr().clone(),
-                )
-                .await;
-            } else if let Ok(id) = trimmed.parse::<iroh::NodeId>() {
-                let _ = engine
-                    .endpoint
-                    .connect(iroh::NodeAddr::new(id), iroh_blobs::ALPN)
-                    .await;
-                let _ = sync_catalog_with_peer(
-                    &engine.endpoint,
-                    &state.db,
-                    Some(&engine.store),
-                    iroh::NodeAddr::new(id),
+                    addr,
                 )
                 .await;
             }

@@ -5,7 +5,7 @@
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use iroh::key::SecretKey;
+use iroh::SecretKey;
 
 /// Path within the app data directory where the secret key is stored.
 const KEY_FILENAME: &str = "iroh_secret.key";

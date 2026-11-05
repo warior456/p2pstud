@@ -7,8 +7,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
-use iroh_blobs::store::Store as _;
-use rand::Rng;
+use rand::RngExt;
 use tokio::sync::RwLock;
 
 use crate::p2p::engine::IrohEngine;
@@ -82,10 +81,11 @@ pub async fn run_lifecycle_pruning_pass(
             continue; // Pinned files are strictly immune to pruning
         }
 
-        // Delete from local blob store if present
+        // Delete from local blob store tags if present
         if let Some(eng) = engine {
-            if let Ok(hash) = hash_str.parse::<iroh_blobs::Hash>() {
-                let _ = eng.blobs.store().delete(vec![hash]).await;
+            let _ = eng.store.tags().delete(hash_str.as_bytes()).await;
+            if let Some(n) = &name {
+                let _ = eng.store.tags().delete(n.as_bytes()).await;
             }
         }
 
@@ -119,7 +119,7 @@ pub fn spawn_lifecycle_pruning_worker(
 ) {
     tokio::spawn(async move {
         // Jitter initial start between 0 and 3600 seconds to stagger swarm nodes
-        let jitter_secs = rand::thread_rng().gen_range(10..=60);
+        let jitter_secs = rand::rng().random_range(10..=60);
         tokio::time::sleep(Duration::from_secs(jitter_secs)).await;
 
         let mut interval = tokio::time::interval(Duration::from_secs(86400));

@@ -2,7 +2,7 @@
 // Anchor Attestation Vouchers: Cryptographically signed uptime & seeding vouchers issued by anchor nodes.
 
 use anyhow::{bail, Context, Result};
-use iroh::key::{PublicKey, SecretKey, Signature};
+use iroh::{PublicKey, SecretKey, Signature};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

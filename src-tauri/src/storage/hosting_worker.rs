@@ -7,8 +7,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
-use iroh::endpoint::NodeAddr;
-use iroh_blobs::store::Map;
 use tokio::sync::RwLock;
 
 use crate::p2p::bandwidth::BandwidthTracker;
@@ -24,11 +22,11 @@ const HOSTING_CHECK_INTERVAL_SECS: u64 = 20;
 const TARGET_FILL_RATIO: f64 = 0.80;
 
 /// Check if a blob is already completely present in the local blob store.
-pub async fn is_blob_cached(store: &iroh_blobs::store::fs::Store, hash: &iroh_blobs::Hash) -> bool {
-    match store.get(hash).await {
-        Ok(Some(entry)) => entry.is_complete(),
-        _ => false,
-    }
+pub async fn is_blob_cached(store: &iroh_blobs::store::fs::FsStore, hash: &iroh_blobs::Hash) -> bool {
+    matches!(
+        store.blobs().status(*hash).await,
+        Ok(iroh_blobs::api::blobs::BlobStatus::Complete { .. })
+    )
 }
 
 /// Calculate current local storage quota and target fill size in bytes.
@@ -80,11 +78,6 @@ pub async fn run_hosting_fill_pass(
         return Ok(0);
     }
 
-    let remotes: Vec<_> = engine.endpoint.remote_info_iter().collect();
-    if remotes.is_empty() {
-        return Ok(0); // No peers currently reachable to fetch from
-    }
-
     // Smart Cache Prioritization: Sort missing files by least seeds first!
     // Rare/endangered files with fewest seeders across the swarm are replicated first,
     // ensuring files with only 1 seed never disappear from the campus network.
@@ -114,25 +107,38 @@ pub async fn run_hosting_fill_pass(
 
         let mut success = false;
 
-        // Try owner first
+        let mut candidate_seeders = Vec::new();
         if let Some(owner) = &missing.owner_node_id {
-            if let Ok(owner_id) = owner.parse::<iroh::NodeId>() {
-                let addr = NodeAddr::new(owner_id);
-                if let Ok(progress) = engine.blobs.clone().client().download(parsed_hash, addr).await {
-                    let _ = progress.finish().await;
-                    if is_blob_cached(&engine.store, &parsed_hash).await {
-                        success = true;
+            if owner != &my_node_id {
+                candidate_seeders.push(owner.clone());
+            }
+        }
+        {
+            let conn = db.lock();
+            let seed_res: Result<Vec<String>, rusqlite::Error> = (|| {
+                let mut stmt = conn.prepare(
+                    "SELECT peer_node_id FROM file_seeds WHERE hash = ?1 AND peer_node_id != ?2 ORDER BY last_seen_at DESC",
+                )?;
+                let rows = stmt.query_map(rusqlite::params![&missing.hash, &my_node_id], |r| r.get(0))?;
+                let mut list = Vec::new();
+                for r in rows.flatten() {
+                    list.push(r);
+                }
+                Ok(list)
+            })();
+            if let Ok(list) = seed_res {
+                for r in list {
+                    if !candidate_seeders.contains(&r) {
+                        candidate_seeders.push(r);
                     }
                 }
             }
         }
 
-        // Fallback to any connected swarm peer
-        if !success {
-            for remote in &remotes {
-                let addr = NodeAddr::new(remote.node_id);
-                if let Ok(progress) = engine.blobs.clone().client().download(parsed_hash, addr).await {
-                    let _ = progress.finish().await;
+        for seeder in candidate_seeders {
+            if let Ok(seeder_id) = seeder.parse::<iroh::EndpointId>() {
+                let downloader = engine.store.downloader(&engine.endpoint);
+                if downloader.download(parsed_hash, vec![seeder_id]).await.is_ok() {
                     if is_blob_cached(&engine.store, &parsed_hash).await {
                         success = true;
                         break;

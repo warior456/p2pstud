@@ -17,11 +17,10 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use clap::Parser;
 // rate limiting uses native token-bucket implementation
-use iroh::key::SecretKey;
-use iroh::{Endpoint, RelayMode};
-use iroh_blobs::net_protocol::Blobs;
-use iroh_blobs::store::fs::Store as BlobStore;
-use iroh_blobs::util::local_pool::LocalPool;
+use iroh::endpoint::presets;
+use iroh::{Endpoint, RelayMode, SecretKey};
+use iroh_blobs::BlobsProtocol;
+use iroh_blobs::store::fs::FsStore as BlobStore;
 // done
 use tokio::signal;
 use tracing_subscriber::EnvFilter;
@@ -98,11 +97,10 @@ async fn main() -> Result<()> {
     // Open blob store.
     let blob_dir = args.data_dir.join("blobs");
     std::fs::create_dir_all(&blob_dir)?;
-    let pool = LocalPool::default();
     let store = BlobStore::load(&blob_dir).await?;
 
     // Build QUIC endpoint.
-    let endpoint = Endpoint::builder()
+    let endpoint = Endpoint::builder(presets::N0)
         .secret_key(secret_key)
         .relay_mode(if args.no_relay {
             RelayMode::Default
@@ -113,13 +111,13 @@ async fn main() -> Result<()> {
         .bind()
         .await?;
 
-    tracing::info!(addr = ?endpoint.node_addr().await?, "Endpoint bound");
+    tracing::info!(addr = ?endpoint.addr(), "Endpoint bound");
 
     // Attach blobs protocol.
-    let router = iroh::protocol::Router::builder(endpoint);
-    let _blobs = Blobs::builder(store).build(pool.handle(), router.endpoint());
-    let router = router.accept(iroh_blobs::ALPN, _blobs.clone());
-    let running_router = router.spawn().await?;
+    let blobs = BlobsProtocol::new(&store, None);
+    let router = iroh::protocol::Router::builder(endpoint)
+        .accept(iroh_blobs::ALPN, blobs.clone());
+    let running_router = router.spawn();
 
     // Build rate limiter shared state.
     let shared_aggregate = Arc::new(tokio::sync::Mutex::new(args.max_aggregate_bps as f64));
@@ -173,20 +171,11 @@ async fn start_relay_server(args: &Args) -> Result<Option<iroh_relay::server::Se
         );
     }
 
-    let config = iroh_relay::server::ServerConfig::<(), ()> {
-        relay: Some(iroh_relay::server::RelayConfig {
-            http_bind_addr: addr,
-            tls: None,
-            limits: iroh_relay::server::Limits::default(),
-        }),
-        stun: Some(iroh_relay::server::StunConfig {
-            bind_addr: "0.0.0.0:3478".parse()?,
-        }),
-        ..Default::default()
-    };
+    let mut config = iroh_relay::server::ServerConfig::default();
+    config.relay = Some(iroh_relay::server::RelayConfig::new(addr));
 
     let server = iroh_relay::server::Server::spawn(config).await?;
-    tracing::info!("Embedded relay and STUN server running successfully");
+    tracing::info!("Embedded relay server running successfully");
     Ok(Some(server))
 }
 

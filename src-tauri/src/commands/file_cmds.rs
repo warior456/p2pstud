@@ -2,8 +2,6 @@
 // Tauri IPC commands for file operations: pin/unpin, read, add, delete, vote delete, and remote swarm download.
 
 use tauri::{AppHandle, Emitter, Manager, State};
-use iroh_blobs::store::Store;
-use iroh_blobs::BlobFormat;
 
 use crate::p2p::sync::{broadcast_catalog_event, SyncMessage};
 use crate::storage::blob_tracker::{
@@ -86,18 +84,17 @@ pub async fn read_file_bytes(
 
     // 1. Try reading from local blob store first
     let local_res = engine
-        .blobs
-        .clone()
-        .client()
-        .read_to_bytes(parsed_hash)
-        .await;
+        .store
+        .blobs()
+        .get_bytes(parsed_hash)
+        .await
+        .map(|b| b.to_vec());
 
     let data = match local_res {
         Ok(d) => d,
         Err(_) => {
             // Blob is not locally stored yet: fetch on-demand from the swarm!
             let blob_rec = get_blob(&state.db, &hash).ok().flatten();
-            let remotes: Vec<_> = engine.endpoint.remote_info_iter().collect();
             let mut download_ok = false;
             let mut successful_seeder_id: Option<String> = None;
 
@@ -112,31 +109,49 @@ pub async fn read_file_bytes(
             );
 
             // Try the owner node first if known
+            let my_node_id = engine.node_id().to_string();
             if let Some(rec) = &blob_rec {
                 if let Some(owner) = &rec.owner_node_id {
-                    if let Ok(owner_id) = owner.parse::<iroh::NodeId>() {
-                        let addr = iroh::endpoint::NodeAddr::new(owner_id);
-                        if let Ok(progress) = engine.blobs.clone().client().download(parsed_hash, addr).await {
-                            let _ = progress.finish().await;
-                            if engine.blobs.clone().client().read_to_bytes(parsed_hash).await.is_ok() {
-                                download_ok = true;
-                                successful_seeder_id = Some(owner.clone());
+                    if owner != &my_node_id {
+                        if let Ok(owner_id) = owner.parse::<iroh::EndpointId>() {
+                            let downloader = engine.store.downloader(&engine.endpoint);
+                            if downloader.download(parsed_hash, vec![owner_id]).await.is_ok() {
+                                if engine.store.blobs().get_bytes(parsed_hash).await.is_ok() {
+                                    download_ok = true;
+                                    successful_seeder_id = Some(owner.clone());
+                                }
                             }
                         }
                     }
                 }
             }
 
-            // Fallback: try all other connected swarm peers
+            // Fallback: try all other known seeders for this blob
             if !download_ok {
-                for remote in remotes {
-                    let addr = iroh::endpoint::NodeAddr::new(remote.node_id);
-                    if let Ok(progress) = engine.blobs.clone().client().download(parsed_hash, addr).await {
-                        let _ = progress.finish().await;
-                        if engine.blobs.clone().client().read_to_bytes(parsed_hash).await.is_ok() {
-                            download_ok = true;
-                            successful_seeder_id = Some(remote.node_id.to_string());
-                            break;
+                let seeders: Vec<String> = {
+                    let conn = state.db.lock();
+                    let mut list = Vec::new();
+                    if let Ok(mut stmt) = conn.prepare(
+                        "SELECT peer_node_id FROM file_seeds WHERE hash = ?1 AND peer_node_id != ?2 ORDER BY last_seen_at DESC",
+                    ) {
+                        if let Ok(rows) = stmt.query_map(rusqlite::params![&hash, &my_node_id], |r| r.get(0)) {
+                            for r in rows.flatten() {
+                                list.push(r);
+                            }
+                        }
+                    }
+                    list
+                };
+
+                for seeder in seeders {
+                    if let Ok(seeder_id) = seeder.parse::<iroh::EndpointId>() {
+                        let downloader = engine.store.downloader(&engine.endpoint);
+                        if downloader.download(parsed_hash, vec![seeder_id]).await.is_ok() {
+                            if engine.store.blobs().get_bytes(parsed_hash).await.is_ok() {
+                                download_ok = true;
+                                successful_seeder_id = Some(seeder);
+                                break;
+                            }
                         }
                     }
                 }
@@ -149,10 +164,9 @@ pub async fn read_file_bytes(
             }
 
             let downloaded = engine
-                .blobs
-                .clone()
-                .client()
-                .read_to_bytes(parsed_hash)
+                .store
+                .blobs()
+                .get_bytes(parsed_hash)
                 .await
                 .map_err(|e| format!("blob read failed after swarm download: {e}"))?;
 
@@ -221,7 +235,7 @@ pub async fn read_file_bytes(
             )
             .await;
 
-            downloaded
+            downloaded.to_vec()
         }
     };
 
@@ -285,20 +299,21 @@ pub async fn add_file(local_path: String, state: State<'_, AppState>) -> Result<
     let engine = guard.as_ref().ok_or("Iroh engine not yet started")?;
     let owner_node_id = engine.node_id().to_string();
 
-    let tag = engine
+    let tag_info = engine
         .store
-        .import_bytes(bytes::Bytes::from(data), BlobFormat::Raw)
+        .blobs()
+        .add_bytes(bytes::Bytes::from(data))
         .await
         .map_err(|e| format!("blob import failed: {e}"))?;
 
-    let hash_and_format = *tag.inner();
-    let hash = hash_and_format.hash.to_hex().to_string();
+    let hash = tag_info.hash.to_hex().to_string();
 
     let _ = engine
         .store
-        .set_tag(
-            iroh_blobs::Tag::from(file_name.as_deref().unwrap_or(&hash)),
-            Some(hash_and_format),
+        .tags()
+        .set(
+            file_name.as_deref().unwrap_or(&hash).as_bytes(),
+            tag_info,
         )
         .await;
 
@@ -385,9 +400,10 @@ pub async fn upload_file_bytes(
     let engine = guard.as_ref().ok_or("Iroh engine not yet started")?;
     let owner_node_id = engine.node_id().to_string();
 
-    let tag = match engine
+    let tag_info = match engine
         .store
-        .import_bytes(bytes::Bytes::from(data), BlobFormat::Raw)
+        .blobs()
+        .add_bytes(bytes::Bytes::from(data))
         .await
     {
         Ok(t) => t,
@@ -412,14 +428,14 @@ pub async fn upload_file_bytes(
         }
     };
 
-    let hash_and_format = *tag.inner();
-    let hash = hash_and_format.hash.to_hex().to_string();
+    let hash = tag_info.hash.to_hex().to_string();
 
     let _ = engine
         .store
-        .set_tag(
-            iroh_blobs::Tag::from(clean_name.as_str()),
-            Some(hash_and_format),
+        .tags()
+        .set(
+            clean_name.as_bytes(),
+            tag_info,
         )
         .await;
 
@@ -511,10 +527,8 @@ pub async fn delete_file(
     // Delete record from SQLite
     delete_blob(&state.db, &hash).map_err(|e| e.to_string())?;
 
-    // Delete blob data from local Iroh store
-    if let Ok(parsed_hash) = hash.parse::<iroh_blobs::Hash>() {
-        let _ = engine.blobs.clone().client().delete_blob(parsed_hash).await;
-    }
+    // Delete blob data tags from local Iroh store
+    let _ = engine.store.tags().delete(hash.as_bytes()).await;
 
     // Broadcast deletion event to the swarm
     broadcast_catalog_event(
@@ -665,9 +679,7 @@ pub async fn evict_local_file(hash: String, state: State<'_, AppState>) -> Resul
         );
     }
 
-    if let Ok(parsed_hash) = hash.parse::<iroh_blobs::Hash>() {
-        let _ = engine.blobs.clone().client().delete_blob(parsed_hash).await;
-    }
+    let _ = engine.store.tags().delete(hash.as_bytes()).await;
 
     // Broadcast to the swarm that this node is no longer seeding this blob
     broadcast_catalog_event(
@@ -735,10 +747,9 @@ pub async fn export_file(
     let engine = guard.as_ref().ok_or("Iroh engine not yet started")?;
 
     let data = engine
-        .blobs
-        .clone()
-        .client()
-        .read_to_bytes(parsed_hash)
+        .store
+        .blobs()
+        .get_bytes(parsed_hash)
         .await
         .map_err(|e| format!("blob read failed: {e}"))?;
 
@@ -774,6 +785,32 @@ pub struct SelectedFileInfo {
     pub path: String,
     pub name: String,
     pub size_bytes: u64,
+}
+
+/// Native file picker dialog to pick one or more files without loading them into browser memory.
+#[tauri::command]
+pub async fn pick_files_dialog() -> Result<Option<Vec<SelectedFileInfo>>, String> {
+    let files = rfd::AsyncFileDialog::new()
+        .set_title("Select Files to Upload")
+        .pick_files()
+        .await;
+
+    if let Some(handles) = files {
+        let mut list = Vec::new();
+        for handle in handles {
+            let path = handle.path().to_path_buf();
+            let meta = std::fs::metadata(&path).map_err(|e| format!("cannot read file metadata: {e}"))?;
+            let name = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+            list.push(SelectedFileInfo {
+                path: path.to_string_lossy().to_string(),
+                name,
+                size_bytes: meta.len(),
+            });
+        }
+        Ok(Some(list))
+    } else {
+        Ok(None)
+    }
 }
 
 /// Native file picker dialog to pick a ZIP file without loading it into browser memory.
@@ -935,9 +972,10 @@ async fn import_zip_archive_internal<R: std::io::Read + std::io::Seek>(
 
         let size_bytes = file_bytes.len() as u64;
 
-        let tag = match engine
+        let tag_info = match engine
             .store
-            .import_bytes(bytes::Bytes::from(file_bytes), BlobFormat::Raw)
+            .blobs()
+            .add_bytes(bytes::Bytes::from(file_bytes))
             .await
         {
             Ok(t) => t,
@@ -947,15 +985,12 @@ async fn import_zip_archive_internal<R: std::io::Read + std::io::Seek>(
             }
         };
 
-        let hash_and_format = *tag.inner();
-        let hash = hash_and_format.hash.to_hex().to_string();
+        let hash = tag_info.hash.to_hex().to_string();
 
         let _ = engine
             .store
-            .set_tag(
-                iroh_blobs::Tag::from(sanitized_path.as_str()),
-                Some(hash_and_format),
-            )
+            .tags()
+            .set(sanitized_path.as_bytes(), tag_info)
             .await;
 
         if let Err(e) = upsert_blob(
@@ -1141,41 +1176,18 @@ pub async fn upload_file_path(
     let owner_node_id = engine.node_id().to_string();
 
     let outcome = match engine
-        .blobs
-        .clone()
-        .client()
-        .add_from_path(
-            path.to_path_buf(),
-            false,
-            iroh_blobs::util::SetTagOption::Named(iroh_blobs::Tag::from(clean_name.as_str())),
-            iroh_blobs::rpc::client::blobs::WrapOption::NoWrap,
-        )
+        .store
+        .blobs()
+        .add_path(path)
         .await
     {
-        Ok(in_progress) => match in_progress.finish().await {
-            Ok(outcome) => outcome,
-            Err(e) => {
-                let err_msg = format!("failed streaming file import: {e}");
-                let _ = app.emit(
-                    "import-progress",
-                    ImportProgressPayload {
-                        import_id: import_id.clone(),
-                        archive_name: clean_name.clone(),
-                        current_entry: 0,
-                        total_entries: 1,
-                        bytes_processed: 0,
-                        total_bytes: size_bytes,
-                        current_file: clean_name.clone(),
-                        bytes_per_sec: 0,
-                        status: "error".to_string(),
-                        error: Some(err_msg.clone()),
-                    },
-                );
-                return Err(err_msg);
-            }
-        },
+        Ok(tag_info) => {
+            let h = tag_info.hash;
+            let _ = engine.store.tags().set(clean_name.as_bytes(), tag_info).await;
+            h
+        }
         Err(e) => {
-            let err_msg = format!("failed starting file streaming import: {e}");
+            let err_msg = format!("failed streaming file import: {e}");
             let _ = app.emit(
                 "import-progress",
                 ImportProgressPayload {
@@ -1195,7 +1207,7 @@ pub async fn upload_file_path(
         }
     };
 
-    let hash = outcome.hash.to_hex().to_string();
+    let hash = outcome.to_hex().to_string();
 
     // Auto-create parent folders
     if let Some((parent, _)) = clean_name.rsplit_once('/') {
@@ -1279,9 +1291,7 @@ pub async fn batch_delete_files(
 
         if is_owner {
             if delete_blob(&state.db, &hash).is_ok() {
-                if let Ok(parsed) = hash.parse() {
-                    let _ = engine.blobs.clone().client().delete_blob(parsed).await;
-                }
+                let _ = engine.store.tags().delete(hash.as_bytes()).await;
                 broadcast_catalog_event(
                     &engine.endpoint,
                     &engine.sync_alpn,

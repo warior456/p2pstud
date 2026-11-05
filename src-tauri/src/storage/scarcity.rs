@@ -182,7 +182,7 @@ pub fn spawn_scarcity_worker(
                 continue; // No online peer available to download from
             };
 
-            let Ok(seeder_node_id) = peer_str.parse::<iroh::NodeId>() else {
+            let Ok(seeder_node_id) = peer_str.parse::<iroh::EndpointId>() else {
                 continue;
             };
 
@@ -209,22 +209,15 @@ pub fn spawn_scarcity_worker(
             );
 
             // 6. In-memory staging download with BLAKE3 verification and bandwidth throttling
-            let seeder_addr = iroh::NodeAddr::new(seeder_node_id);
             let download_res = async {
                 let start_time = tokio::time::Instant::now();
-                let progress = engine
-                    .blobs
-                    .clone()
-                    .client()
-                    .download(target_hash, seeder_addr)
-                    .await?;
-                let _ = progress.finish().await?;
+                let downloader = engine.store.downloader(&engine.endpoint);
+                downloader.download(target_hash, vec![seeder_node_id]).await?;
 
                 let data = engine
-                    .blobs
-                    .clone()
-                    .client()
-                    .read_to_bytes(target_hash)
+                    .store
+                    .blobs()
+                    .get_bytes(target_hash)
                     .await?;
 
                 // Verify BLAKE3 hash integrity
