@@ -52,7 +52,7 @@ anyhow         = "1"
 thiserror      = "2"
 
 # Platform dirs
-dirs           = "5"
+dirs           = "7"
 
 # Logging
 tracing             = "0.1"
