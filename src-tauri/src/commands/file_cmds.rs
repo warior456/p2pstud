@@ -912,14 +912,57 @@ pub async fn report_dangerous(
     Ok(status)
 }
 
+/// Create and persist a virtual folder, broadcasting it to the swarm.
+#[tauri::command]
+pub async fn create_folder(
+    folder_path: Option<String>,
+    virtual_path: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let path = folder_path.or(virtual_path).ok_or("Missing folder path parameter")?;
+    crate::storage::blob_tracker::create_virtual_folder(&state.db, &path)
+        .map_err(|e| e.to_string())?;
+
+    if let Some(engine) = state.engine.read().await.as_ref() {
+        broadcast_catalog_event(
+            &engine.endpoint,
+            &engine.sync_alpn,
+            SyncMessage::FolderCreated { path: path.clone() },
+        )
+        .await;
+    }
+    Ok(())
+}
+
+/// List all explicitly persisted virtual folders.
+#[tauri::command]
+pub async fn list_folders(
+    state: State<'_, AppState>,
+) -> Result<Vec<String>, String> {
+    crate::storage::blob_tracker::list_virtual_folders(&state.db)
+        .map_err(|e| e.to_string())
+}
+
 /// Delete an empty virtual folder. Returns an error if the folder contains any files.
 #[tauri::command]
 pub async fn delete_folder(
-    virtual_path: String,
+    folder_path: Option<String>,
+    virtual_path: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    crate::storage::blob_tracker::check_folder_empty(&state.db, &virtual_path)
-        .map_err(|e| e.to_string())
+    let path = folder_path.or(virtual_path).ok_or("Missing folder path parameter")?;
+    crate::storage::blob_tracker::delete_virtual_folder(&state.db, &path)
+        .map_err(|e| e.to_string())?;
+
+    if let Some(engine) = state.engine.read().await.as_ref() {
+        broadcast_catalog_event(
+            &engine.endpoint,
+            &engine.sync_alpn,
+            SyncMessage::FolderDeleted { path: path.clone() },
+        )
+        .await;
+    }
+    Ok(())
 }
 
 /// Return the active transfer resume queue.

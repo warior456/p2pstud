@@ -160,6 +160,13 @@ const MIGRATIONS: &[&str] = &[
     ALTER TABLE local_blobs ADD COLUMN last_any_seed_seen_at INTEGER;
     UPDATE local_blobs SET catalog_first_seen_at = last_accessed_at WHERE catalog_first_seen_at IS NULL;
     "#,
+    // Migration 0013 — persistent virtual folders (including empty folders)
+    r#"
+    CREATE TABLE IF NOT EXISTS virtual_folders (
+        path       TEXT PRIMARY KEY,
+        created_at INTEGER NOT NULL
+    );
+    "#,
 ];
 
 /// Thread-safe SQLite database wrapper.

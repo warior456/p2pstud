@@ -15,8 +15,9 @@
 1. **Start every session** by reading this file top-to-bottom to orient yourself on current state.
 2. **Track progress** by checking off tasks in the Progress Tracker and updating the `Last Completed` timestamp and session note.
 3. **Use subagents liberally** for parallelizable work (see Subagent Strategy below).
-4. **After each major milestone**, run the full test suite and commit with a descriptive message.
-5. **If blocked**, write a `BLOCKED:` note in the relevant tracker row before stopping, so the next session knows what to investigate.
+4. **Version Bumping on Fixes**: Every change that fixes something must increase the latest `x.x.this` (patch) of the version in `package.json`, `src-tauri/Cargo.toml`, and `src-tauri/tauri.conf.json`.
+5. **After each major milestone**, run the full test suite and commit with a descriptive message.
+6. **If blocked**, write a `BLOCKED:` note in the relevant tracker row before stopping, so the next session knows what to investigate.
 
 ### Subagent Strategy
 

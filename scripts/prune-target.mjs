@@ -42,22 +42,18 @@ export function pruneTargetIfBloated(force = false) {
 
   console.log(`[prune-target] Current ./target size: ${currentSizeMB} MB`);
 
-  if (force || currentSize > MAX_TARGET_BYTES) {
-    console.log(`[prune-target] Target size exceeds threshold or force requested. Pruning intermediate debug caches...`);
-
-    // Prune debug folder completely (dev builds recreate in seconds)
+  if (force) {
+    console.log(`[prune-target] Force requested. Pruning intermediate debug and release compiler caches...`);
     safeRemove(path.join(TARGET_DIR, 'debug'));
-
-    // In release folder, remove intermediate compiler artifacts while preserving bundles & binaries
     safeRemove(path.join(TARGET_DIR, 'release', 'deps'));
     safeRemove(path.join(TARGET_DIR, 'release', 'build'));
     safeRemove(path.join(TARGET_DIR, 'release', 'incremental'));
     safeRemove(path.join(TARGET_DIR, 'release', '.fingerprint'));
-
-    const newSize = getDirSizeBytes(TARGET_DIR);
-    console.log(`[prune-target] Done. Target size reduced to ${(newSize / (1024 * 1024)).toFixed(1)} MB.`);
+  } else if (currentSize > MAX_TARGET_BYTES) {
+    console.log(`[prune-target] Target size exceeds threshold (${MAX_TARGET_BYTES / (1024 * 1024 * 1024)} GB). Pruning intermediate debug cache only to preserve fast incremental builds...`);
+    safeRemove(path.join(TARGET_DIR, 'debug'));
   } else {
-    console.log(`[prune-target] Target size is healthy (within 5 GB cap). No pruning needed.`);
+    console.log(`[prune-target] Target size is healthy. No pruning needed.`);
   }
 }
 

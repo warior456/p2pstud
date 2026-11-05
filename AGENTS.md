@@ -12,8 +12,19 @@ The **OrchestratorAgent** (the top-level agent in the session) is responsible fo
 3. Merging outputs, resolving conflicts, running integration tests, and committing.
 4. Updating the Progress Tracker in `AGENT_PLAN.md` after each step.
 5. Updating `REQUIREMENTS.md` if new decisions are made.
+6. Ensuring that **every change that fixes something increments the latest `x.x.this` (patch) of the version** across `package.json`, `src-tauri/Cargo.toml`, and `src-tauri/tauri.conf.json`.
 
 **Spawn subagents in parallel when steps have no cross-dependencies.** For example, Steps 8–12 (frontend) can run in parallel with Steps 5–7 (SQLite eviction), because they touch completely different files.
+
+---
+
+## Versioning Instructions
+
+- **Every change that fixes something must increase the latest `x.x.this` of the version** (the patch component in semantic versioning `X.Y.Z`).
+- Whenever a bug, regression, defect, or broken functionality is fixed, increment `x.x.this` and keep version strings synchronized across:
+  - `package.json` (`"version": "x.x.this"`)
+  - `src-tauri/Cargo.toml` (`version = "x.x.this"`)
+  - `src-tauri/tauri.conf.json` (`"version": "x.x.this"`)
 
 ---
 
@@ -34,6 +45,7 @@ The **OrchestratorAgent** (the top-level agent in the session) is responsible fo
 - [ ] Identify which steps are unblocked and can be parallelized.
 - [ ] Spawn appropriate subagents (see roster below).
 - [ ] After all subagents complete, run `cargo test --all` and `npm run test`.
+- [ ] If any changes fix an issue, increment the latest `x.x.this` (patch) of the version in `package.json`, `src-tauri/Cargo.toml`, and `src-tauri/tauri.conf.json`.
 - [ ] Update Progress Tracker and commit.
 
 ---
@@ -195,8 +207,9 @@ NEXT SUGGESTED ACTION: <what orchestrator should do next>
 
 OrchestratorAgent then:
 1. Verifies the files exist and `cargo check` still passes.
-2. Updates the Progress Tracker in `AGENT_PLAN.md`.
-3. Decides whether to spawn the next agent or continue itself.
+2. If changes fixed an issue, bumps the latest `x.x.this` (patch) of the version across `package.json`, `src-tauri/Cargo.toml`, and `src-tauri/tauri.conf.json`.
+3. Updates the Progress Tracker in `AGENT_PLAN.md`.
+4. Decides whether to spawn the next agent or continue itself.
 
 ---
 

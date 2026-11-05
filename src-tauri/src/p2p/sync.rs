@@ -111,6 +111,14 @@ pub enum SyncMessage {
         issued_at: i64,
         signature_hex: String,
     },
+    /// A virtual folder was created in the workspace.
+    FolderCreated {
+        path: String,
+    },
+    /// An empty virtual folder was deleted from the workspace.
+    FolderDeleted {
+        path: String,
+    },
 }
 
 /// Helper function to generate conflict-resolved filename preserving extension.
@@ -509,6 +517,14 @@ impl CatalogSyncHandler {
                 // within 14 days will have no vote weight. For now, log this count alongside votes but do NOT
                 // reject votes based on receipt count.
 
+                Ok(None)
+            }
+            SyncMessage::FolderCreated { path } => {
+                let _ = crate::storage::blob_tracker::create_virtual_folder(&self.db, &path);
+                Ok(None)
+            }
+            SyncMessage::FolderDeleted { path } => {
+                let _ = crate::storage::blob_tracker::delete_virtual_folder(&self.db, &path);
                 Ok(None)
             }
         }

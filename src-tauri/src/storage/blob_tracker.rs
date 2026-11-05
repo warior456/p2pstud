@@ -872,7 +872,7 @@ pub fn report_dangerous(db: &Database, hash: &str, reporter_node_id: &str) -> Re
 /// Verify folder is empty before deletion.
 pub fn check_folder_empty(db: &Database, virtual_path: &str) -> Result<()> {
     let conn = db.lock();
-    let clean = virtual_path.trim_end_matches('/');
+    let clean = virtual_path.trim().trim_matches('/');
     let prefix = format!("{clean}/%");
     let count: i64 = conn.query_row(
         "SELECT COUNT(*) FROM local_blobs WHERE name LIKE ?1",
@@ -882,6 +882,58 @@ pub fn check_folder_empty(db: &Database, virtual_path: &str) -> Result<()> {
     if count > 0 {
         anyhow::bail!("Cannot delete a folder that still contains files. Remove all files first.");
     }
+    Ok(())
+}
+
+/// Create and persist a virtual folder, along with its parent segments.
+pub fn create_virtual_folder(db: &Database, virtual_path: &str) -> Result<()> {
+    let clean = virtual_path.trim().replace('\\', "/");
+    let parts: Vec<&str> = clean.split('/').filter(|s| !s.is_empty()).collect();
+    if parts.is_empty() {
+        return Ok(());
+    }
+
+    let conn = db.lock();
+    let now = now_unix();
+    let mut current = String::new();
+
+    for (i, part) in parts.iter().enumerate() {
+        if i > 0 {
+            current.push('/');
+        }
+        current.push_str(part);
+        conn.execute(
+            "INSERT OR IGNORE INTO virtual_folders (path, created_at) VALUES (?1, ?2)",
+            params![current, now],
+        )?;
+    }
+    Ok(())
+}
+
+/// List all explicitly persisted virtual folders.
+pub fn list_virtual_folders(db: &Database) -> Result<Vec<String>> {
+    let conn = db.lock();
+    let mut stmt = conn.prepare("SELECT path FROM virtual_folders ORDER BY path ASC")?;
+    let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+    let mut folders = Vec::new();
+    for r in rows {
+        if let Ok(f) = r {
+            folders.push(f);
+        }
+    }
+    Ok(folders)
+}
+
+/// Delete an empty virtual folder and any empty subfolders from persistence.
+pub fn delete_virtual_folder(db: &Database, virtual_path: &str) -> Result<()> {
+    check_folder_empty(db, virtual_path)?;
+    let clean = virtual_path.trim().trim_matches('/').replace('\\', "/");
+    let conn = db.lock();
+    let subfolder_prefix = format!("{clean}/%");
+    conn.execute(
+        "DELETE FROM virtual_folders WHERE path = ?1 OR path LIKE ?2",
+        params![clean, subfolder_prefix],
+    )?;
     Ok(())
 }
 
@@ -1257,6 +1309,31 @@ mod tests {
 
         // Physics is empty -> Ok(())
         assert!(check_folder_empty(&db, "Physics").is_ok());
+    }
+
+    #[test]
+    fn virtual_folders_crud_and_persistence() {
+        let (_dir, db) = make_db();
+
+        // Create nested empty folder: "CS50/Lectures/Week1"
+        create_virtual_folder(&db, "CS50/Lectures/Week1").unwrap();
+        let folders = list_virtual_folders(&db).unwrap();
+        // Should create CS50, CS50/Lectures, and CS50/Lectures/Week1
+        assert!(folders.contains(&"CS50".to_string()));
+        assert!(folders.contains(&"CS50/Lectures".to_string()));
+        assert!(folders.contains(&"CS50/Lectures/Week1".to_string()));
+
+        // Delete empty folder
+        delete_virtual_folder(&db, "CS50/Lectures/Week1").unwrap();
+        let after_delete = list_virtual_folders(&db).unwrap();
+        assert!(!after_delete.contains(&"CS50/Lectures/Week1".to_string()));
+        assert!(after_delete.contains(&"CS50/Lectures".to_string()));
+
+        // Place a file inside CS50/Lectures
+        upsert_blob(&db, "f_hash", Some("CS50/Lectures/slide.pdf"), 200, false, None).unwrap();
+
+        // Attempting to delete CS50/Lectures should now fail because it's non-empty
+        assert!(delete_virtual_folder(&db, "CS50/Lectures").is_err());
     }
 
     #[test]

@@ -146,11 +146,28 @@ export default function App() {
       unlistenQuarantine = un;
     });
 
+    let unlistenFolderCreated: (() => void) | undefined;
+    let unlistenFolderDeleted: (() => void) | undefined;
+
+    listen<string>('folder-created', (e) => {
+      setCustomFolders((prev) => (prev.includes(e.payload) ? prev : [...prev, e.payload]));
+    }).then((un) => {
+      unlistenFolderCreated = un;
+    });
+
+    listen<string>('folder-deleted', (e) => {
+      setCustomFolders((prev) => prev.filter((f) => f !== e.payload && !f.startsWith(`${e.payload}/`)));
+    }).then((un) => {
+      unlistenFolderDeleted = un;
+    });
+
     return () => {
       if (unlistenProfile) unlistenProfile();
       if (unlistenSsid) unlistenSsid();
       if (unlistenScarcity) unlistenScarcity();
       if (unlistenQuarantine) unlistenQuarantine();
+      if (unlistenFolderCreated) unlistenFolderCreated();
+      if (unlistenFolderDeleted) unlistenFolderDeleted();
     };
   }, []);
 
@@ -185,9 +202,24 @@ export default function App() {
     }
   };
 
+  const loadWorkspaceFolders = async () => {
+    try {
+      const folders = await invoke<string[]>('list_folders');
+      if (folders && Array.isArray(folders)) {
+        setCustomFolders(folders);
+      }
+    } catch (err) {
+      console.warn('Failed to fetch workspace folders:', err);
+    }
+  };
+
   useEffect(() => {
     loadWorkspaceFiles();
-    const interval = setInterval(loadWorkspaceFiles, 2000);
+    loadWorkspaceFolders();
+    const interval = setInterval(() => {
+      loadWorkspaceFiles();
+      loadWorkspaceFolders();
+    }, 2000);
     return () => clearInterval(interval);
   }, []);
 
@@ -338,14 +370,19 @@ export default function App() {
     }
   };
 
-  const handleCreateFolder = () => {
+  const handleCreateFolder = async () => {
     const folderName = prompt('Enter folder name:');
     if (!folderName || !folderName.trim()) return;
     const cleanName = folderName.trim().replace(/[\/\\]/g, '-');
     const fullFolderPath = currentPrefix ? `${currentPrefix}${cleanName}` : cleanName;
 
-    if (!customFolders.includes(fullFolderPath)) {
-      setCustomFolders((prev) => [...prev, fullFolderPath]);
+    try {
+      await invoke('create_folder', { folderPath: fullFolderPath });
+      setCustomFolders((prev) => (prev.includes(fullFolderPath) ? prev : [...prev, fullFolderPath]));
+      await loadWorkspaceFiles();
+    } catch (err) {
+      console.error('Failed to create folder:', err);
+      alert(`Failed to create folder: ${err}`);
     }
   };
 
@@ -355,7 +392,7 @@ export default function App() {
 
     try {
       await invoke('delete_folder', { folderPath: targetFolder });
-      setCustomFolders((prev) => prev.filter((f) => f !== targetFolder));
+      setCustomFolders((prev) => prev.filter((f) => f !== targetFolder && !f.startsWith(`${targetFolder}/`)));
       if (paths.length > 1 && paths[paths.length - 1] === folderName) {
         setPaths((prev) => prev.slice(0, -1));
       }
