@@ -13,6 +13,7 @@ import {
   HardDrive,
   Download,
   FolderInput,
+  Archive,
   X
 } from 'lucide-react';
 import { FileEntry, UploadItem } from '../../types';
@@ -54,6 +55,7 @@ interface FileTreeProps {
   onRate?: (hash: string, rating: 1 | -1) => void;
   onToggleStar?: (hash: string) => void;
   onReportDangerous?: (hash: string, reason: string) => void;
+  onExportFolderZip?: (folderVirtualPath: string) => void;
 }
 
 function formatBytes(bytes: number): string {
@@ -99,6 +101,7 @@ export const FileTree: React.FC<FileTreeProps> = ({
   onRate,
   onToggleStar,
   onReportDangerous,
+  onExportFolderZip,
 }) => {
   const [isDragging, setIsDragging] = useState(false);
   const [offlineOnly, setOfflineOnly] = useState(false);
@@ -292,6 +295,16 @@ export const FileTree: React.FC<FileTreeProps> = ({
         {/* Action buttons: only show in toolbar when files exist to prevent duplication with empty state buttons */}
         {filteredFiles.length > 0 && (
           <div className="flex items-center gap-2">
+            {!isRoot && currentFolderName && onExportFolderZip && (
+              <button
+                onClick={() => onExportFolderZip(currentFolderName)}
+                className="flex items-center gap-1.5 px-2.5 py-1 text-gray-700 bg-white border border-gray-200 hover:bg-gray-100 rounded-md font-medium transition-colors shadow-2xs cursor-pointer text-xs"
+                title="Export this entire folder as a compressed ZIP archive"
+              >
+                <Archive className="w-3.5 h-3.5 text-amber-600" />
+                <span>Export Folder as ZIP</span>
+              </button>
+            )}
             {onCreateFolder && (
               <button
                 onClick={onCreateFolder}
@@ -424,6 +437,7 @@ export const FileTree: React.FC<FileTreeProps> = ({
               onRate={onRate}
               onToggleStar={onToggleStar}
               onReportDangerous={onReportDangerous}
+              onExportFolderZip={onExportFolderZip}
             />
           ))}
         </div>

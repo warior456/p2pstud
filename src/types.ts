@@ -61,6 +61,7 @@ export interface NetworkProfileInfo {
   lecture_throttle_active: boolean;
   override_active: string | null;
   background_cap_bps: number;
+  is_known_network?: boolean;
 }
 
 export interface SsidRule {
@@ -94,6 +95,15 @@ export interface ExportPreflightInfo {
   locally_available: number;
   needs_download: number;
   total_size_bytes: number;
+}
+
+export interface UpdateInfo {
+  current_version: string;
+  version: string;
+  notes: string;
+  download_size_bytes: number;
+  is_pending: boolean;
+  update_available: boolean;
 }
 
 export interface DoctorTestResult {

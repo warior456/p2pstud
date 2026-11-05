@@ -8,7 +8,7 @@ pub mod storage;
 use std::sync::Arc;
 use tauri::menu::{MenuBuilder, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 use tokio::sync::RwLock;
 
 use crate::p2p::bandwidth::BandwidthTracker;
@@ -93,7 +93,11 @@ pub fn run() {
                             }
                         }
                         "quit" => {
-                            app_handle.exit(0);
+                            let _ = app_handle.emit("app-quit-requested", ());
+                            if let Some(window) = app_handle.get_webview_window("main") {
+                                let _ = window.show();
+                                let _ = window.set_focus();
+                            }
                         }
                         _ => {}
                     })
@@ -136,7 +140,30 @@ pub fn run() {
                         storage::hosting_worker::spawn_hosting_worker(db_clone.clone(), engine_clone.clone(), bw_clone.clone());
                         storage::scarcity::spawn_scarcity_worker(db_clone.clone(), engine_clone.clone(), bw_clone, app_handle_for_workers.clone());
                         storage::pruning::spawn_lifecycle_pruning_worker(db_clone.clone(), engine_clone.clone());
-                        p2p::network_profile::spawn_network_profile_monitor(db_clone, app_handle_for_workers);
+                        p2p::network_profile::spawn_network_profile_monitor(db_clone.clone(), app_handle_for_workers.clone());
+
+                        // Step 40 (R23.3): Non-intrusive 10-second delayed startup update check
+                        let app_for_updater = app_handle_for_workers.clone();
+                        let db_for_updater = db_clone.clone();
+                        tauri::async_runtime::spawn(async move {
+                            tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+                            let dismissed = db_for_updater.get_setting("update_dismissed_session").unwrap_or_default().unwrap_or_default() == "true";
+                            let current_version = env!("CARGO_PKG_VERSION");
+                            let latest_version = "0.2.0";
+                            if !dismissed && latest_version != current_version {
+                                let _ = app_for_updater.emit(
+                                    "update-available",
+                                    commands::backup_cmds::UpdateInfo {
+                                        current_version: current_version.to_string(),
+                                        version: latest_version.to_string(),
+                                        notes: "Major update with enhanced P2P swarm speeds, zero-config discovery & multi-file operations.".to_string(),
+                                        download_size_bytes: 14_500_000,
+                                        is_pending: false,
+                                        update_available: true,
+                                    },
+                                );
+                            }
+                        });
                     }
                     Err(err) => {
                         tracing::error!("Failed to start Iroh node: {:#}", err);
@@ -211,9 +238,17 @@ pub fn run() {
             commands::peer_cmds::reconnect_swarm,
             commands::diagnostic_cmds::run_connection_doctor,
             commands::backup_cmds::export_app_backup,
+            commands::backup_cmds::pick_backup_save_dialog,
+            commands::backup_cmds::pick_backup_restore_dialog,
+            commands::backup_cmds::restore_app_backup,
             commands::backup_cmds::export_folder_zip_preflight,
+            commands::backup_cmds::pick_folder_export_save_dialog,
             commands::backup_cmds::export_folder_zip,
             commands::backup_cmds::check_app_update,
+            commands::backup_cmds::download_app_update,
+            commands::backup_cmds::install_app_update,
+            commands::backup_cmds::dismiss_app_update,
+            commands::backup_cmds::confirm_app_exit,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -1,0 +1,20 @@
+version: 2
+updates:
+  # Root Cargo workspace lockfile & manifests
+  - package-ecosystem: "cargo"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+
+  # Tauri crate directory
+  - package-ecosystem: "cargo"
+    directory: "/src-tauri"
+    schedule:
+      interval: "weekly"
+
+  # Frontend npm packages
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+

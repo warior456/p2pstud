@@ -11,9 +11,19 @@ import {
   FileArchive,
   Wifi,
   HardDrive,
-  Sparkles
+  Sparkles,
+  AlertTriangle,
+  X
 } from 'lucide-react';
-import { FileEntry, UploadItem, ZipImportSummary, NetworkProfileInfo, ImportProgress } from './types';
+import { 
+  FileEntry, 
+  UploadItem, 
+  ZipImportSummary, 
+  NetworkProfileInfo, 
+  ImportProgress,
+  UpdateInfo,
+  ExportPreflightInfo
+} from './types';
 import { useStorageStats } from './hooks/useStorageStats';
 import { usePeerStatus } from './hooks/usePeerStatus';
 import { useConnectionStatus } from './hooks/useConnectionStatus';
@@ -82,6 +92,13 @@ export default function App() {
   const [selectedHashes, setSelectedHashes] = useState<string[]>([]);
   const [importProgress, setImportProgress] = useState<ImportProgress | null>(null);
 
+  // Auto-updater, network classification, and quit modal states
+  const [availableUpdate, setAvailableUpdate] = useState<UpdateInfo | null>(null);
+  const [isUpdatePending, setIsUpdatePending] = useState<boolean>(false);
+  const [dismissedNetworkPrompt, setDismissedNetworkPrompt] = useState<boolean>(false);
+  const [showQuitModal, setShowQuitModal] = useState<boolean>(false);
+  const [soleSeedsOnQuit, setSoleSeedsOnQuit] = useState<any[]>([]);
+
   const { stats, refetch: refetchStats } = useStorageStats();
   const { nodeId } = usePeerStatus();
   const { isOnline } = useConnectionStatus();
@@ -110,7 +127,7 @@ export default function App() {
     };
   }, []);
 
-  // Check onboarding status on startup
+  // Check onboarding & pending update status on startup
   useEffect(() => {
     invoke<string | null>('get_setting', { key: 'onboarding_complete' })
       .then((val) => {
@@ -120,6 +137,12 @@ export default function App() {
         console.warn('Could not read onboarding status:', err);
         setOnboardingComplete(true); // default to true on error so app stays usable
       });
+
+    invoke<string | null>('get_setting', { key: 'update_pending' })
+      .then((val) => {
+        if (val === 'true') setIsUpdatePending(true);
+      })
+      .catch(() => {});
   }, []);
 
   // Fetch network profile
@@ -197,6 +220,47 @@ export default function App() {
       unlistenFolderDeleted = un;
     });
 
+    let unlistenUpdate: (() => void) | undefined;
+    let unlistenUpdateDownloaded: (() => void) | undefined;
+    let unlistenQuitRequested: (() => void) | undefined;
+
+    listen<UpdateInfo>('update-available', (e) => {
+      setAvailableUpdate(e.payload);
+    }).then((un) => {
+      unlistenUpdate = un;
+    });
+
+    listen('update-downloaded', () => {
+      setIsUpdatePending(true);
+    }).then((un) => {
+      unlistenUpdateDownloaded = un;
+    });
+
+    listen('app-quit-requested', async () => {
+      try {
+        const pending = await invoke<string | null>('get_setting', { key: 'update_pending' });
+        const isPending = pending === 'true';
+        setIsUpdatePending(isPending);
+
+        let soleSeeds: any[] = [];
+        try {
+          soleSeeds = await invoke<any[]>('get_sole_seed_files');
+        } catch (_) {}
+
+        setSoleSeedsOnQuit(soleSeeds || []);
+
+        if (!isPending && (!soleSeeds || soleSeeds.length === 0)) {
+          await invoke('confirm_app_exit', { installUpdate: false });
+        } else {
+          setShowQuitModal(true);
+        }
+      } catch (_) {
+        setShowQuitModal(true);
+      }
+    }).then((un) => {
+      unlistenQuitRequested = un;
+    });
+
     return () => {
       if (unlistenProfile) unlistenProfile();
       if (unlistenSsid) unlistenSsid();
@@ -204,6 +268,9 @@ export default function App() {
       if (unlistenQuarantine) unlistenQuarantine();
       if (unlistenFolderCreated) unlistenFolderCreated();
       if (unlistenFolderDeleted) unlistenFolderDeleted();
+      if (unlistenUpdate) unlistenUpdate();
+      if (unlistenUpdateDownloaded) unlistenUpdateDownloaded();
+      if (unlistenQuitRequested) unlistenQuitRequested();
     };
   }, []);
 
@@ -286,9 +353,11 @@ export default function App() {
 
       // If user uploaded a ZIP file, prompt with security & extraction warning modal
       if (file.name.toLowerCase().endsWith('.zip')) {
+        const filePath = (file as any).path as string | undefined;
         setPendingZipFile({
           name: file.name,
           size_bytes: file.size,
+          path: filePath,
           file,
         });
         setShowZipModal(true);
@@ -299,14 +368,20 @@ export default function App() {
         setUploadQueue((prev) =>
           prev.map((q) => (q.id === item.id ? { ...q, progress: 30, status: 'reading' } : q))
         );
-        const buffer = await file.arrayBuffer();
-        const bytes = Array.from(new Uint8Array(buffer));
-
-        setUploadQueue((prev) =>
-          prev.map((q) => (q.id === item.id ? { ...q, progress: 65, status: 'uploading' } : q))
-        );
-
-        await invoke('upload_file_bytes', { name: targetName, data: bytes });
+        const filePath = (file as any).path as string | undefined;
+        if (filePath) {
+          setUploadQueue((prev) =>
+            prev.map((q) => (q.id === item.id ? { ...q, progress: 65, status: 'uploading' } : q))
+          );
+          await invoke('upload_file_path', { filePath, targetName });
+        } else {
+          const buffer = await file.arrayBuffer();
+          const bytes = Array.from(new Uint8Array(buffer));
+          setUploadQueue((prev) =>
+            prev.map((q) => (q.id === item.id ? { ...q, progress: 65, status: 'uploading' } : q))
+          );
+          await invoke('upload_file_bytes', { name: targetName, data: bytes });
+        }
 
         setUploadQueue((prev) =>
           prev.map((q) => (q.id === item.id ? { ...q, progress: 100, status: 'completed' } : q))
@@ -355,9 +430,11 @@ export default function App() {
   const handleZipInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+    const filePath = (file as any).path as string | undefined;
     setPendingZipFile({
       name: file.name,
       size_bytes: file.size,
+      path: filePath,
       file,
     });
     setShowZipModal(true);
@@ -383,10 +460,11 @@ export default function App() {
       const targetFolder = currentPrefix.replace(/\/$/, '') || null;
       let summary: ZipImportSummary;
 
-      if (target.path) {
+      const resolvedPath = target.path || (target.file ? (target.file as any).path : undefined);
+      if (resolvedPath) {
         // High-performance streaming disk import for multi-GB ZIPs (BufReader, zero webview RAM)
         summary = await invoke<ZipImportSummary>('import_zip_file', {
-          filePath: target.path,
+          filePath: resolvedPath,
           targetFolder,
         });
       } else if (target.file) {
@@ -436,9 +514,10 @@ export default function App() {
     const target = pendingZipFile;
     setShowZipModal(false);
     const targetName = currentPrefix ? `${currentPrefix}${target.name}` : target.name;
+    const resolvedPath = target.path || (target.file ? (target.file as any).path : undefined);
     try {
-      if (target.path) {
-        await invoke('upload_file_path', { filePath: target.path, targetName });
+      if (resolvedPath) {
+        await invoke('upload_file_path', { filePath: resolvedPath, targetName });
       } else if (target.file) {
         const buffer = await target.file.arrayBuffer();
         const bytes = Array.from(new Uint8Array(buffer));
@@ -455,6 +534,83 @@ export default function App() {
         zipInputRef.current.value = '';
       }
     }
+  };
+
+  const handleExportFolderZip = async (folderNameOrPath: string) => {
+    try {
+      const virtualPath = currentPrefix ? `${currentPrefix}${folderNameOrPath}` : folderNameOrPath;
+      const preflight = await invoke<ExportPreflightInfo>('export_folder_zip_preflight', {
+        virtualPath,
+      });
+
+      if (preflight.locally_available === 0 && preflight.needs_download === 0) {
+        alert(`Folder "${folderNameOrPath}" contains no files to export.`);
+        return;
+      }
+
+      if (preflight.needs_download > 0) {
+        const total = preflight.locally_available + preflight.needs_download;
+        const proceed = window.confirm(
+          `Export folder "${folderNameOrPath}" (${total} files total):\n\n` +
+          `• ${preflight.locally_available} file(s) are cached locally.\n` +
+          `• ${preflight.needs_download} file(s) must be downloaded from swarm peers.\n\n` +
+          `Do you want to proceed with downloading and exporting?`
+        );
+        if (!proceed) return;
+      }
+
+      const defaultName = `${folderNameOrPath.replace(/[\/\\]/g, '_')}_export.zip`;
+      const savePath = await invoke<string | null>('pick_folder_export_save_dialog', {
+        defaultName,
+      });
+
+      if (!savePath) return;
+
+      setToastMessage(`Exporting "${folderNameOrPath}" to ZIP archive...`);
+      await invoke('export_folder_zip', {
+        virtualPath,
+        destPath: savePath,
+      });
+      setToastMessage(`Successfully exported folder to:\n${savePath}`);
+    } catch (err) {
+      console.error('Failed to export folder ZIP:', err);
+      alert(`Folder export failed: ${err}`);
+    }
+  };
+
+  const handleClassifyNetwork = async (ssid: string, profile: 'campus' | 'trusted') => {
+    try {
+      await invoke('add_ssid_rule', { ssid, profile });
+      await refreshNetworkProfile();
+      setToastMessage(`Network "${ssid}" classified as ${profile === 'campus' ? 'Campus Stealth' : 'Trusted'}.`);
+    } catch (err) {
+      alert(`Failed to save network rule: ${err}`);
+    }
+  };
+
+  const handleApplyUpdateOnRestart = async () => {
+    try {
+      await invoke('download_app_update');
+      setIsUpdatePending(true);
+      setAvailableUpdate(null);
+      setToastMessage('Update scheduled. It will automatically install when you next restart P2PStud.');
+    } catch (err) {
+      alert(`Failed to schedule update: ${err}`);
+    }
+  };
+
+  const handleDismissUpdateToast = async () => {
+    setAvailableUpdate(null);
+    try {
+      await invoke('dismiss_app_update');
+    } catch (_) {}
+  };
+
+  const handleConfirmExit = async (installUpdate: boolean) => {
+    setShowQuitModal(false);
+    try {
+      await invoke('confirm_app_exit', { installUpdate });
+    } catch (_) {}
   };
 
   const handleCancelZipModal = () => {
@@ -1152,6 +1308,41 @@ export default function App() {
           <OfflineBanner isOnline={isOnline} />
           <ImportingBanner progress={importProgress} onDismiss={() => setImportProgress(null)} />
 
+          {/* Unrecognized Network Prompt (R17.4) */}
+          {networkProfile?.ssid && !networkProfile?.is_known_network && !dismissedNetworkPrompt && (
+            <div className="bg-gradient-to-r from-blue-900 via-indigo-900 to-blue-950 text-white px-4 py-2.5 flex items-center justify-between text-xs border-b border-indigo-700/60 shadow-md animate-in fade-in">
+              <div className="flex items-center gap-2.5 min-w-0">
+                <Wifi className="w-4 h-4 text-cyan-400 shrink-0" />
+                <span className="truncate">
+                  New Wi-Fi detected: <strong className="text-white font-mono">{networkProfile.ssid}</strong>. How should P2PStud classify this network?
+                </span>
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                  onClick={() => handleClassifyNetwork(networkProfile.ssid!, 'campus')}
+                  className="px-2.5 py-1 bg-amber-500 hover:bg-amber-400 text-slate-950 font-semibold rounded text-xs transition cursor-pointer shadow-2xs"
+                  title="Limit background sync speeds to 512 KB/s and enable lecture stealth"
+                >
+                  Campus Stealth
+                </button>
+                <button
+                  onClick={() => handleClassifyNetwork(networkProfile.ssid!, 'trusted')}
+                  className="px-2.5 py-1 bg-emerald-600 hover:bg-emerald-500 text-white font-semibold rounded text-xs transition cursor-pointer shadow-2xs"
+                  title="Enable unrestricted high-speed sync for home or lab Wi-Fi"
+                >
+                  Trusted Network
+                </button>
+                <button
+                  onClick={() => setDismissedNetworkPrompt(true)}
+                  className="text-gray-400 hover:text-white text-xs px-1 cursor-pointer"
+                  title="Dismiss prompt for this session"
+                >
+                  ✕
+                </button>
+              </div>
+            </div>
+          )}
+
           {currentView === 'explorer' && (
             <>
               <Breadcrumbs paths={paths} onNavigate={handleNavigateBreadcrumbs} />
@@ -1174,6 +1365,7 @@ export default function App() {
                 onCreateFolder={handleCreateFolder}
                 onDeleteFolder={handleDeleteFolder}
                 onUploadFiles={handleUploadFiles}
+                onExportFolderZip={handleExportFolderZip}
                 onPin={handlePin}
                 onUnpin={handleUnpin}
                 onDownload={handleDownload}
@@ -1323,6 +1515,93 @@ export default function App() {
         onUploadAsZip={handleExecuteUploadAsZip}
         onCancel={handleCancelZipModal}
       />
+
+      {/* Non-intrusive Update Available Toast (R23.3) */}
+      {availableUpdate && (
+        <div className="fixed bottom-12 right-6 bg-slate-900 text-white p-4 rounded-xl shadow-2xl border border-slate-700 z-50 max-w-sm animate-in fade-in slide-in-from-bottom-4">
+          <div className="flex items-start gap-3">
+            <Sparkles className="w-5 h-5 text-blue-400 shrink-0 mt-0.5" />
+            <div className="flex-1 min-w-0">
+              <div className="font-semibold text-xs text-white">Update Available: v{availableUpdate.version}</div>
+              <p className="text-[11px] text-slate-300 mt-1 line-clamp-2">{availableUpdate.notes}</p>
+              <div className="flex items-center gap-2 mt-3">
+                <button
+                  onClick={handleApplyUpdateOnRestart}
+                  className="px-3 py-1 bg-blue-600 hover:bg-blue-500 text-white rounded text-xs font-semibold cursor-pointer shadow-xs"
+                >
+                  Update on Next Restart
+                </button>
+                <button
+                  onClick={handleDismissUpdateToast}
+                  className="px-2.5 py-1 text-slate-400 hover:text-white text-xs cursor-pointer"
+                >
+                  Later
+                </button>
+              </div>
+            </div>
+            <button onClick={handleDismissUpdateToast} className="text-slate-400 hover:text-white cursor-pointer">
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Quit Intercept / Safe Shutdown Confirmation Modal (R16.2/3, R23.3) */}
+      {showQuitModal && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-xl shadow-2xl max-w-md w-full border border-gray-200 p-6 space-y-4">
+            <div className="flex items-start gap-3">
+              <div className="w-10 h-10 rounded-full bg-amber-50 text-amber-600 flex items-center justify-center border border-amber-200 shrink-0">
+                <AlertTriangle className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="text-sm font-bold text-gray-900">
+                  {isUpdatePending ? 'Update Ready to Install' : 'Application Shutdown Warning'}
+                </h3>
+                <p className="text-xs text-gray-600 mt-1 leading-relaxed">
+                  {isUpdatePending
+                    ? 'A downloaded update is ready to install. Do you want to apply it now and restart, or close without installing?'
+                    : soleSeedsOnQuit.length > 0
+                    ? `Warning: You are currently the ONLY active online seed for ${soleSeedsOnQuit.length} course file(s). If you close the app now, these files will be unavailable to your peers until you return.`
+                    : 'Are you sure you want to exit P2PStud?'}
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-2 border-t border-gray-100">
+              <button
+                onClick={() => setShowQuitModal(false)}
+                className="px-3 py-1.5 text-xs text-gray-600 hover:bg-gray-100 rounded-lg font-medium cursor-pointer"
+              >
+                Cancel
+              </button>
+              {isUpdatePending ? (
+                <>
+                  <button
+                    onClick={() => handleConfirmExit(false)}
+                    className="px-3 py-1.5 text-xs bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-lg font-medium cursor-pointer"
+                  >
+                    Quit Without Installing
+                  </button>
+                  <button
+                    onClick={() => handleConfirmExit(true)}
+                    className="px-4 py-1.5 text-xs bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-semibold shadow-xs cursor-pointer"
+                  >
+                    Install & Restart
+                  </button>
+                </>
+              ) : (
+                <button
+                  onClick={() => handleConfirmExit(false)}
+                  className="px-4 py-1.5 text-xs bg-red-600 hover:bg-red-700 text-white rounded-lg font-semibold shadow-xs cursor-pointer"
+                >
+                  Quit Anyway
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

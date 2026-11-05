@@ -22,7 +22,8 @@ import {
   Star,
   ThumbsUp,
   ThumbsDown,
-  ShieldAlert
+  ShieldAlert,
+  Archive
 } from 'lucide-react';
 import { FileEntry } from '../../types';
 
@@ -47,6 +48,7 @@ interface FileRowProps {
   onRate?: (hash: string, rating: 1 | -1) => void;
   onToggleStar?: (hash: string) => void;
   onReportDangerous?: (hash: string, reason: string) => void;
+  onExportFolderZip?: (folderName: string) => void;
 }
 
 const DANGEROUS_EXTENSIONS = [
@@ -88,6 +90,7 @@ export const FileRow: React.FC<FileRowProps> = ({
   onRate,
   onToggleStar,
   onReportDangerous,
+  onExportFolderZip,
 }) => {
   const [menuOpen, setMenuOpen] = useState(false);
   const [isDragTarget, setIsDragTarget] = useState(false);
@@ -423,7 +426,33 @@ export const FileRow: React.FC<FileRowProps> = ({
           onMouseLeave={() => setMenuOpen(false)}
           className="absolute right-4 top-10 bg-white border border-gray-200 shadow-lg rounded-lg py-1 z-20 text-xs w-60 font-normal"
         >
-          {!file.is_dir && (
+          {file.is_dir ? (
+            <>
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setMenuOpen(false);
+                  if (onClick) onClick();
+                }}
+                className="w-full text-left px-3 py-1.5 flex items-center gap-2 hover:bg-gray-100 text-gray-700"
+              >
+                <Folder className="w-3.5 h-3.5 text-blue-500" /> Open Folder
+              </button>
+              {onExportFolderZip && (
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setMenuOpen(false);
+                    onExportFolderZip(file.name);
+                  }}
+                  className="w-full text-left px-3 py-1.5 flex items-center gap-2 hover:bg-gray-100 text-gray-700"
+                  title="Export this folder as a compressed ZIP archive"
+                >
+                  <Archive className="w-3.5 h-3.5 text-amber-600" /> Export Folder as ZIP
+                </button>
+              )}
+            </>
+          ) : (
             <>
               <button
                 onClick={(e) => {

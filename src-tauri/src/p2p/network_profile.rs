@@ -136,6 +136,7 @@ pub struct NetworkProfileInfo {
     pub lecture_throttle_active: bool,
     pub override_active: Option<String>,
     pub background_cap_bps: u64,
+    pub is_known_network: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -233,6 +234,11 @@ pub fn get_rule_for_ssid(db: &Database, ssid: &str) -> Result<Option<NetworkProf
         Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
         Err(e) => Err(e.into()),
     }
+}
+
+/// Check if an SSID has an explicit classification rule stored in the database.
+pub fn is_ssid_classified(db: &Database, ssid: &str) -> bool {
+    get_rule_for_ssid(db, ssid).unwrap_or(None).is_some()
 }
 
 /// Resolve the active profile based on manual override or detected SSID.
@@ -403,6 +409,12 @@ pub fn spawn_network_profile_monitor(db: Arc<Database>, app: AppHandle) {
                     NetworkProfile::Trusted => u64::MAX,
                 };
 
+                let is_known = current_ssid
+                    .as_ref()
+                    .map(|s| is_ssid_classified(&db, s))
+                    .unwrap_or(true)
+                    || override_active.is_some();
+
                 let _ = app.emit(
                     "network-profile-changed",
                     NetworkProfileInfo {
@@ -411,6 +423,7 @@ pub fn spawn_network_profile_monitor(db: Arc<Database>, app: AppHandle) {
                         lecture_throttle_active: is_lecture && profile == NetworkProfile::Campus,
                         override_active,
                         background_cap_bps: cap,
+                        is_known_network: is_known,
                     },
                 );
             }

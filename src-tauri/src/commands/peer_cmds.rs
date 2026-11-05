@@ -174,6 +174,12 @@ pub async fn get_network_profile(
         crate::p2p::network_profile::NetworkProfile::Trusted => u64::MAX,
     };
 
+    let is_known = ssid
+        .as_ref()
+        .map(|s| crate::p2p::network_profile::is_ssid_classified(&state.db, s))
+        .unwrap_or(true)
+        || override_active.is_some();
+
     Ok(crate::p2p::network_profile::NetworkProfileInfo {
         profile: profile.as_str().to_string(),
         ssid,
@@ -181,6 +187,7 @@ pub async fn get_network_profile(
             && profile == crate::p2p::network_profile::NetworkProfile::Campus,
         override_active,
         background_cap_bps: cap,
+        is_known_network: is_known,
     })
 }
 
