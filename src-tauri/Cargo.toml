@@ -60,7 +60,7 @@ tracing-subscriber  = { version = "0.3", features = ["env-filter"] }
 
 # Utilities
 bytes          = "1"
-rand           = "0.8"
+rand           = "0.10"
 nonzero_ext    = "0.3"
 unicode-normalization = "0.1"
 
