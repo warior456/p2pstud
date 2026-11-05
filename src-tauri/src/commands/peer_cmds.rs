@@ -62,13 +62,17 @@ pub async fn list_peers(state: State<'_, AppState>) -> Result<Vec<PeerInfo>, Str
 }
 
 /// Return this node's public NodeId (hex-encoded Ed25519 public key).
+/// Always resolves immediately even if offline or before network engine starts.
 #[tauri::command]
 pub async fn get_node_id(state: State<'_, AppState>) -> Result<String, String> {
     let guard = state.engine.read().await;
-    match guard.as_ref() {
-        Some(engine) => Ok(engine.node_id().to_string()),
-        None => Err("Iroh engine not yet started".to_string()),
+    if let Some(engine) = guard.as_ref() {
+        return Ok(engine.node_id().to_string());
     }
+    // Fallback: load deterministic Ed25519 secret key from local disk
+    let secret_key = crate::p2p::identity::load_or_create_secret_key(&state.data_dir)
+        .map_err(|e| e.to_string())?;
+    Ok(secret_key.public().to_string())
 }
 
 /// Return this node's full NodeTicket (string starting with "node") for easy sharing.

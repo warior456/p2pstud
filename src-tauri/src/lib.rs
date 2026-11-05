@@ -18,8 +18,10 @@ use crate::storage::db::Database;
 /// Shared application state injected into every Tauri command via `tauri::State`.
 pub struct AppState {
     pub engine: Arc<RwLock<Option<IrohEngine>>>,
+    pub store: Arc<RwLock<Option<iroh_blobs::store::fs::FsStore>>>,
     pub db: Arc<Database>,
     pub bandwidth: Arc<BandwidthTracker>,
+    pub data_dir: std::path::PathBuf,
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -59,14 +61,38 @@ pub fn run() {
                     .expect("failed to open database"),
             );
 
-            // Store state; Iroh engine is started asynchronously after setup.
+            // Store state; local blob store and Iroh engine are started asynchronously
             let engine: Arc<RwLock<Option<IrohEngine>>> = Arc::new(RwLock::new(None));
+            let store: Arc<RwLock<Option<iroh_blobs::store::fs::FsStore>>> = Arc::new(RwLock::new(None));
             let bandwidth = Arc::new(BandwidthTracker::new());
+
+            let blob_dir = match db.get_setting("custom_blob_dir") {
+                Ok(Some(custom)) if !custom.trim().is_empty() => std::path::PathBuf::from(custom.trim()),
+                _ => data_dir.join("blobs"),
+            };
+            let _ = std::fs::create_dir_all(&blob_dir);
+
+            // Preload local BlobStore immediately (100% offline-ready, no network required)
+            let store_loader = store.clone();
+            let blob_dir_for_loader = blob_dir.clone();
+            tauri::async_runtime::spawn(async move {
+                match iroh_blobs::store::fs::FsStore::load(&blob_dir_for_loader).await {
+                    Ok(s) => {
+                        *store_loader.write().await = Some(s);
+                        tracing::info!("Preloaded local BlobStore from {}", blob_dir_for_loader.display());
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to preload local BlobStore: {:#}", e);
+                    }
+                }
+            });
 
             let state = AppState {
                 engine: engine.clone(),
+                store: store.clone(),
                 db: db.clone(),
                 bandwidth: bandwidth.clone(),
+                data_dir: data_dir.clone(),
             };
             app.manage(state);
 
@@ -155,45 +181,51 @@ pub fn run() {
             let app_handle_for_workers = app.handle().clone();
 
             tauri::async_runtime::spawn(async move {
-                match p2p::engine::IrohEngine::start(&data_dir_clone, db_clone.clone()).await {
-                    Ok(e) => {
-                        tracing::info!("Iroh node started: {}", e.node_id());
-                        *engine_clone.write().await = Some(e);
-                        let _ = app_handle_for_workers.emit("iroh-node-ready", ());
-                        // Start background eviction, hosting, scarcity, and pruning workers
-                        storage::eviction::spawn_eviction_worker(db_clone.clone(), engine_clone.clone());
-                        storage::hosting_worker::spawn_hosting_worker(db_clone.clone(), engine_clone.clone(), bw_clone.clone());
-                        storage::scarcity::spawn_scarcity_worker(db_clone.clone(), engine_clone.clone(), bw_clone, app_handle_for_workers.clone());
-                        storage::pruning::spawn_lifecycle_pruning_worker(db_clone.clone(), engine_clone.clone());
-                        p2p::network_profile::spawn_network_profile_monitor(db_clone.clone(), app_handle_for_workers.clone());
-
-                        // Step 40 (R23.3): Non-intrusive 10-second delayed startup update check
-                        let app_for_updater = app_handle_for_workers.clone();
-                        let db_for_updater = db_clone.clone();
-                        tauri::async_runtime::spawn(async move {
-                            tokio::time::sleep(std::time::Duration::from_secs(10)).await;
-                            let dismissed = db_for_updater.get_setting("update_dismissed_session").unwrap_or_default().unwrap_or_default() == "true";
-                            let current_version = env!("CARGO_PKG_VERSION");
-                            let latest_version = "0.2.0";
-                            if !dismissed && latest_version != current_version {
-                                let _ = app_for_updater.emit(
-                                    "update-available",
-                                    commands::backup_cmds::UpdateInfo {
-                                        current_version: current_version.to_string(),
-                                        version: latest_version.to_string(),
-                                        notes: "Major update with enhanced P2P swarm speeds, zero-config discovery & multi-file operations.".to_string(),
-                                        download_size_bytes: 14_500_000,
-                                        is_pending: false,
-                                        update_available: true,
-                                    },
-                                );
-                            }
-                        });
-                    }
-                    Err(err) => {
-                        tracing::error!("Failed to start Iroh node: {:#}", err);
+                let mut retry_delay = std::time::Duration::from_secs(3);
+                loop {
+                    match p2p::engine::IrohEngine::start(&data_dir_clone, db_clone.clone()).await {
+                        Ok(e) => {
+                            tracing::info!("Iroh node started: {}", e.node_id());
+                            *engine_clone.write().await = Some(e);
+                            let _ = app_handle_for_workers.emit("iroh-node-ready", ());
+                            // Start background eviction, hosting, scarcity, and pruning workers
+                            storage::eviction::spawn_eviction_worker(db_clone.clone(), engine_clone.clone());
+                            storage::hosting_worker::spawn_hosting_worker(db_clone.clone(), engine_clone.clone(), bw_clone.clone());
+                            storage::scarcity::spawn_scarcity_worker(db_clone.clone(), engine_clone.clone(), bw_clone, app_handle_for_workers.clone());
+                            storage::pruning::spawn_lifecycle_pruning_worker(db_clone.clone(), engine_clone.clone());
+                            p2p::network_profile::spawn_network_profile_monitor(db_clone.clone(), app_handle_for_workers.clone());
+                            break;
+                        }
+                        Err(err) => {
+                            tracing::warn!("Iroh engine start delayed (offline/waiting): {:#}. Retrying in {:?}...", err, retry_delay);
+                            tokio::time::sleep(retry_delay).await;
+                            retry_delay = (retry_delay * 2).min(std::time::Duration::from_secs(15));
+                        }
                     }
                 }
+
+                // Step 40 (R23.3): Non-intrusive 10-second delayed startup update check
+                let app_for_updater = app_handle_for_workers.clone();
+                let db_for_updater = db_clone.clone();
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+                    let dismissed = db_for_updater.get_setting("update_dismissed_session").unwrap_or_default().unwrap_or_default() == "true";
+                    let current_version = env!("CARGO_PKG_VERSION");
+                    let latest_version = "0.2.0";
+                    if !dismissed && latest_version != current_version {
+                        let _ = app_for_updater.emit(
+                            "update-available",
+                            commands::backup_cmds::UpdateInfo {
+                                current_version: current_version.to_string(),
+                                version: latest_version.to_string(),
+                                notes: "Major update with enhanced P2P swarm speeds, zero-config discovery & multi-file operations.".to_string(),
+                                download_size_bytes: 14_500_000,
+                                is_pending: false,
+                                update_available: true,
+                            },
+                        );
+                    }
+                });
             });
 
             Ok(())

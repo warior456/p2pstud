@@ -28,23 +28,49 @@ pub struct ImportProgressPayload {
 }
 
 /// List all tracked files and blobs from the SQLite database with live cache status.
+/// Works 100% offline using the preloaded local store and SQLite metadata.
 #[tauri::command]
 pub async fn list_files(state: State<'_, AppState>) -> Result<Vec<BlobRecord>, String> {
     let mut blobs = list_all_blobs(&state.db).map_err(|e| e.to_string())?;
-    let guard = state.engine.read().await;
-    if let Some(engine) = guard.as_ref() {
-        let my_node_id = engine.node_id().to_string();
-        for blob in &mut blobs {
-            if let Ok(parsed_hash) = blob.hash.parse::<iroh_blobs::Hash>() {
-                blob.is_cached = is_blob_cached(&engine.store, &parsed_hash).await;
-                blob.seed_count = get_seed_count(
-                    &state.db,
-                    &blob.hash,
-                    Some(&my_node_id),
-                    blob.is_cached,
-                )
-                .unwrap_or(0);
+
+    // Determine our node ID (from running engine or persistent secret key on disk)
+    let my_node_id = {
+        let guard = state.engine.read().await;
+        if let Some(engine) = guard.as_ref() {
+            Some(engine.node_id().to_string())
+        } else {
+            crate::p2p::identity::load_or_create_secret_key(&state.data_dir)
+                .ok()
+                .map(|k| k.public().to_string())
+        }
+    };
+
+    let engine_guard = state.engine.read().await;
+    let store_guard = state.store.read().await;
+
+    let maybe_store: Option<&iroh_blobs::store::fs::FsStore> = if let Some(engine) = engine_guard.as_ref() {
+        Some(&engine.store)
+    } else if let Some(store) = store_guard.as_ref() {
+        Some(store)
+    } else {
+        None
+    };
+
+    for blob in &mut blobs {
+        if let Ok(parsed_hash) = blob.hash.parse::<iroh_blobs::Hash>() {
+            if let Some(store) = maybe_store {
+                blob.is_cached = is_blob_cached(store, &parsed_hash).await;
+            } else {
+                // Disk-based fallback: if marked written_at or pinned
+                blob.is_cached = blob.is_pinned || blob.written_at.map(|w| w > 0).unwrap_or(false);
             }
+            blob.seed_count = get_seed_count(
+                &state.db,
+                &blob.hash,
+                my_node_id.as_deref(),
+                blob.is_cached,
+            )
+            .unwrap_or(if blob.is_cached { 1 } else { 0 });
         }
     }
     Ok(blobs)
@@ -79,21 +105,30 @@ pub async fn read_file_bytes(
         .parse::<iroh_blobs::Hash>()
         .map_err(|e| format!("invalid hash '{hash}': {e}"))?;
 
-    let guard = state.engine.read().await;
-    let engine = guard.as_ref().ok_or("Iroh engine not yet started")?;
-
-    // 1. Try reading from local blob store first
-    let local_res = engine
-        .store
-        .blobs()
-        .get_bytes(parsed_hash)
-        .await
-        .map(|b| b.to_vec());
+    // 1. Try reading from local blob store first (works 100% offline!)
+    let local_res = {
+        let engine_guard = state.engine.read().await;
+        if let Some(engine) = engine_guard.as_ref() {
+            engine.store.blobs().get_bytes(parsed_hash).await.map(|b| b.to_vec()).ok()
+        } else {
+            let store_guard = state.store.read().await;
+            if let Some(store) = store_guard.as_ref() {
+                store.blobs().get_bytes(parsed_hash).await.map(|b| b.to_vec()).ok()
+            } else {
+                None
+            }
+        }
+    };
 
     let data = match local_res {
-        Ok(d) => d,
-        Err(_) => {
-            // Blob is not locally stored yet: fetch on-demand from the swarm!
+        Some(d) => d,
+        None => {
+            // Blob is not in local cache: fetch on-demand from the swarm peers!
+            let guard = state.engine.read().await;
+            let engine = guard
+                .as_ref()
+                .ok_or_else(|| "File is not stored in local offline cache and peer network is currently disconnected.".to_string())?;
+
             let blob_rec = get_blob(&state.db, &hash).ok().flatten();
             let mut download_ok = false;
             let mut successful_seeder_id: Option<String> = None;

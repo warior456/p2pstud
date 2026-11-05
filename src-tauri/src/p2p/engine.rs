@@ -57,11 +57,34 @@ impl IrohEngine {
         let store = BlobStore::load(&blob_dir).await?;
 
         // 4. Build QUIC endpoint with relay fallback and presets.
-        let endpoint = Endpoint::builder(presets::N0)
-            .secret_key(secret_key)
+        // If binding with configured relay fails (e.g. offline/DNS unavailable), fallback gracefully
+        let endpoint = match Endpoint::builder(presets::N0)
+            .secret_key(secret_key.clone())
             .relay_mode(relay_mode)
             .bind()
-            .await?;
+            .await
+        {
+            Ok(ep) => ep,
+            Err(e) => {
+                tracing::warn!("Failed to bind endpoint with configured relay: {}. Trying fallback with RelayMode::Default...", e);
+                match Endpoint::builder(presets::N0)
+                    .secret_key(secret_key.clone())
+                    .relay_mode(iroh::RelayMode::Default)
+                    .bind()
+                    .await
+                {
+                    Ok(ep) => ep,
+                    Err(e2) => {
+                        tracing::warn!("Failed to bind with default relay: {}. Falling back to local-only RelayMode::Disabled...", e2);
+                        Endpoint::builder(presets::N0)
+                            .secret_key(secret_key)
+                            .relay_mode(iroh::RelayMode::Disabled)
+                            .bind()
+                            .await?
+                    }
+                }
+            }
+        };
 
         let sync_alpn = get_sync_alpn(&db);
         let blobs = Arc::new(BlobsProtocol::new(&store, None));
