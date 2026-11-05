@@ -3,7 +3,7 @@
 
 use std::str::FromStr;
 use serde::{Deserialize, Serialize};
-use tauri::State;
+use tauri::{AppHandle, Emitter, State};
 
 use crate::p2p::sync::sync_catalog_with_peer;
 use crate::AppState;
@@ -277,11 +277,14 @@ pub async fn get_sole_seed_files(
 
 /// Forcibly trigger an immediate swarm reconnection cycle.
 #[tauri::command]
-pub async fn reconnect_swarm(state: State<'_, AppState>) -> Result<(), String> {
+pub async fn reconnect_swarm(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+    crate::p2p::network_profile::invalidate_ssid_cache();
+
     let guard = state.engine.read().await;
     let Some(engine) = guard.as_ref() else {
         return Err("Iroh engine not started".to_string());
     };
+
     if let Ok(Some(bootstrap)) = state.db.get_setting("bootstrap_peer") {
         let trimmed = bootstrap.trim();
         if !trimmed.is_empty() {
@@ -300,6 +303,16 @@ pub async fn reconnect_swarm(state: State<'_, AppState>) -> Result<(), String> {
             }
         }
     }
+
+    let peer_count = engine.peer_count().await;
+    let _ = app.emit(
+        "connection-status-changed",
+        serde_json::json!({
+            "online": true,
+            "peer_count": peer_count,
+        }),
+    );
+
     Ok(())
 }
 

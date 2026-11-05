@@ -44,9 +44,16 @@ impl IrohEngine {
             .get_setting("relay_url")
             .unwrap_or_default()
             .unwrap_or_default();
-        let relay = parse_relay_url(&relay_url)?;
 
-        tracing::info!(%node_id, relay = %relay, "Starting Iroh node");
+        let (relay_mode, relay_display) = if relay_url.trim().is_empty() {
+            (RelayMode::Default, "default global relays".to_string())
+        } else {
+            let relay = parse_relay_url(&relay_url)?;
+            let map = RelayMap::from(relay.clone());
+            (RelayMode::Custom(map), relay.to_string())
+        };
+
+        tracing::info!(%node_id, relay = %relay_display, "Starting Iroh node");
 
         // 3. Open local blob store (respects custom_blob_dir setting if configured).
         let blob_dir = match db.get_setting("custom_blob_dir") {
@@ -59,7 +66,7 @@ impl IrohEngine {
         // 4. Build QUIC endpoint with relay fallback and presets.
         let endpoint = Endpoint::builder(presets::N0)
             .secret_key(secret_key)
-            .relay_mode(RelayMode::Custom(RelayMap::from(relay)))
+            .relay_mode(relay_mode)
             .bind()
             .await?;
 

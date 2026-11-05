@@ -136,6 +136,7 @@ pub fn run() {
                     Ok(e) => {
                         tracing::info!("Iroh node started: {}", e.node_id());
                         *engine_clone.write().await = Some(e);
+                        let _ = app_handle_for_workers.emit("iroh-node-ready", ());
                         // Start background eviction, hosting, scarcity, and pruning workers
                         storage::eviction::spawn_eviction_worker(db_clone.clone(), engine_clone.clone());
                         storage::hosting_worker::spawn_hosting_worker(db_clone.clone(), engine_clone.clone(), bw_clone.clone());

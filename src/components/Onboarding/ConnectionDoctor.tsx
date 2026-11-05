@@ -34,10 +34,13 @@ export function ConnectionDoctor({ onClose: _onClose }: ConnectionDoctorProps) {
   };
 
   useEffect(() => {
+    let mounted = true;
     let unlistenResult: (() => void) | undefined;
     let unlistenComplete: (() => void) | undefined;
+    let timeoutId: any;
 
     listen<DoctorTestResult>('doctor-test-result', (event) => {
+      if (!mounted) return;
       setTestResults((prev) => ({
         ...prev,
         [event.payload.test]: {
@@ -45,20 +48,37 @@ export function ConnectionDoctor({ onClose: _onClose }: ConnectionDoctorProps) {
           detail: event.payload.detail,
         },
       }));
-    }).then((cleanup) => {
-      unlistenResult = cleanup;
+    }).then((unlisten) => {
+      unlistenResult = unlisten;
     });
 
     listen<{ advice: string[] }>('doctor-complete', (event) => {
+      if (!mounted) return;
       setAdviceList(event.payload.advice || []);
       setIsRunning(false);
-    }).then((cleanup) => {
-      unlistenComplete = cleanup;
+      clearTimeout(timeoutId);
+    }).then((unlisten) => {
+      unlistenComplete = unlisten;
     });
 
-    startDiagnostics();
+    setIsRunning(true);
+    setTestResults({});
+    setAdviceList([]);
+    invoke('run_connection_doctor').catch((err) => {
+      console.error('Failed to trigger connection doctor:', err);
+      if (mounted) setIsRunning(false);
+    });
+
+    // Safety timeout: ensure button and status never stay stuck on "Analyzing..."
+    timeoutId = setTimeout(() => {
+      if (mounted) {
+        setIsRunning(false);
+      }
+    }, 8000);
 
     return () => {
+      mounted = false;
+      clearTimeout(timeoutId);
       if (unlistenResult) unlistenResult();
       if (unlistenComplete) unlistenComplete();
     };

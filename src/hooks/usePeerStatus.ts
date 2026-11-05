@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import { PeerInfo } from '../types';
 import { useInterval } from './useInterval';
 
@@ -32,6 +33,18 @@ export function usePeerStatus(intervalMs = 3000) {
   useEffect(() => {
     fetchNodeId();
     fetchPeers();
+
+    let unlistenReady: (() => void) | undefined;
+    listen('iroh-node-ready', () => {
+      fetchNodeId();
+      fetchPeers();
+    }).then((unlisten) => {
+      unlistenReady = unlisten;
+    });
+
+    return () => {
+      if (unlistenReady) unlistenReady();
+    };
   }, [fetchNodeId, fetchPeers]);
 
   // Keep polling until nodeId is resolved AND periodically refresh peers

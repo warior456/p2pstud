@@ -1,9 +1,9 @@
 // src-tauri/src/commands/diagnostic_cmds.rs
 // Connection Doctor diagnostic tests for Eduroam / campus network traversal.
 
-use std::net::ToSocketAddrs;
 use std::time::Duration;
 
+use iroh::Watcher;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State};
 
@@ -31,6 +31,9 @@ pub async fn run_connection_doctor(
 
     // Spawn async background worker so we never block Tauri IPC or UI thread
     tokio::spawn(async move {
+        // Small initial delay to ensure frontend IPC event listeners have mounted and registered
+        tokio::time::sleep(Duration::from_millis(300)).await;
+
         let mut advice = Vec::new();
 
         // 1. Test mDNS / Local LAN discovery
@@ -69,12 +72,11 @@ pub async fn run_connection_doctor(
         // 2. Test QUIC UDP
         let quic_udp_ok = {
             // Test if UDP socket can bind and transmit
-            match tokio::net::UdpSocket::bind("0.0.0.0:0").await {
-                Ok(sock) => {
-                    // Try to send lightweight probe to public DNS (e.g. 1.1.1.1:53)
+            match tokio::time::timeout(Duration::from_secs(2), tokio::net::UdpSocket::bind("0.0.0.0:0")).await {
+                Ok(Ok(sock)) => {
                     sock.connect("1.1.1.1:53").await.is_ok()
                 }
-                Err(_) => false,
+                _ => false,
             }
         };
 
@@ -94,23 +96,38 @@ pub async fn run_connection_doctor(
         tokio::time::sleep(Duration::from_millis(150)).await;
 
         // 3. Test Relay over port 443 (TCP)
-        let relay_url = state_db
-            .get_setting("relay_url")
-            .unwrap_or_default()
-            .unwrap_or_else(|| "https://use1-1.relay.iroh.network/".to_string());
+        let active_relay = {
+            let guard = engine_lock.read().await;
+            guard.as_ref().and_then(|e| {
+                let relays = e.endpoint.home_relay_status().get();
+                relays.first().map(|r| r.url().to_string())
+            })
+        };
+
+        let configured_relay = state_db.get_setting("relay_url").unwrap_or_default().unwrap_or_default();
+        let relay_url = if !configured_relay.trim().is_empty() {
+            configured_relay
+        } else if let Some(ref r) = active_relay {
+            r.clone()
+        } else {
+            "https://euw1-1.relay.iroh.network/".to_string()
+        };
 
         let relay_tcp_ok = {
             // Extract host and port from relay URL
             let parsed = url::Url::parse(&relay_url).ok();
-            let host = parsed.as_ref().and_then(|u| u.host_str()).unwrap_or("use1-1.relay.iroh.network");
+            let host = parsed.as_ref().and_then(|u| u.host_str()).unwrap_or("euw1-1.relay.iroh.network");
             let port = parsed.as_ref().and_then(|u| u.port()).unwrap_or(443);
 
             let addr_str = format!("{host}:{port}");
-            match tokio::time::timeout(Duration::from_secs(4), tokio::net::TcpStream::connect(&addr_str)).await {
+            match tokio::time::timeout(Duration::from_secs(3), tokio::net::TcpStream::connect(&addr_str)).await {
                 Ok(Ok(_stream)) => true,
                 _ => {
-                    // Fallback DNS resolution test
-                    addr_str.to_socket_addrs().is_ok()
+                    // Non-blocking DNS resolution test with timeout
+                    match tokio::time::timeout(Duration::from_secs(2), tokio::net::lookup_host(&addr_str)).await {
+                        Ok(Ok(mut addrs)) => addrs.next().is_some(),
+                        _ => false,
+                    }
                 }
             }
         };
