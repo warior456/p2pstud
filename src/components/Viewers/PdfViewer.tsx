@@ -73,6 +73,7 @@ export const PdfViewer: React.FC<PdfViewerProps> = ({ data, onClose }) => {
       const renderContext = {
         canvasContext: context,
         viewport,
+        canvas,
       };
 
       const renderTask = page.render(renderContext);
