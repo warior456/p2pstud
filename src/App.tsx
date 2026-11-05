@@ -216,6 +216,52 @@ export default function App() {
       const item = newItems[i];
       const targetName = item.name;
 
+      // If user uploaded a ZIP file, offer to unpack its contents into the current directory
+      if (file.name.toLowerCase().endsWith('.zip')) {
+        const unpack = confirm(
+          `"${file.name}" is a ZIP archive.\n\nDo you want to unpack and import all its files and folders into this directory?\n\n• Click OK to unpack and import all contents into the workspace.\n• Click Cancel to upload it as a single .zip file.`
+        );
+        if (unpack) {
+          try {
+            setUploadQueue((prev) =>
+              prev.map((q) => (q.id === item.id ? { ...q, progress: 30, status: 'reading' } : q))
+            );
+            const buffer = await file.arrayBuffer();
+            const bytes = Array.from(new Uint8Array(buffer));
+            const targetFolder = currentPrefix.replace(/\/$/, '') || null;
+
+            setUploadQueue((prev) =>
+              prev.map((q) => (q.id === item.id ? { ...q, progress: 70, status: 'uploading' } : q))
+            );
+
+            const summary = await invoke<ZipImportSummary>('import_zip_bytes', {
+              data: bytes,
+              targetFolder,
+            });
+
+            setUploadQueue((prev) =>
+              prev.map((q) => (q.id === item.id ? { ...q, progress: 100, status: 'completed' } : q))
+            );
+
+            const mb = (summary.total_bytes / (1024 * 1024)).toFixed(2);
+            let msg = `Successfully imported ${summary.files_imported} file(s) (${mb} MB) from ${file.name}.`;
+            if (summary.errors && summary.errors.length > 0) {
+              msg += `\n\n${summary.errors.length} file(s) skipped:\n` + summary.errors.slice(0, 3).join('\n');
+            }
+            alert(msg);
+            continue;
+          } catch (err) {
+            console.error('Failed to unpack ZIP file:', err);
+            setUploadQueue((prev) =>
+              prev.map((q) =>
+                q.id === item.id ? { ...q, progress: 100, status: 'error', error: String(err) } : q
+              )
+            );
+            continue;
+          }
+        }
+      }
+
       try {
         setUploadQueue((prev) =>
           prev.map((q) => (q.id === item.id ? { ...q, progress: 30, status: 'reading' } : q))
@@ -729,20 +775,18 @@ export default function App() {
 
         {/* Global Action Buttons */}
         <div className="flex items-center gap-2">
-          {import.meta.env.DEV && (
-            <button
-              onClick={handleTriggerZipImport}
-              disabled={importingZip}
-              className="px-3 py-1.5 bg-amber-500 hover:bg-amber-600 text-white rounded-lg text-xs font-semibold flex items-center gap-1.5 shadow-xs transition-colors disabled:opacity-50"
-              title="Developer tool: Import a ZIP archive of files into the active folder"
-            >
-              <FileArchive className="w-3.5 h-3.5" />
-              {importingZip ? 'Importing ZIP...' : 'Import ZIP (Dev)'}
-            </button>
-          )}
+          <button
+            onClick={handleTriggerZipImport}
+            disabled={importingZip}
+            className="px-3 py-1.5 bg-white border border-gray-300 hover:bg-gray-50 text-gray-700 rounded-lg text-xs font-semibold flex items-center gap-1.5 shadow-2xs transition-colors disabled:opacity-50 cursor-pointer"
+            title="Import and unpack a ZIP archive of course files directly into the active folder"
+          >
+            <FileArchive className="w-3.5 h-3.5 text-amber-600" />
+            <span>{importingZip ? 'Importing ZIP...' : 'Import ZIP'}</span>
+          </button>
           <button
             onClick={handleTriggerUpload}
-            className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-semibold flex items-center gap-1.5 shadow-xs transition-colors"
+            className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-semibold flex items-center gap-1.5 shadow-xs transition-colors cursor-pointer"
           >
             <Upload className="w-3.5 h-3.5" />
             Upload File
