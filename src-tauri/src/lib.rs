@@ -40,6 +40,10 @@ pub fn run() {
                 let _ = window.set_focus();
             }
         }))
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            Some(vec!["--minimized"]),
+        ))
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_fs::init())
         .setup(|app| {
@@ -162,14 +166,22 @@ pub fn run() {
             commands::storage_cmds::open_data_dir,
             commands::storage_cmds::get_setting,
             commands::storage_cmds::set_setting,
+            commands::storage_cmds::is_autostart_enabled,
+            commands::storage_cmds::set_autostart_enabled,
+            commands::storage_cmds::get_cache_directory,
+            commands::storage_cmds::set_cache_directory,
             commands::file_cmds::pin_file,
             commands::file_cmds::unpin_file,
             commands::file_cmds::list_files,
             commands::file_cmds::read_file_bytes,
             commands::file_cmds::add_file,
             commands::file_cmds::upload_file_bytes,
+            commands::file_cmds::upload_file_path,
+            commands::file_cmds::pick_zip_dialog,
             commands::file_cmds::import_zip_bytes,
             commands::file_cmds::import_zip_file,
+            commands::file_cmds::batch_delete_files,
+            commands::file_cmds::batch_move_files,
             commands::file_cmds::delete_file,
             commands::file_cmds::vote_delete_file,
             commands::file_cmds::unvote_delete_file,

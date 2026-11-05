@@ -29,8 +29,15 @@ import { TelemetryBar } from './components/Footer/TelemetryBar';
 import { OfflineBanner } from './components/OfflineBanner';
 import { SoleSeedBanner } from './components/SoleSeedBanner';
 import { OnboardingWizard } from './components/Onboarding/OnboardingWizard';
+import { ZipImportModal, ZipFileItem } from './components/Explorer/ZipImportModal';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
+
+interface SelectedFileInfo {
+  path: string;
+  name: string;
+  size_bytes: number;
+}
 
 interface BlobRecord {
   hash: string;
@@ -69,6 +76,9 @@ export default function App() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const zipInputRef = useRef<HTMLInputElement>(null);
   const [importingZip, setImportingZip] = useState<boolean>(false);
+  const [pendingZipFile, setPendingZipFile] = useState<ZipFileItem | null>(null);
+  const [showZipModal, setShowZipModal] = useState<boolean>(false);
+  const [selectedHashes, setSelectedHashes] = useState<string[]>([]);
 
   const { stats, refetch: refetchStats } = useStorageStats();
   const { nodeId } = usePeerStatus();
@@ -248,50 +258,15 @@ export default function App() {
       const item = newItems[i];
       const targetName = item.name;
 
-      // If user uploaded a ZIP file, offer to unpack its contents into the current directory
+      // If user uploaded a ZIP file, prompt with security & extraction warning modal
       if (file.name.toLowerCase().endsWith('.zip')) {
-        const unpack = confirm(
-          `"${file.name}" is a ZIP archive.\n\nDo you want to unpack and import all its files and folders into this directory?\n\n• Click OK to unpack and import all contents into the workspace.\n• Click Cancel to upload it as a single .zip file.`
-        );
-        if (unpack) {
-          try {
-            setUploadQueue((prev) =>
-              prev.map((q) => (q.id === item.id ? { ...q, progress: 30, status: 'reading' } : q))
-            );
-            const buffer = await file.arrayBuffer();
-            const bytes = Array.from(new Uint8Array(buffer));
-            const targetFolder = currentPrefix.replace(/\/$/, '') || null;
-
-            setUploadQueue((prev) =>
-              prev.map((q) => (q.id === item.id ? { ...q, progress: 70, status: 'uploading' } : q))
-            );
-
-            const summary = await invoke<ZipImportSummary>('import_zip_bytes', {
-              data: bytes,
-              targetFolder,
-            });
-
-            setUploadQueue((prev) =>
-              prev.map((q) => (q.id === item.id ? { ...q, progress: 100, status: 'completed' } : q))
-            );
-
-            const mb = (summary.total_bytes / (1024 * 1024)).toFixed(2);
-            let msg = `Successfully imported ${summary.files_imported} file(s) (${mb} MB) from ${file.name}.`;
-            if (summary.errors && summary.errors.length > 0) {
-              msg += `\n\n${summary.errors.length} file(s) skipped:\n` + summary.errors.slice(0, 3).join('\n');
-            }
-            alert(msg);
-            continue;
-          } catch (err) {
-            console.error('Failed to unpack ZIP file:', err);
-            setUploadQueue((prev) =>
-              prev.map((q) =>
-                q.id === item.id ? { ...q, progress: 100, status: 'error', error: String(err) } : q
-              )
-            );
-            continue;
-          }
-        }
+        setPendingZipFile({
+          name: file.name,
+          size_bytes: file.size,
+          file,
+        });
+        setShowZipModal(true);
+        continue;
       }
 
       try {
@@ -334,39 +309,111 @@ export default function App() {
     }
   };
 
-  const handleTriggerZipImport = () => {
-    zipInputRef.current?.click();
+  const handleTriggerZipImport = async () => {
+    try {
+      const selected = await invoke<SelectedFileInfo | null>('pick_zip_dialog');
+      if (selected) {
+        setPendingZipFile({
+          name: selected.name,
+          size_bytes: selected.size_bytes,
+          path: selected.path,
+        });
+        setShowZipModal(true);
+      }
+    } catch (err) {
+      console.warn('Native ZIP dialog error, falling back to input:', err);
+      zipInputRef.current?.click();
+    }
   };
 
-  const handleZipInputChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleZipInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+    setPendingZipFile({
+      name: file.name,
+      size_bytes: file.size,
+      file,
+    });
+    setShowZipModal(true);
+  };
 
+  const handleExecuteZipUnpack = async () => {
+    if (!pendingZipFile) return;
+    const target = pendingZipFile;
+    setShowZipModal(false);
     setImportingZip(true);
     try {
-      const buffer = await file.arrayBuffer();
-      const bytes = Array.from(new Uint8Array(buffer));
       const targetFolder = currentPrefix.replace(/\/$/, '') || null;
-      const summary = await invoke<ZipImportSummary>('import_zip_bytes', {
-        data: bytes,
-        targetFolder,
-      });
+      let summary: ZipImportSummary;
+
+      if (target.path) {
+        // High-performance streaming disk import for multi-GB ZIPs (BufReader, zero webview RAM)
+        summary = await invoke<ZipImportSummary>('import_zip_file', {
+          filePath: target.path,
+          targetFolder,
+        });
+      } else if (target.file) {
+        const buffer = await target.file.arrayBuffer();
+        const bytes = Array.from(new Uint8Array(buffer));
+        summary = await invoke<ZipImportSummary>('import_zip_bytes', {
+          data: bytes,
+          targetFolder,
+        });
+      } else {
+        throw new Error('No valid ZIP file target provided');
+      }
 
       const mb = (summary.total_bytes / (1024 * 1024)).toFixed(2);
-      let msg = `Successfully imported ${summary.files_imported} file(s) (${mb} MB) from ${file.name}.`;
+      let msg = `Successfully imported ${summary.files_imported} file(s) (${mb} MB) from ${target.name}.`;
       if (summary.errors && summary.errors.length > 0) {
-        msg += `\n\n${summary.errors.length} file(s) failed or were skipped:\n` + summary.errors.slice(0, 3).join('\n');
+        msg += `\n\n${summary.errors.length} file(s) skipped:\n` + summary.errors.slice(0, 3).join('\n');
       }
-      alert(msg);
+      setToastMessage(msg);
       await loadWorkspaceFiles();
+      await loadWorkspaceFolders();
       refetchStats();
     } catch (err) {
       alert(`ZIP import failed: ${err}`);
     } finally {
       setImportingZip(false);
+      setPendingZipFile(null);
       if (zipInputRef.current) {
         zipInputRef.current.value = '';
       }
+    }
+  };
+
+  const handleExecuteUploadAsZip = async () => {
+    if (!pendingZipFile) return;
+    const target = pendingZipFile;
+    setShowZipModal(false);
+    const targetName = currentPrefix ? `${currentPrefix}${target.name}` : target.name;
+    try {
+      if (target.path) {
+        await invoke('upload_file_path', { filePath: target.path, targetName });
+      } else if (target.file) {
+        const buffer = await target.file.arrayBuffer();
+        const bytes = Array.from(new Uint8Array(buffer));
+        await invoke('upload_file_bytes', { name: targetName, data: bytes });
+      }
+      setToastMessage(`Uploaded archive "${target.name}" as single file.`);
+      await loadWorkspaceFiles();
+      refetchStats();
+    } catch (err) {
+      alert(`Upload failed: ${err}`);
+    } finally {
+      setPendingZipFile(null);
+      if (zipInputRef.current) {
+        zipInputRef.current.value = '';
+      }
+    }
+  };
+
+  const handleCancelZipModal = () => {
+    setShowZipModal(false);
+    setPendingZipFile(null);
+    if (zipInputRef.current) {
+      zipInputRef.current.value = '';
     }
   };
 
@@ -430,6 +477,96 @@ export default function App() {
 
   const handleClearUploadQueue = () => {
     setUploadQueue([]);
+  };
+
+  const handleToggleSelectHash = (hash: string) => {
+    setSelectedHashes((prev) =>
+      prev.includes(hash) ? prev.filter((h) => h !== hash) : [...prev, hash]
+    );
+  };
+
+  const handleClearSelection = () => {
+    setSelectedHashes([]);
+  };
+
+  const handleBatchDelete = async (hashes: string[]) => {
+    if (!hashes || hashes.length === 0) return;
+    const selectedList = files.filter((f) => hashes.includes(f.hash));
+    const owned = selectedList.filter((f) => f.owner_node_id === nodeId);
+    const community = selectedList.filter((f) => f.owner_node_id !== nodeId);
+
+    let confirmMsg = '';
+    if (owned.length > 0 && community.length > 0) {
+      confirmMsg = `You selected ${hashes.length} file(s):\n- ${owned.length} owned file(s) will be PERMANENTLY DELETED.\n- ${community.length} community file(s) will receive your DELETE VOTE.\n\nProceed?`;
+    } else if (owned.length > 0) {
+      confirmMsg = `Are you sure you want to delete ${owned.length} file(s) owned by you?\n\nThis will remove them from the workspace.`;
+    } else {
+      confirmMsg = `Vote to mark ${community.length} file(s) for deletion?\n\nThis records your vote for community consensus.`;
+    }
+
+    if (!confirm(confirmMsg)) return;
+
+    try {
+      const deleted = await invoke<string[]>('batch_delete_files', { hashes });
+      setToastMessage(`Processed deletion/votes for ${deleted.length} file(s).`);
+      setSelectedHashes([]);
+      await loadWorkspaceFiles();
+      refetchStats();
+    } catch (err) {
+      alert(`Batch delete error: ${err}`);
+    }
+  };
+
+  const handleBatchMove = async (hashes: string[]) => {
+    if (!hashes || hashes.length === 0) return;
+    const knownFolders = new Set<string>();
+    for (const f of files) {
+      if (f.name.includes('/')) {
+        const parts = f.name.split('/');
+        parts.pop();
+        let acc = '';
+        for (const p of parts) {
+          acc = acc ? `${acc}/${p}` : p;
+          knownFolders.add(acc);
+        }
+      }
+    }
+    for (const cf of customFolders) {
+      knownFolders.add(cf);
+    }
+
+    const folderList = Array.from(knownFolders).sort();
+    const folderHelp = folderList.length > 0 
+      ? `\n\nAvailable folders:\n- (leave empty for Root)\n` + folderList.map((f) => `- ${f}`).join('\n')
+      : '\n\nEnter destination folder name (or leave empty for Root)';
+
+    const destination = prompt(
+      `Move ${hashes.length} selected file(s) to folder:${folderHelp}`,
+      currentPrefix.replace(/\/$/, '')
+    );
+
+    if (destination === null) return;
+
+    try {
+      const moved = await invoke<string[]>('batch_move_files', {
+        hashes,
+        targetFolder: destination.trim(),
+      });
+      setToastMessage(`Moved ${moved.length} file(s) to "${destination.trim() || 'Root'}".`);
+      setSelectedHashes([]);
+      await loadWorkspaceFiles();
+      await loadWorkspaceFolders();
+    } catch (err) {
+      alert(`Batch move error: ${err}`);
+    }
+  };
+
+  const handleBatchDownload = async (hashes: string[]) => {
+    if (!hashes || hashes.length === 0) return;
+    setToastMessage(`Starting download of ${hashes.length} file(s)...`);
+    for (const hash of hashes) {
+      await handleDownload(hash);
+    }
   };
 
   const handleDelete = async (hash: string) => {
@@ -972,6 +1109,12 @@ export default function App() {
               <FileTree
                 files={currentDisplayFiles}
                 selectedHash={selectedHash}
+                selectedHashes={selectedHashes}
+                onToggleSelectHash={handleToggleSelectHash}
+                onClearSelection={handleClearSelection}
+                onBatchDelete={handleBatchDelete}
+                onBatchDownload={handleBatchDownload}
+                onBatchMove={handleBatchMove}
                 currentUserId={nodeId}
                 uploadQueue={uploadQueue}
                 isRoot={paths.length <= 1}
@@ -1119,6 +1262,16 @@ export default function App() {
           setCurrentView('settings');
           setSettingsTab('network');
         }}
+      />
+
+      {/* ZIP Archive Import Security & Extraction Warning Modal */}
+      <ZipImportModal
+        isOpen={showZipModal}
+        file={pendingZipFile}
+        targetFolder={currentPrefix ? `Shared Cloud / ${currentPrefix}` : 'Shared Cloud'}
+        onUnpack={handleExecuteZipUnpack}
+        onUploadAsZip={handleExecuteUploadAsZip}
+        onCancel={handleCancelZipModal}
       />
     </div>
   );

@@ -19,7 +19,9 @@ import {
   Lock,
   Key,
   Eye,
-  EyeOff
+  EyeOff,
+  Power,
+  Laptop
 } from 'lucide-react';
 import { StorageStats, PeerInfo } from '../../types';
 
@@ -56,6 +58,65 @@ export const CacheSlider: React.FC<CacheSliderProps> = ({ stats, onStatsUpdated 
   const [copiedId, setCopiedId] = useState<boolean>(false);
   const [copiedTicket, setCopiedTicket] = useState<boolean>(false);
   const [peers, setPeers] = useState<PeerInfo[]>([]);
+
+  // Autostart Settings (cross-platform Windows, Linux, macOS)
+  const [autostartEnabled, setAutostartEnabled] = useState<boolean>(false);
+  const [loadingAutostart, setLoadingAutostart] = useState<boolean>(false);
+
+  // Cache Storage Directory
+  const [cacheDir, setCacheDir] = useState<string>('');
+  const [customCacheDirInput, setCustomCacheDirInput] = useState<string>('');
+  const [savingCacheDir, setSavingCacheDir] = useState<boolean>(false);
+  const [cacheDirFeedback, setCacheDirFeedback] = useState<{ msg: string; isError: boolean } | null>(null);
+
+  useEffect(() => {
+    invoke<boolean>('is_autostart_enabled')
+      .then((val) => setAutostartEnabled(Boolean(val)))
+      .catch((err) => console.warn('Could not read autostart status:', err));
+
+    invoke<string>('get_cache_directory')
+      .then((dir) => {
+        const safeDir = dir || '';
+        setCacheDir(safeDir);
+        setCustomCacheDirInput(safeDir);
+      })
+      .catch((err) => console.warn('Could not read cache directory:', err));
+  }, []);
+
+  const handleToggleAutostart = async () => {
+    const nextVal = !autostartEnabled;
+    setLoadingAutostart(true);
+    try {
+      await invoke('set_autostart_enabled', { enabled: nextVal });
+      setAutostartEnabled(nextVal);
+    } catch (err) {
+      console.error('Failed to update autostart setting:', err);
+    } finally {
+      setLoadingAutostart(false);
+    }
+  };
+
+  const handleSaveCacheDir = async (resetToDefault = false) => {
+    setSavingCacheDir(true);
+    setCacheDirFeedback(null);
+    try {
+      const pathToSet = resetToDefault ? '' : customCacheDirInput;
+      const res = await invoke<string>('set_cache_directory', { path: pathToSet });
+      const updatedDir = await invoke<string>('get_cache_directory');
+      setCacheDir(updatedDir);
+      setCustomCacheDirInput(updatedDir);
+      setCacheDirFeedback({
+        msg: resetToDefault
+          ? 'Reset to default location. Restart app to apply.'
+          : `Storage location updated to: ${res}. Restart app to apply.`,
+        isError: false,
+      });
+    } catch (err) {
+      setCacheDirFeedback({ msg: `Failed to update location: ${String(err)}`, isError: true });
+    } finally {
+      setSavingCacheDir(false);
+    }
+  };
 
   useEffect(() => {
     if (stats) {
@@ -634,6 +695,85 @@ export const CacheSlider: React.FC<CacheSliderProps> = ({ stats, onStatsUpdated 
           <div className="flex items-center gap-2 text-xs text-gray-600">
             <ShieldCheck className="w-4 h-4 text-green-600 shrink-0" />
             <span>Oldest unpinned items are automatically evicted when cache exceeds 90% capacity.</span>
+          </div>
+
+          {/* PC Startup & Background Behavior */}
+          <div className="p-4 bg-gray-50 rounded-xl border border-gray-200 space-y-3">
+            <div className="flex items-center justify-between">
+              <div className="flex items-start gap-3">
+                <div className="w-8 h-8 rounded-lg bg-indigo-50 text-indigo-600 flex items-center justify-center border border-indigo-200 shrink-0 mt-0.5">
+                  <Power className="w-4 h-4" />
+                </div>
+                <div>
+                  <div className="text-xs font-bold text-gray-900">Start on System Boot</div>
+                  <p className="text-[11px] text-gray-500 mt-0.5 leading-relaxed">
+                    Automatically launch P2P Campus Workspace in the background on computer startup (Windows, Linux, macOS) so course materials continue seeding to classmates.
+                  </p>
+                </div>
+              </div>
+              <label className="relative inline-flex items-center cursor-pointer shrink-0 ml-4">
+                <input
+                  type="checkbox"
+                  aria-label="Start on System Boot"
+                  checked={autostartEnabled}
+                  disabled={loadingAutostart}
+                  onChange={handleToggleAutostart}
+                  className="sr-only peer"
+                />
+                <div className="w-9 h-5 bg-gray-300 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-indigo-600"></div>
+              </label>
+            </div>
+            <div className="text-[10px] text-gray-400 pl-11 flex items-center gap-1.5">
+              <Laptop className="w-3 h-3 text-gray-500" />
+              <span>Platform support: Windows (Registry Run), Linux (XDG Autostart), macOS (LaunchAgent).</span>
+            </div>
+          </div>
+
+          {/* Cache Storage Location */}
+          <div className="p-4 bg-gray-50 rounded-xl border border-gray-200 space-y-3">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <HardDrive className="w-4 h-4 text-gray-700" />
+                <span className="text-xs font-bold text-gray-900">Cache Storage Location</span>
+              </div>
+              <span className="text-[10px] font-mono bg-gray-200 text-gray-700 px-2 py-0.5 rounded">
+                Active Storage Path
+              </span>
+            </div>
+            <p className="text-[11px] text-gray-500 leading-relaxed">
+              Configure where cached course files and seeding chunks are stored on disk (e.g. on a secondary drive or external SSD).
+            </p>
+            <div className="space-y-2">
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={customCacheDirInput}
+                  onChange={(e) => setCustomCacheDirInput(e.target.value)}
+                  placeholder="e.g. D:\p2pstud-cache"
+                  className="flex-1 bg-white border border-gray-300 rounded-lg px-3 py-1.5 text-xs font-mono text-gray-800 placeholder-gray-400 focus:outline-none focus:border-blue-500 shadow-2xs"
+                />
+                <button
+                  onClick={() => handleSaveCacheDir(false)}
+                  disabled={savingCacheDir || !(customCacheDirInput || '').trim() || (customCacheDirInput || '').trim() === cacheDir}
+                  className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white rounded-lg text-xs font-semibold transition cursor-pointer shadow-2xs"
+                >
+                  {savingCacheDir ? 'Saving...' : 'Save Location'}
+                </button>
+                <button
+                  onClick={() => handleSaveCacheDir(true)}
+                  disabled={savingCacheDir}
+                  className="px-2.5 py-1.5 bg-gray-200 hover:bg-gray-300 text-gray-700 rounded-lg text-xs font-medium transition cursor-pointer"
+                  title="Reset to default AppData path"
+                >
+                  Reset Default
+                </button>
+              </div>
+              {cacheDirFeedback && (
+                <div className={`p-2 rounded text-[11px] font-medium ${cacheDirFeedback.isError ? 'bg-red-50 text-red-700 border border-red-200' : 'bg-emerald-50 text-emerald-800 border border-emerald-200'}`}>
+                  {cacheDirFeedback.msg}
+                </div>
+              )}
+            </div>
           </div>
 
           {/* Disk Actions */}

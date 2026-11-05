@@ -10,14 +10,23 @@ import {
   Trash2, 
   Filter, 
   Star, 
-  HardDrive
+  HardDrive,
+  Download,
+  FolderInput,
+  X
 } from 'lucide-react';
 import { FileEntry, UploadItem } from '../../types';
 import { FileRow } from './FileRow';
 
 interface FileTreeProps {
   files: FileEntry[];
-  selectedHash: string | null;
+  selectedHash?: string | null;
+  selectedHashes?: string[];
+  onToggleSelectHash?: (hash: string) => void;
+  onClearSelection?: () => void;
+  onBatchDelete?: (hashes: string[]) => void;
+  onBatchDownload?: (hashes: string[]) => void;
+  onBatchMove?: (hashes: string[]) => void;
   currentUserId?: string | null;
   uploadQueue?: UploadItem[];
   isRoot?: boolean;
@@ -58,6 +67,12 @@ function formatBytes(bytes: number): string {
 export const FileTree: React.FC<FileTreeProps> = ({
   files,
   selectedHash,
+  selectedHashes,
+  onToggleSelectHash,
+  onClearSelection,
+  onBatchDelete,
+  onBatchDownload,
+  onBatchMove,
   currentUserId,
   uploadQueue = [],
   isRoot = true,
@@ -88,6 +103,9 @@ export const FileTree: React.FC<FileTreeProps> = ({
   const [isDragging, setIsDragging] = useState(false);
   const [offlineOnly, setOfflineOnly] = useState(false);
   const [starredOnly, setStarredOnly] = useState(false);
+  const [internalSelectedHashes, setInternalSelectedHashes] = useState<string[]>([]);
+
+  const activeSelected = selectedHashes !== undefined ? selectedHashes : internalSelectedHashes;
 
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault();
@@ -132,6 +150,58 @@ export const FileTree: React.FC<FileTreeProps> = ({
     });
   }, [files, offlineOnly, starredOnly]);
 
+  const selectableFiles = useMemo(() => filteredFiles.filter((f) => !f.is_dir), [filteredFiles]);
+
+  const allFilteredSelected =
+    selectableFiles.length > 0 &&
+    selectableFiles.every((f) => activeSelected.includes(f.hash));
+
+  const handleToggleSelect = (hash: string) => {
+    if (onToggleSelectHash) {
+      onToggleSelectHash(hash);
+    } else {
+      setInternalSelectedHashes((prev) =>
+        prev.includes(hash) ? prev.filter((h) => h !== hash) : [...prev, hash]
+      );
+    }
+  };
+
+  const handleClear = () => {
+    if (onClearSelection) {
+      onClearSelection();
+    } else {
+      setInternalSelectedHashes([]);
+    }
+  };
+
+  const handleToggleSelectAll = () => {
+    if (allFilteredSelected) {
+      handleClear();
+    } else {
+      const allHashes = selectableFiles.map((f) => f.hash);
+      if (onToggleSelectHash) {
+        allHashes.forEach((h) => {
+          if (!activeSelected.includes(h)) onToggleSelectHash(h);
+        });
+      } else {
+        setInternalSelectedHashes(allHashes);
+      }
+    }
+  };
+
+  const selectedFilesList = useMemo(() => {
+    return files.filter((f) => activeSelected.includes(f.hash));
+  }, [files, activeSelected]);
+
+  const selectedFilesTotalBytes = useMemo(() => {
+    return selectedFilesList.reduce((acc, f) => acc + (f.size_bytes || 0), 0);
+  }, [selectedFilesList]);
+
+  const ownedSelectedCount = useMemo(() => {
+    if (!currentUserId) return 0;
+    return selectedFilesList.filter((f) => f.owner_node_id === currentUserId).length;
+  }, [selectedFilesList, currentUserId]);
+
   return (
     <div
       onDragOver={handleDragOver}
@@ -160,19 +230,32 @@ export const FileTree: React.FC<FileTreeProps> = ({
 
       {/* Action Toolbar */}
       <div className="flex items-center justify-between px-4 py-2 bg-gray-50/70 border-b border-gray-100 text-xs gap-2 flex-wrap">
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 shrink-0">
           {!isRoot && onNavigateUp && (
             <button
               onClick={onNavigateUp}
-              className="flex items-center gap-1.5 px-2.5 py-1 text-gray-700 bg-white border border-gray-200 hover:bg-gray-100 rounded-md font-medium transition-colors"
+              className="flex items-center gap-1.5 px-2.5 py-1 text-gray-700 bg-white border border-gray-200 hover:bg-gray-100 rounded-md font-medium transition-colors shrink-0 shadow-2xs cursor-pointer"
               title="Go back to parent directory"
             >
-              <ArrowLeft className="w-3.5 h-3.5" />
+              <ArrowLeft className="w-3.5 h-3.5 shrink-0" />
               <span>Back</span>
             </button>
           )}
 
-          <span className="text-gray-400 font-medium">
+          {selectableFiles.length > 0 && (
+            <label className="flex items-center gap-1.5 cursor-pointer text-gray-600 hover:text-gray-900 pr-1 select-none">
+              <input
+                type="checkbox"
+                checked={allFilteredSelected}
+                onChange={handleToggleSelectAll}
+                className="w-3.5 h-3.5 rounded border-gray-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
+                title="Select or deselect all files in current view"
+              />
+              <span className="text-[11px] font-medium hidden sm:inline">Select All</span>
+            </label>
+          )}
+
+          <span className="text-gray-400 font-medium whitespace-nowrap">
             {filteredFiles.length} {filteredFiles.length === 1 ? 'item' : 'items'}
           </span>
 
@@ -206,37 +289,29 @@ export const FileTree: React.FC<FileTreeProps> = ({
           </div>
         </div>
 
-        <div className="flex items-center gap-2">
-          {!isRoot && files.length === 0 && onDeleteFolder && currentFolderName && (
-            <button
-              onClick={() => onDeleteFolder(currentFolderName)}
-              className="flex items-center gap-1 px-2.5 py-1 text-red-600 bg-white border border-red-200 hover:bg-red-50 rounded-md font-medium transition-colors shadow-2xs"
-              title="Delete this empty folder"
-            >
-              <Trash2 className="w-3.5 h-3.5" />
-              <span>Delete Folder</span>
-            </button>
-          )}
-
-          {onCreateFolder && (
-            <button
-              onClick={onCreateFolder}
-              className="flex items-center gap-1.5 px-2.5 py-1 text-gray-700 bg-white border border-gray-200 hover:bg-gray-100 rounded-md font-medium transition-colors shadow-2xs"
-            >
-              <FolderPlus className="w-3.5 h-3.5 text-blue-600" />
-              <span>New Folder</span>
-            </button>
-          )}
-          {onTriggerUpload && (
-            <button
-              onClick={onTriggerUpload}
-              className="flex items-center gap-1.5 px-2.5 py-1 text-white bg-blue-600 hover:bg-blue-700 rounded-md font-semibold transition-colors shadow-2xs"
-            >
-              <Plus className="w-3.5 h-3.5" />
-              <span>Upload File</span>
-            </button>
-          )}
-        </div>
+        {/* Action buttons: only show in toolbar when files exist to prevent duplication with empty state buttons */}
+        {filteredFiles.length > 0 && (
+          <div className="flex items-center gap-2">
+            {onCreateFolder && (
+              <button
+                onClick={onCreateFolder}
+                className="flex items-center gap-1.5 px-2.5 py-1 text-gray-700 bg-white border border-gray-200 hover:bg-gray-100 rounded-md font-medium transition-colors shadow-2xs cursor-pointer"
+              >
+                <FolderPlus className="w-3.5 h-3.5 text-blue-600" />
+                <span>New Folder</span>
+              </button>
+            )}
+            {onTriggerUpload && (
+              <button
+                onClick={onTriggerUpload}
+                className="flex items-center gap-1.5 px-2.5 py-1 text-white bg-blue-600 hover:bg-blue-700 rounded-md font-semibold transition-colors shadow-2xs cursor-pointer"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                <span>Upload File</span>
+              </button>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Live Uploading Progress Rows */}
@@ -324,7 +399,8 @@ export const FileTree: React.FC<FileTreeProps> = ({
             <FileRow
               key={file.hash || file.name}
               file={file}
-              isSelected={selectedHash === file.hash}
+              isSelected={activeSelected.includes(file.hash) || selectedHash === file.hash}
+              onToggleSelect={() => handleToggleSelect(file.hash)}
               currentUserId={currentUserId}
               onClick={() => {
                 if (file.is_dir) {
@@ -350,6 +426,68 @@ export const FileTree: React.FC<FileTreeProps> = ({
               onReportDangerous={onReportDangerous}
             />
           ))}
+        </div>
+      )}
+
+      {/* Floating Sticky Batch Actions Toolbar */}
+      {activeSelected.length > 0 && (
+        <div className="sticky bottom-0 inset-x-0 bg-gray-900 text-white px-4 py-2.5 flex items-center justify-between shadow-2xl border-t border-gray-800 z-30 animate-in slide-in-from-bottom duration-200">
+          <div className="flex items-center gap-2.5 text-xs">
+            <span className="font-bold bg-blue-600 px-2 py-0.5 rounded-full text-[11px] tracking-wide">
+              {activeSelected.length} selected
+            </span>
+            <span className="text-gray-300 text-xs hidden sm:inline">
+              Total: {formatBytes(selectedFilesTotalBytes)}
+            </span>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => onBatchDownload && onBatchDownload(activeSelected)}
+              className="px-3 py-1 bg-gray-800 hover:bg-gray-700 text-gray-100 rounded-md text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer border border-gray-700 shadow-2xs"
+              title="Download selected files"
+            >
+              <Download className="w-3.5 h-3.5 text-blue-400" />
+              <span>Download ({activeSelected.length})</span>
+            </button>
+
+            <button
+              onClick={() => onBatchMove && onBatchMove(activeSelected)}
+              className="px-3 py-1 bg-gray-800 hover:bg-gray-700 text-gray-100 rounded-md text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer border border-gray-700 shadow-2xs"
+              title="Move selected files to another folder"
+            >
+              <FolderInput className="w-3.5 h-3.5 text-amber-400" />
+              <span>Move ({activeSelected.length})</span>
+            </button>
+
+            <button
+              onClick={() => onBatchDelete && onBatchDelete(activeSelected)}
+              className={`px-3 py-1 rounded-md text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer shadow-2xs ${
+                ownedSelectedCount > 0
+                  ? 'bg-red-600/90 hover:bg-red-600 text-white'
+                  : 'bg-gray-800 hover:bg-gray-700 text-gray-300 border border-gray-700'
+              }`}
+              title={
+                ownedSelectedCount > 0
+                  ? `Delete ${ownedSelectedCount} file(s) owned by you`
+                  : `Vote to delete ${activeSelected.length} community file(s)`
+              }
+            >
+              <Trash2 className="w-3.5 h-3.5 text-red-400" />
+              <span>
+                {ownedSelectedCount > 0
+                  ? `Delete (${ownedSelectedCount} owned)`
+                  : `Vote Delete (${activeSelected.length})`}
+              </span>
+            </button>
+
+            <button
+              onClick={handleClear}
+              className="p-1 text-gray-400 hover:text-white rounded-md hover:bg-gray-800 transition-colors ml-1 cursor-pointer"
+              title="Clear selection"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
         </div>
       )}
     </div>

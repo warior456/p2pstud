@@ -29,6 +29,7 @@ import { FileEntry } from '../../types';
 interface FileRowProps {
   file: FileEntry;
   isSelected?: boolean;
+  onToggleSelect?: (hash: string) => void;
   currentUserId?: string | null;
   onClick: () => void;
   onPin: (hash: string) => void;
@@ -69,6 +70,7 @@ function formatBytes(bytes: number): string {
 export const FileRow: React.FC<FileRowProps> = ({
   file,
   isSelected = false,
+  onToggleSelect,
   currentUserId,
   onClick,
   onPin,
@@ -212,6 +214,21 @@ export const FileRow: React.FC<FileRowProps> = ({
       }`}
     >
       <div className="flex items-center gap-3 overflow-hidden">
+        {/* Selection Checkbox */}
+        {onToggleSelect && !file.is_dir && (
+          <input
+            type="checkbox"
+            checked={isSelected}
+            onChange={(e) => {
+              e.stopPropagation();
+              onToggleSelect(file.hash);
+            }}
+            onClick={(e) => e.stopPropagation()}
+            className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500 cursor-pointer shrink-0"
+            aria-label={`Select ${file.name}`}
+          />
+        )}
+
         {/* Star Button for study prioritization */}
         {!file.is_dir && onToggleStar && (
           <button

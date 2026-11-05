@@ -47,8 +47,11 @@ impl IrohEngine {
 
         tracing::info!(%node_id, relay = %relay, "Starting Iroh node");
 
-        // 3. Open local blob store.
-        let blob_dir = data_dir.join("blobs");
+        // 3. Open local blob store (respects custom_blob_dir setting if configured).
+        let blob_dir = match db.get_setting("custom_blob_dir") {
+            Ok(Some(custom)) if !custom.trim().is_empty() => std::path::PathBuf::from(custom.trim()),
+            _ => data_dir.join("blobs"),
+        };
         std::fs::create_dir_all(&blob_dir)?;
         let pool = LocalPool::default();
         let store = BlobStore::load(&blob_dir).await?;

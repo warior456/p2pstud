@@ -36,6 +36,8 @@
 | 2026-11-04 | **P2P Swarm Network Secret**: Workspace passphrase derives dynamic QUIC ALPN to isolate classroom swarms from public discovery | User requirement |
 | 2026-11-04 | **Dev Mode ZIP Archive Import**: Fast bulk-importing of course packages in dev mode with Zip Slip directory traversal protection | User requirement |
 | 2026-11-04 | **Comprehensive Architecture & UX Alignment**: Finalized design specs for anchorless proof-of-storage, scarcity replication, SSD protection, Eduroam stealth mode, strict immutability, connection doctor, and onboarding wizard | Architectural grilling |
+| 2026-11-05 | **Cross-Platform PC Autostart & Custom Cache Location**: Added `tauri-plugin-autostart` (Windows, Linux, macOS) and configurable blob storage directory | User requirement |
+| 2026-11-05 | **ZIP Import Warning Modal & Toolbar Duplication Fix**: Added modal warning for unpacking ZIP archives with single-file alternative; removed duplicate empty folder toolbar buttons and fixed Back button shrink | Bug fix & UX |
 
 ---
 
@@ -55,6 +57,7 @@
 | R1.10 | Right-click context menu: Pin, Download, Preview, Copy Hash, Delete | Should | ✅ |
 | R1.11 | System tray icon with background persistence (close [X] hides to tray) | Must | ✅ |
 | R1.12 | One shared cloud folder: all peers access workspace; users can only delete their own files | Must | ✅ |
+| R1.13 | Cross-Platform PC Autostart: Start application automatically on system boot (Windows Registry Run, Linux XDG Autostart, macOS LaunchAgent) | Should | ✅ |
 
 ---
 
@@ -91,6 +94,7 @@
 | R3.9 | **Active Swarm Hosting Auto-Fill**: Cache actively fills to ~80% to host & seed unpinned files for the P2P swarm | Must | ✅ |
 | R3.10 | **Orphaned File Management**: When a file's owner no longer exists, members can force-clean up the orphaned file | Must | ✅ |
 | R3.11 | On-demand remote blob download: clicking/reading a cloud-only file downloads it from available peers | Must | ✅ |
+| R3.12 | **Configurable Cache Storage Directory**: Custom disk directory on secondary drives or external SSDs for blob storage | Should | ✅ |
 
 ---
 

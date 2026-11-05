@@ -4,7 +4,9 @@ import { OfflineBanner } from '../components/OfflineBanner';
 import { SoleSeedBanner } from '../components/SoleSeedBanner';
 import { CredentialsStep } from '../components/Onboarding/CredentialsStep';
 import { ConnectionDoctor } from '../components/Onboarding/ConnectionDoctor';
+import { ZipImportModal } from '../components/Explorer/ZipImportModal';
 import { FileRow } from '../components/Explorer/FileRow';
+import { FileTree } from '../components/Explorer/FileTree';
 import { FileEntry } from '../types';
 import { invoke } from '@tauri-apps/api/core';
 
@@ -182,6 +184,134 @@ describe('Phase 2 Components Test Suite', () => {
       expect(screen.getByText(/NAT Architecture Inspection/i)).toBeInTheDocument();
 
       expect(invoke).toHaveBeenCalledWith('run_connection_doctor');
+    });
+  });
+
+  describe('ZipImportModal', () => {
+    const dummyFile = new File(['dummy zip content'], 'biology_notes.zip', {
+      type: 'application/zip',
+    });
+
+    it('renders security notice warning and archive info when open', () => {
+      render(
+        <ZipImportModal
+          isOpen={true}
+          file={dummyFile}
+          targetFolder="Shared Cloud / Biology"
+          onUnpack={vi.fn()}
+          onUploadAsZip={vi.fn()}
+          onCancel={vi.fn()}
+        />
+      );
+
+      expect(screen.getByText(/Import ZIP Archive/i)).toBeInTheDocument();
+      expect(screen.getByText(/biology_notes.zip/i)).toBeInTheDocument();
+      expect(screen.getByText(/Shared Cloud \/ Biology/i)).toBeInTheDocument();
+      expect(screen.getByText(/Important Security Notice/i)).toBeInTheDocument();
+      expect(screen.getByText(/Unpack & Import All Files into Folder/i)).toBeInTheDocument();
+      expect(screen.getByText(/Upload as Single Compressed .zip File/i)).toBeInTheDocument();
+    });
+
+    it('invokes onUnpack and onUploadAsZip appropriately', () => {
+      const onUnpack = vi.fn();
+      const onUploadAsZip = vi.fn();
+      const onCancel = vi.fn();
+
+      render(
+        <ZipImportModal
+          isOpen={true}
+          file={dummyFile}
+          targetFolder=""
+          onUnpack={onUnpack}
+          onUploadAsZip={onUploadAsZip}
+          onCancel={onCancel}
+        />
+      );
+
+      fireEvent.click(screen.getByText(/Unpack & Import All Files into Folder/i));
+      expect(onUnpack).toHaveBeenCalledTimes(1);
+
+      fireEvent.click(screen.getByText(/Upload as Single Compressed .zip File/i));
+      expect(onUploadAsZip).toHaveBeenCalledTimes(1);
+
+      fireEvent.click(screen.getByText(/Cancel/i));
+      expect(onCancel).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('FileTree Multi-Selection & Batch Actions', () => {
+    const mockFiles: FileEntry[] = [
+      {
+        name: 'lecture1.pdf',
+        hash: 'hash1',
+        size_bytes: 1024 * 1024,
+        is_dir: false,
+        sync_state: 'cached',
+        owner_node_id: 'node-me',
+      },
+      {
+        name: 'lecture2.pdf',
+        hash: 'hash2',
+        size_bytes: 2 * 1024 * 1024,
+        is_dir: false,
+        sync_state: 'cached',
+        owner_node_id: 'node-other',
+      },
+    ];
+
+    it('renders selection checkboxes and triggers batch actions bar', () => {
+      const onBatchDownload = vi.fn();
+      const onBatchDelete = vi.fn();
+      const onBatchMove = vi.fn();
+
+      const { rerender } = render(
+        <FileTree
+          files={mockFiles}
+          selectedHashes={[]}
+          currentUserId="node-me"
+          onSelectFile={vi.fn()}
+          onNavigateFolder={vi.fn()}
+          onPin={vi.fn()}
+          onUnpin={vi.fn()}
+          onDownload={vi.fn()}
+          onPreview={vi.fn()}
+        />
+      );
+
+      // Select All checkbox should be present
+      expect(screen.getByText(/Select All/i)).toBeInTheDocument();
+      // Batch toolbar should not be shown when 0 selected
+      expect(screen.queryByText(/selected/i)).not.toBeInTheDocument();
+
+      // Rerender with 2 files selected
+      rerender(
+        <FileTree
+          files={mockFiles}
+          selectedHashes={['hash1', 'hash2']}
+          currentUserId="node-me"
+          onSelectFile={vi.fn()}
+          onNavigateFolder={vi.fn()}
+          onPin={vi.fn()}
+          onUnpin={vi.fn()}
+          onDownload={vi.fn()}
+          onPreview={vi.fn()}
+          onBatchDownload={onBatchDownload}
+          onBatchDelete={onBatchDelete}
+          onBatchMove={onBatchMove}
+        />
+      );
+
+      expect(screen.getByText(/2 selected/i)).toBeInTheDocument();
+      expect(screen.getByText(/Total: 3 MB/i)).toBeInTheDocument();
+
+      fireEvent.click(screen.getByText(/Download \(2\)/i));
+      expect(onBatchDownload).toHaveBeenCalledWith(['hash1', 'hash2']);
+
+      fireEvent.click(screen.getByText(/Move \(2\)/i));
+      expect(onBatchMove).toHaveBeenCalledWith(['hash1', 'hash2']);
+
+      fireEvent.click(screen.getByText(/Delete \(1 owned\)/i));
+      expect(onBatchDelete).toHaveBeenCalledWith(['hash1', 'hash2']);
     });
   });
 });

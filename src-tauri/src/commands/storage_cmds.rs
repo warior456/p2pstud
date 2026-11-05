@@ -298,3 +298,70 @@ pub async fn get_setting(key: String, state: State<'_, AppState>) -> Result<Opti
 pub async fn set_setting(key: String, value: String, state: State<'_, AppState>) -> Result<(), String> {
     state.db.set_setting(&key, &value).map_err(|e| e.to_string())
 }
+
+/// Check if application is configured to start on PC startup.
+/// Works cross-platform on Windows (Registry Run), Linux (XDG Autostart .desktop), and macOS (LaunchAgent).
+#[tauri::command]
+pub async fn is_autostart_enabled(app: tauri::AppHandle) -> Result<bool, String> {
+    use tauri_plugin_autostart::ManagerExt;
+    app.autolaunch().is_enabled().map_err(|e| e.to_string())
+}
+
+/// Enable or disable application start on PC startup.
+/// Works cross-platform on Windows (Registry Run), Linux (XDG Autostart .desktop), and macOS (LaunchAgent).
+#[tauri::command]
+pub async fn set_autostart_enabled(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    enabled: bool,
+) -> Result<(), String> {
+    use tauri_plugin_autostart::ManagerExt;
+    if enabled {
+        app.autolaunch().enable().map_err(|e| e.to_string())?;
+        let _ = state.db.set_setting("autostart_enabled", "true");
+    } else {
+        app.autolaunch().disable().map_err(|e| e.to_string())?;
+        let _ = state.db.set_setting("autostart_enabled", "false");
+    }
+    tracing::info!(enabled, "Updated autostart setting");
+    Ok(())
+}
+
+/// Retrieve the active directory path where cached & seeded blobs are stored on disk.
+#[tauri::command]
+pub async fn get_cache_directory(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    use tauri::Manager;
+    if let Ok(Some(custom)) = state.db.get_setting("custom_blob_dir") {
+        if !custom.trim().is_empty() {
+            return Ok(custom.trim().to_string());
+        }
+    }
+    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    Ok(data_dir.join("blobs").to_string_lossy().to_string())
+}
+
+/// Configure a custom storage location for cache and seeded files (e.g. secondary drive or external SSD).
+#[tauri::command]
+pub async fn set_cache_directory(
+    path: String,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        state.db.set_setting("custom_blob_dir", "").map_err(|e| e.to_string())?;
+        tracing::info!("Reset cache storage directory to default");
+        return Ok("default".to_string());
+    }
+    if trimmed.contains('\0') {
+        return Err("Path contains null byte".to_string());
+    }
+    let dir = std::path::PathBuf::from(trimmed);
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| format!("Cannot create or access directory {}: {}", dir.display(), e))?;
+    state.db.set_setting("custom_blob_dir", trimmed).map_err(|e| e.to_string())?;
+    tracing::info!(path = %trimmed, "Saved custom cache storage directory (will be used on next start)");
+    Ok(trimmed.to_string())
+}

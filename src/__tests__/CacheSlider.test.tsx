@@ -43,12 +43,25 @@ describe('CacheSlider Component', () => {
     const { invoke } = await import('@tauri-apps/api/core');
     render(<CacheSlider stats={mockStats} />);
 
-    const checkbox = screen.getByRole('checkbox');
+    const checkbox = screen.getByLabelText(/Enable Full Mirror Mode/i);
     fireEvent.click(checkbox);
 
     expect(invoke).toHaveBeenCalledWith('set_cache_limit', {
       bytes: null,
       fullMirror: true,
+    });
+  });
+
+  it('toggles start on system boot autostart setting', async () => {
+    const { invoke } = await import('@tauri-apps/api/core');
+    render(<CacheSlider stats={mockStats} />);
+
+    const autostartCheckbox = screen.getByLabelText(/Start on System Boot/i);
+    expect(autostartCheckbox).toBeInTheDocument();
+    fireEvent.click(autostartCheckbox);
+
+    expect(invoke).toHaveBeenCalledWith('set_autostart_enabled', {
+      enabled: true,
     });
   });
 });

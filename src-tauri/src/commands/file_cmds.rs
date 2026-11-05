@@ -687,24 +687,48 @@ pub struct ZipImportSummary {
     pub errors: Vec<String>,
 }
 
-/// Import all files from a ZIP archive via raw in-memory bytes.
-/// Available in developer mode for rapidly loading course packages.
-/// Features full Zip-Slip protection and path sanitization.
+/// File metadata returned by native file selection dialogs.
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
+pub struct SelectedFileInfo {
+    pub path: String,
+    pub name: String,
+    pub size_bytes: u64,
+}
+
+/// Native file picker dialog to pick a ZIP file without loading it into browser memory.
 #[tauri::command]
-pub async fn import_zip_bytes(
-    data: Vec<u8>,
+pub async fn pick_zip_dialog() -> Result<Option<SelectedFileInfo>, String> {
+    let file = rfd::AsyncFileDialog::new()
+        .add_filter("ZIP Archives", &["zip"])
+        .set_title("Select ZIP Archive to Import")
+        .pick_file()
+        .await;
+
+    if let Some(handle) = file {
+        let path = handle.path().to_path_buf();
+        let meta = std::fs::metadata(&path).map_err(|e| format!("cannot read file metadata: {e}"))?;
+        let name = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+        Ok(Some(SelectedFileInfo {
+            path: path.to_string_lossy().to_string(),
+            name,
+            size_bytes: meta.len(),
+        }))
+    } else {
+        Ok(None)
+    }
+}
+
+/// Generic helper to unpack and import any seekable ZIP archive into Iroh store & SQLite.
+async fn import_zip_archive_internal<R: std::io::Read + std::io::Seek>(
+    mut archive: zip::ZipArchive<R>,
     target_folder: Option<String>,
-    state: State<'_, AppState>,
+    state: &AppState,
 ) -> Result<ZipImportSummary, String> {
     use std::io::Read;
-    use zip::ZipArchive;
 
     let guard = state.engine.read().await;
     let engine = guard.as_ref().ok_or("Iroh engine not yet started")?;
     let owner_node_id = engine.node_id().to_string();
-
-    let cursor = std::io::Cursor::new(data);
-    let mut archive = ZipArchive::new(cursor).map_err(|e| format!("invalid zip archive: {e}"))?;
 
     let mut summary = ZipImportSummary {
         files_imported: 0,
@@ -734,6 +758,15 @@ pub async fn import_zip_bytes(
         };
 
         if file.is_dir() {
+            let enclosed = file.name().trim_end_matches('/');
+            let raw = if let Some(ref prefix) = target_prefix {
+                format!("{prefix}/{enclosed}")
+            } else {
+                enclosed.to_string()
+            };
+            if let Ok(clean) = crate::storage::path_utils::sanitize_virtual_path(&raw) {
+                let _ = crate::storage::blob_tracker::create_virtual_folder(&state.db, &clean);
+            }
             continue;
         }
 
@@ -759,6 +792,11 @@ pub async fn import_zip_bytes(
                 continue;
             }
         };
+
+        // Auto-create parent folders in SQLite
+        if let Some((parent, _)) = sanitized_path.rsplit_once('/') {
+            let _ = crate::storage::blob_tracker::create_virtual_folder(&state.db, parent);
+        }
 
         let mut file_bytes = Vec::new();
         if let Err(e) = file.read_to_end(&mut file_bytes) {
@@ -839,7 +877,19 @@ pub async fn import_zip_bytes(
     Ok(summary)
 }
 
-/// Import a local ZIP archive file into the workspace (dev mode helper).
+/// Unpack and import in-memory ZIP archive bytes (e.g. from web drag-and-drop).
+#[tauri::command]
+pub async fn import_zip_bytes(
+    data: Vec<u8>,
+    target_folder: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<ZipImportSummary, String> {
+    let cursor = std::io::Cursor::new(data);
+    let archive = zip::ZipArchive::new(cursor).map_err(|e| format!("invalid zip archive: {e}"))?;
+    import_zip_archive_internal(archive, target_folder, &state).await
+}
+
+/// Import a local ZIP archive file directly from disk via streaming BufReader (supports multi-GB ZIPs).
 #[tauri::command]
 pub async fn import_zip_file(
     file_path: String,
@@ -847,8 +897,192 @@ pub async fn import_zip_file(
     state: State<'_, AppState>,
 ) -> Result<ZipImportSummary, String> {
     let path = std::path::Path::new(&file_path);
-    let bytes = std::fs::read(path).map_err(|e| format!("cannot read zip file '{file_path}': {e}"))?;
-    import_zip_bytes(bytes, target_folder, state).await
+    let file = std::fs::File::open(path).map_err(|e| format!("cannot open zip file '{file_path}': {e}"))?;
+    let reader = std::io::BufReader::new(file);
+    let archive = zip::ZipArchive::new(reader).map_err(|e| format!("invalid zip archive: {e}"))?;
+    import_zip_archive_internal(archive, target_folder, &state).await
+}
+
+/// Upload a file directly from a disk path (supports multi-GB files without memory exhaustion).
+#[tauri::command]
+pub async fn upload_file_path(
+    file_path: String,
+    target_name: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    let path = std::path::Path::new(&file_path);
+    let meta = std::fs::metadata(path).map_err(|e| format!("cannot stat file '{file_path}': {e}"))?;
+    if !meta.is_file() {
+        return Err(format!("'{file_path}' is not a regular file"));
+    }
+    let size_bytes = meta.len();
+
+    let raw_name = target_name.unwrap_or_else(|| {
+        path.file_name().unwrap_or_default().to_string_lossy().to_string()
+    });
+    let clean_name = crate::storage::path_utils::sanitize_virtual_path(&raw_name)
+        .map_err(|e| format!("Invalid filename: {e}"))?;
+
+    let guard = state.engine.read().await;
+    let engine = guard.as_ref().ok_or("Iroh engine not yet started")?;
+    let owner_node_id = engine.node_id().to_string();
+
+    let outcome = engine
+        .blobs
+        .clone()
+        .client()
+        .add_from_path(
+            path.to_path_buf(),
+            false,
+            iroh_blobs::util::SetTagOption::Named(iroh_blobs::Tag::from(clean_name.as_str())),
+            iroh_blobs::rpc::client::blobs::WrapOption::NoWrap,
+        )
+        .await
+        .map_err(|e| format!("failed starting file streaming import: {e}"))?
+        .finish()
+        .await
+        .map_err(|e| format!("failed streaming file import: {e}"))?;
+
+    let hash = outcome.hash.to_hex().to_string();
+
+    // Auto-create parent folders
+    if let Some((parent, _)) = clean_name.rsplit_once('/') {
+        let _ = crate::storage::blob_tracker::create_virtual_folder(&state.db, parent);
+    }
+
+    upsert_blob(
+        &state.db,
+        &hash,
+        Some(&clean_name),
+        size_bytes,
+        false,
+        Some(&owner_node_id),
+    )
+    .map_err(|e| e.to_string())?;
+
+    let _ = record_peer_seed(&state.db, &hash, &owner_node_id);
+    state.bandwidth.record_upload(size_bytes);
+
+    let record = BlobRecord {
+        hash: hash.clone(),
+        name: Some(clean_name),
+        size_bytes,
+        last_accessed_at: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64,
+        is_pinned: false,
+        owner_node_id: Some(owner_node_id.clone()),
+        delete_votes: Vec::new(),
+        keep_votes: Vec::new(),
+        deletion_scheduled_at: None,
+        seed_count: 1,
+        is_cached: true,
+        ..Default::default()
+    };
+
+    broadcast_catalog_event(&engine.endpoint, &engine.sync_alpn, SyncMessage::FileAdded(record)).await;
+
+    Ok(hash)
+}
+
+/// Batch delete files owned by user or cast delete votes for community files.
+#[tauri::command]
+pub async fn batch_delete_files(
+    hashes: Vec<String>,
+    state: State<'_, AppState>,
+) -> Result<Vec<String>, String> {
+    let mut deleted = Vec::new();
+    let guard = state.engine.read().await;
+    let engine = guard.as_ref().ok_or("Iroh engine not yet started")?;
+    let my_id = engine.node_id().to_string();
+
+    for hash in hashes {
+        let is_owner = match get_blob(&state.db, &hash) {
+            Ok(Some(r)) => r.owner_node_id.as_deref() == Some(&my_id),
+            _ => false,
+        };
+
+        if is_owner {
+            if delete_blob(&state.db, &hash).is_ok() {
+                if let Ok(parsed) = hash.parse() {
+                    let _ = engine.blobs.clone().client().delete_blob(parsed).await;
+                }
+                broadcast_catalog_event(
+                    &engine.endpoint,
+                    &engine.sync_alpn,
+                    SyncMessage::FileDeleted {
+                        hash: hash.clone(),
+                        deleter_node_id: my_id.clone(),
+                    },
+                )
+                .await;
+                deleted.push(hash);
+            }
+        } else {
+            // Community voting delete
+            if cast_delete_vote(&state.db, &hash, &my_id).is_ok() {
+                broadcast_catalog_event(
+                    &engine.endpoint,
+                    &engine.sync_alpn,
+                    SyncMessage::FileVoteDelete {
+                        hash: hash.clone(),
+                        voter_node_id: my_id.clone(),
+                    },
+                )
+                .await;
+                deleted.push(hash);
+            }
+        }
+    }
+    Ok(deleted)
+}
+
+/// Batch move files to a specified target folder.
+#[tauri::command]
+pub async fn batch_move_files(
+    hashes: Vec<String>,
+    target_folder: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<String>, String> {
+    let mut moved = Vec::new();
+    let clean_target = target_folder.trim().trim_matches('/');
+
+    // Auto-create target folder if non-empty
+    if !clean_target.is_empty() {
+        let _ = crate::storage::blob_tracker::create_virtual_folder(&state.db, clean_target);
+    }
+
+    let guard = state.engine.read().await;
+    let engine = guard.as_ref().ok_or("Iroh engine not yet started")?;
+
+    for hash in hashes {
+        if let Ok(Some(blob)) = get_blob(&state.db, &hash) {
+            let old_name = blob.name.unwrap_or_else(|| hash.clone());
+            let basename = old_name.split('/').last().unwrap_or(&old_name);
+            let new_path = if clean_target.is_empty() {
+                basename.to_string()
+            } else {
+                format!("{clean_target}/{basename}")
+            };
+
+            if let Ok(sanitized) = crate::storage::path_utils::sanitize_virtual_path(&new_path) {
+                if rename_blob(&state.db, &hash, &sanitized).is_ok() {
+                    broadcast_catalog_event(
+                        &engine.endpoint,
+                        &engine.sync_alpn,
+                        SyncMessage::FileMoved {
+                            hash: hash.clone(),
+                            new_name: sanitized,
+                        },
+                    )
+                    .await;
+                    moved.push(hash);
+                }
+            }
+        }
+    }
+    Ok(moved)
 }
 
 /// Cast a community rating on a file (-1, 0, or 1).

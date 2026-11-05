@@ -1,6 +1,6 @@
 [package]
 name = "p2pstud-tauri"
-version = "0.1.1"
+version = "0.1.4"
 edition = "2021"
 rust-version = "1.77"
 default-run = "p2pstud"
@@ -69,6 +69,9 @@ clap = { version = "4", features = ["derive"] }
 
 # Rate limiting
 governor = "0.6"
+tauri-plugin-autostart = "2.0.0-rc.1"
+tauri-plugin-dialog = "2.0.0-rc.8"
+rfd = "0.17"
 
 [dev-dependencies]
 tempfile    = "3"

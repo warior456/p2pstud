@@ -45,9 +45,9 @@ At the end of every session (or when interrupted), update the `## Progress Track
 
 ## Progress Tracker
 
-> **Last session:** 2026-11-04
-> **Last completed task:** Comprehensive architectural grilling completed. Full specifications mapped and documented for Eduroam stealth, onboarding & connection doctor, smart scarcity caching & SSD wear prevention, sole-seed alerting, strict immutability, study ratings & emergency moderation, transfer resumption, and backups.
-> **Next action:** Begin Step 33 (Campus Wi-Fi Detection & Eduroam Stealth Mode) and Step 34 (Onboarding Wizard & Connection Doctor).
+> **Last session:** 2026-11-05
+> **Last completed task:** Step 42 completed: Fixed multi-gigabyte ZIP import failure (4.87 GB `semester1.zip`) via native `rfd` picker dialog and disk-streaming `BufReader` ZIP extraction; added multi-file selection with sticky batch action bar (batch delete, move, download); added cross-platform system boot autostart setting and configurable cache storage directory; resolved empty-folder UI button duplication. Version bumped to 0.1.4.
+> **Next action:** Continued verification and feature maintenance.
 
 | # | Step | Status | Notes |
 |---|---|---|---|
@@ -92,6 +92,7 @@ At the end of every session (or when interrupted), update the `## Progress Track
 | 39 | Transfer Resumption & Enhanced Offline Mode | ✅ | Persistent SQLite transfer resume queue, offline header banner, 'Available Offline' filter toggle |
 | 40 | Workspace Backup, Folder ZIP Export & Updates | ✅ | Settings full app backup, folder ZIP export with peer download prompt, startup/shutdown Tauri auto-updater |
 | 41 | Bilateral Seeding Receipts & Lifecycle Pruning | ✅ | Hash-verified transfer receipts for Sybil-resistant voting, 5-year seeding deprioritization, 2-year dead file purge |
+| 42 | Multi-GB Streaming ZIP Import, Multi-File Selection & Cross-Platform Autostart | ✅ | Streaming disk BufReader & `add_from_path` for multi-GB ZIPs (`semester1.zip`), native `rfd` picker, batch multi-file delete/move/download, cross-platform boot autostart & custom cache location |
 
 ---
 
