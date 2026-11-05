@@ -4434,7 +4434,7 @@ dependencies = [
  "iroh-blobs",
  "iroh-relay",
  "nonzero_ext",
- "rand 0.8.8",
+ "rand 0.10.3",
  "rfd",
  "rusqlite",
  "serde",
