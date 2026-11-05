@@ -111,3 +111,27 @@
     - Active database: `[Clear Database]` (red button with trash icon & confirmation dialog).
     - Inactive database: `[Delete Database]` (red button with trash icon & confirmation dialog to remove the database file).
 
+---
+
+## Issues & Resolutions (Version 0.1.17)
+
+### 1. Seamless In-Place Application Auto-Updating (Eliminated Manual Uninstall / Reinstall)
+- **Issue:** Updating downloaded the installer and required first uninstalling the previous version and then reinstalling instead of performing a seamless in-place upgrade.
+- **Root Cause:**
+  1. In `src-tauri/src/commands/backup_cmds.rs`, release asset selection on Windows matched `.msi` before `.exe` if both were published. When launched via `msiexec /i installer.msi /passive`, the Windows Installer (WiX) refused to proceed over an existing installation with: *"Another version of this product is already installed. Installation cannot continue."*
+  2. Spawning the installer with `std::process::Command::new(&installer_path).spawn()` executed without command-line arguments while the current `p2pstud.exe` was still running and locking files. This triggered the interactive NSIS wizard which detects the existing installation and asks the user to uninstall it first or aborts due to locked executable files.
+  3. `bundle.targets` in `src-tauri/tauri.conf.json` included `"msi"`, creating conflicting dual installers on GitHub Releases, and lacked explicit `installMode: "currentUser"` and `allowDowngrades: true` NSIS settings.
+- **Fix:**
+  - `src-tauri/tauri.conf.json`:
+    - Removed `"msi"` from `bundle.targets` so builds produce clean NSIS setup packages.
+    - Added `"windows": { "allowDowngrades": true, "nsis": { "installMode": "currentUser" } }` under `bundle`, ensuring per-user installation without requiring UAC elevation for update overwrites.
+  - `src-tauri/src/commands/backup_cmds.rs`:
+    - In `check_app_update`: Strictly prioritized `-setup.exe` (NSIS) and non-anchor `.exe` assets, ignoring any `.msi` packages.
+    - In `install_app_update`: Replaced immediate unconfigured process spawning with a detached, windowless background PowerShell runner (`CREATE_NO_WINDOW | DETACHED_PROCESS`):
+      1. Waits for the parent application process ID to cleanly terminate and release all file locks (`Wait-Process -Id <pid> -Timeout 10`).
+      2. Executes the NSIS installer with the silent `/S` flag (`Start-Process -FilePath '<installer>' -ArgumentList '/S' -Wait`). The silent flag performs an automatic in-place upgrade, cleanly overwriting previous application files without opening the wizard or prompting to uninstall first.
+      3. Relaunches the newly upgraded `p2pstud.exe` executable immediately after installation completes.
+      4. Exits the running application immediately with `app.exit(0)`.
+  - Bumped version to `0.1.17` across `package.json`, `src-tauri/Cargo.toml`, and `src-tauri/tauri.conf.json`.
+
+

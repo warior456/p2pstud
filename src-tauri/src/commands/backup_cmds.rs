@@ -493,25 +493,42 @@ pub async fn check_app_update(_app: AppHandle, state: State<'_, AppState>) -> Re
     };
 
     // Find matching installer asset for host platform
-    let matched_asset = release.assets.iter().find(|a| {
-        let name = a.name.to_lowercase();
+    let matched_asset = {
         #[cfg(target_os = "windows")]
         {
-            (name.ends_with(".msi") || name.ends_with(".exe")) && !name.starts_with("anchor")
+            // Strictly target NSIS installer setup executable (-setup.exe), then non-anchor .exe, ignoring .msi
+            release
+                .assets
+                .iter()
+                .find(|a| a.name.to_lowercase().ends_with("-setup.exe"))
+                .or_else(|| {
+                    release.assets.iter().find(|a| {
+                        let name = a.name.to_lowercase();
+                        name.ends_with(".exe")
+                            && !name.starts_with("anchor")
+                            && !name.ends_with(".msi")
+                    })
+                })
         }
         #[cfg(target_os = "macos")]
         {
-            name.ends_with(".dmg") || name.ends_with(".tar.gz")
+            release.assets.iter().find(|a| {
+                let name = a.name.to_lowercase();
+                name.ends_with(".dmg") || name.ends_with(".tar.gz")
+            })
         }
         #[cfg(target_os = "linux")]
         {
-            (name.ends_with(".appimage") || name.ends_with(".deb")) && !name.starts_with("anchor")
+            release.assets.iter().find(|a| {
+                let name = a.name.to_lowercase();
+                (name.ends_with(".appimage") || name.ends_with(".deb")) && !name.starts_with("anchor")
+            })
         }
         #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
         {
-            false
+            None
         }
-    });
+    };
 
     if is_newer && !dismissed && matched_asset.is_some() {
         let asset = matched_asset.unwrap();
@@ -628,15 +645,58 @@ pub async fn install_app_update(app: AppHandle, state: State<'_, AppState>) -> R
 
     #[cfg(target_os = "windows")]
     {
-        if installer_path_str.ends_with(".msi") {
-            let _ = std::process::Command::new("msiexec")
-                .arg("/i")
-                .arg(&installer_path)
-                .arg("/passive")
-                .spawn();
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        const DETACHED_PROCESS: u32 = 0x00000008;
+
+        let pid = std::process::id();
+        let current_exe = std::env::current_exe()
+            .unwrap_or_else(|_| PathBuf::from("p2pstud.exe"))
+            .to_string_lossy()
+            .replace('\'', "''");
+
+        let escaped_installer = installer_path
+            .to_string_lossy()
+            .replace('\'', "''");
+
+        // Use detached PowerShell script that:
+        // 1. Waits for current p2pstud process to exit and release file locks
+        // 2. Executes NSIS silently with /S (does in-place upgrade, no uninstall prompt)
+        // 3. Relaunches the updated executable
+        let script = if installer_path_str.ends_with(".msi") {
+            format!(
+                "try {{ Wait-Process -Id {pid} -Timeout 10 -ErrorAction SilentlyContinue }} catch {{}}; \
+                 Start-Sleep -Milliseconds 600; \
+                 Start-Process -FilePath 'msiexec.exe' -ArgumentList '/i', '\"{}\"', '/passive', '/norestart' -Wait; \
+                 Start-Sleep -Milliseconds 800; \
+                 $target = '{current_exe}'; \
+                 $fallback = [System.Environment]::GetFolderPath('LocalApplicationData') + '\\Programs\\p2pstud\\p2pstud.exe'; \
+                 if (-not (Test-Path $target)) {{ $target = $fallback }}; \
+                 if (Test-Path $target) {{ Start-Process -FilePath $target }}",
+                escaped_installer
+            )
         } else {
-            let _ = std::process::Command::new(&installer_path).spawn();
-        }
+            format!(
+                "try {{ Wait-Process -Id {pid} -Timeout 10 -ErrorAction SilentlyContinue }} catch {{}}; \
+                 Start-Sleep -Milliseconds 600; \
+                 Start-Process -FilePath '{escaped_installer}' -ArgumentList '/S' -Wait; \
+                 Start-Sleep -Milliseconds 800; \
+                 $target = '{current_exe}'; \
+                 $fallback = [System.Environment]::GetFolderPath('LocalApplicationData') + '\\Programs\\p2pstud\\p2pstud.exe'; \
+                 if (-not (Test-Path $target)) {{ $target = $fallback }}; \
+                 if (Test-Path $target) {{ Start-Process -FilePath $target }}",
+            )
+        };
+
+        let _ = std::process::Command::new("powershell.exe")
+            .arg("-NoProfile")
+            .arg("-WindowStyle")
+            .arg("Hidden")
+            .arg("-Command")
+            .arg(&script)
+            .creation_flags(CREATE_NO_WINDOW | DETACHED_PROCESS)
+            .spawn();
+
         app.exit(0);
         return Ok(());
     }
@@ -652,6 +712,12 @@ pub async fn install_app_update(app: AppHandle, state: State<'_, AppState>) -> R
 
     #[cfg(target_os = "linux")]
     {
+        if installer_path_str.ends_with(".appimage") {
+            let _ = std::process::Command::new("chmod")
+                .arg("+x")
+                .arg(&installer_path)
+                .status();
+        }
         let _ = std::process::Command::new(&installer_path).spawn();
         app.exit(0);
         return Ok(());
