@@ -13,7 +13,7 @@ import {
   HardDrive,
   Sparkles
 } from 'lucide-react';
-import { FileEntry, UploadItem, ZipImportSummary, NetworkProfileInfo } from './types';
+import { FileEntry, UploadItem, ZipImportSummary, NetworkProfileInfo, ImportProgress } from './types';
 import { useStorageStats } from './hooks/useStorageStats';
 import { usePeerStatus } from './hooks/usePeerStatus';
 import { useConnectionStatus } from './hooks/useConnectionStatus';
@@ -28,6 +28,7 @@ import { UploadQueueDrawer } from './components/Explorer/UploadQueueDrawer';
 import { TelemetryBar } from './components/Footer/TelemetryBar';
 import { OfflineBanner } from './components/OfflineBanner';
 import { SoleSeedBanner } from './components/SoleSeedBanner';
+import { ImportingBanner } from './components/ImportingBanner';
 import { OnboardingWizard } from './components/Onboarding/OnboardingWizard';
 import { ZipImportModal, ZipFileItem } from './components/Explorer/ZipImportModal';
 import { invoke } from '@tauri-apps/api/core';
@@ -79,10 +80,35 @@ export default function App() {
   const [pendingZipFile, setPendingZipFile] = useState<ZipFileItem | null>(null);
   const [showZipModal, setShowZipModal] = useState<boolean>(false);
   const [selectedHashes, setSelectedHashes] = useState<string[]>([]);
+  const [importProgress, setImportProgress] = useState<ImportProgress | null>(null);
 
   const { stats, refetch: refetchStats } = useStorageStats();
   const { nodeId } = usePeerStatus();
   const { isOnline } = useConnectionStatus();
+
+  // Listen for backend import progress events
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    listen<ImportProgress>('import-progress', (event) => {
+      setImportProgress(event.payload);
+      if (event.payload.status === 'completed') {
+        loadWorkspaceFiles();
+        loadWorkspaceFolders();
+        refetchStats();
+        setTimeout(() => {
+          setImportProgress((curr) => (curr?.status === 'completed' ? null : curr));
+        }, 4000);
+      }
+    })
+      .then((unsub) => {
+        unlisten = unsub;
+      })
+      .catch(() => {});
+
+    return () => {
+      if (unlisten) unlisten();
+    };
+  }, []);
 
   // Check onboarding status on startup
   useEffect(() => {
@@ -342,6 +368,17 @@ export default function App() {
     const target = pendingZipFile;
     setShowZipModal(false);
     setImportingZip(true);
+    setImportProgress({
+      archive_name: target.name,
+      current_entry: 0,
+      total_entries: 0,
+      bytes_processed: 0,
+      total_bytes: target.size_bytes || 0,
+      current_file: 'Reading archive entries...',
+      bytes_per_sec: 0,
+      status: 'importing',
+    });
+
     try {
       const targetFolder = currentPrefix.replace(/\/$/, '') || null;
       let summary: ZipImportSummary;
@@ -373,6 +410,17 @@ export default function App() {
       await loadWorkspaceFolders();
       refetchStats();
     } catch (err) {
+      setImportProgress({
+        archive_name: target.name,
+        current_entry: 0,
+        total_entries: 0,
+        bytes_processed: 0,
+        total_bytes: 0,
+        current_file: '',
+        bytes_per_sec: 0,
+        status: 'error',
+        error: String(err),
+      });
       alert(`ZIP import failed: ${err}`);
     } finally {
       setImportingZip(false);
@@ -1102,6 +1150,7 @@ export default function App() {
           {/* Top Banners */}
           <SoleSeedBanner />
           <OfflineBanner isOnline={isOnline} />
+          <ImportingBanner progress={importProgress} onDismiss={() => setImportProgress(null)} />
 
           {currentView === 'explorer' && (
             <>
@@ -1212,7 +1261,7 @@ export default function App() {
                         : 'border-transparent text-gray-500 hover:text-gray-700'
                     }`}
                   >
-                    Network Stealth & Diagnostics
+                    Network & Swarm
                   </button>
                   <button
                     onClick={() => setSettingsTab('backup')}
@@ -1254,6 +1303,7 @@ export default function App() {
       <TelemetryBar 
         stats={stats} 
         networkProfile={networkProfile}
+        importProgress={importProgress}
         onOpenSettings={() => {
           setCurrentView('settings');
           setSettingsTab('cache');

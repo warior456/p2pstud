@@ -46,7 +46,7 @@ At the end of every session (or when interrupted), update the `## Progress Track
 ## Progress Tracker
 
 > **Last session:** 2026-11-05
-> **Last completed task:** Step 43 completed: Patched Dependabot Security Advisory CVE-2026-115905 (Zip Cloaking Parser Differential & Security Control Bypass) by upgrading `zip` to `9.3.0` with updated Result-handling in `file_cmds.rs`; un-ignored and tracked `Cargo.lock` in git so Dependabot can determine dependency versions and manage security alerts. Version bumped to 0.1.5 across `package.json`, `src-tauri/Cargo.toml`, and `src-tauri/tauri.conf.json`.
+> **Last completed task:** Step 44 completed: Separated local disk import and file addition throughput from network upload bandwidth (`state.bandwidth.record_upload`); added dedicated `ImportingBanner` ("importing balk") with live disk import speed, file counters, and animated progress bar; added separate import badge in `TelemetryBar` footer alongside isolated pure peer network speed indicators; eliminated redundant "Network & Swarm Peers" sub-menu from "Cache & Quota" tab and consolidated all peer connectivity, identity, and stealth configuration into the main "Network & Swarm" settings tab. Version bumped to 0.1.6 across `package.json`, `src-tauri/Cargo.toml`, and `src-tauri/tauri.conf.json`.
 > **Next action:** Continued verification and feature maintenance.
 
 | # | Step | Status | Notes |
@@ -94,6 +94,7 @@ At the end of every session (or when interrupted), update the `## Progress Track
 | 41 | Bilateral Seeding Receipts & Lifecycle Pruning | ✅ | Hash-verified transfer receipts for Sybil-resistant voting, 5-year seeding deprioritization, 2-year dead file purge |
 | 42 | Multi-GB Streaming ZIP Import, Multi-File Selection & Cross-Platform Autostart | ✅ | Streaming disk BufReader & `add_from_path` for multi-GB ZIPs (`semester1.zip`), native `rfd` picker, batch multi-file delete/move/download, cross-platform boot autostart & custom cache location |
 | 43 | Dependabot Alert Fix (CVE-2026-115905, zip 9.3.0) & Lockfile Tracking | ✅ | Upgraded `zip` crate to 9.3.0 with Cow string unwrapping, un-ignored and committed `Cargo.lock` so Dependabot can audit installed crates |
+| 44 | Import Bandwidth Isolation, Dedicated Importing Banner & Unified Network Tab | ✅ | Excluded local disk imports from P2P network speed metrics, added dedicated `ImportingBanner` ("importing balk") with animated progress & disk speed, added separate footer import badge, and moved network sub-menu from "Cache & Quota" into main "Network & Swarm" tab |
 
 ---
 

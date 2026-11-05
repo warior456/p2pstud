@@ -14,6 +14,21 @@ use crate::storage::blob_tracker::{
 use crate::storage::hosting_worker::is_blob_cached;
 use crate::AppState;
 
+/// Progress event emitted during local file additions and ZIP archive extractions.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ImportProgressPayload {
+    pub import_id: String,
+    pub archive_name: String,
+    pub current_entry: usize,
+    pub total_entries: usize,
+    pub bytes_processed: u64,
+    pub total_bytes: u64,
+    pub current_file: String,
+    pub bytes_per_sec: u64,
+    pub status: String,
+    pub error: Option<String>,
+}
+
 /// List all tracked files and blobs from the SQLite database with live cache status.
 #[tauri::command]
 pub async fn list_files(state: State<'_, AppState>) -> Result<Vec<BlobRecord>, String> {
@@ -301,8 +316,7 @@ pub async fn add_file(local_path: String, state: State<'_, AppState>) -> Result<
     // Record initial seed for the local node
     let _ = record_peer_seed(&state.db, &hash, &owner_node_id);
 
-    // Record bandwidth
-    state.bandwidth.record_upload(size_bytes);
+    // Note: Do not record local import towards network upload bandwidth.
 
     // Broadcast file addition to the swarm
     let record = BlobRecord {
@@ -331,6 +345,7 @@ pub async fn add_file(local_path: String, state: State<'_, AppState>) -> Result<
 /// Upload a file to the shared cloud workspace via in-memory bytes (e.g. from UI file input).
 #[tauri::command]
 pub async fn upload_file_bytes(
+    app: AppHandle,
     name: String,
     data: Vec<u8>,
     state: State<'_, AppState>,
@@ -340,16 +355,62 @@ pub async fn upload_file_bytes(
         .map_err(|e| format!("Invalid filename: {e}"))?;
 
     let size_bytes = data.len() as u64;
+    let import_id = format!(
+        "upload-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis()
+    );
+
+    let _ = app.emit(
+        "import-progress",
+        ImportProgressPayload {
+            import_id: import_id.clone(),
+            archive_name: clean_name.clone(),
+            current_entry: 0,
+            total_entries: 1,
+            bytes_processed: 0,
+            total_bytes: size_bytes,
+            current_file: clean_name.clone(),
+            bytes_per_sec: 0,
+            status: "importing".to_string(),
+            error: None,
+        },
+    );
+
+    let start_time = std::time::Instant::now();
 
     let guard = state.engine.read().await;
     let engine = guard.as_ref().ok_or("Iroh engine not yet started")?;
     let owner_node_id = engine.node_id().to_string();
 
-    let tag = engine
+    let tag = match engine
         .store
         .import_bytes(bytes::Bytes::from(data), BlobFormat::Raw)
         .await
-        .map_err(|e| format!("blob import failed: {e}"))?;
+    {
+        Ok(t) => t,
+        Err(e) => {
+            let err_msg = format!("blob import failed: {e}");
+            let _ = app.emit(
+                "import-progress",
+                ImportProgressPayload {
+                    import_id: import_id.clone(),
+                    archive_name: clean_name.clone(),
+                    current_entry: 0,
+                    total_entries: 1,
+                    bytes_processed: 0,
+                    total_bytes: size_bytes,
+                    current_file: clean_name.clone(),
+                    bytes_per_sec: 0,
+                    status: "error".to_string(),
+                    error: Some(err_msg.clone()),
+                },
+            );
+            return Err(err_msg);
+        }
+    };
 
     let hash_and_format = *tag.inner();
     let hash = hash_and_format.hash.to_hex().to_string();
@@ -376,9 +437,6 @@ pub async fn upload_file_bytes(
     // Record initial seed for the local node
     let _ = record_peer_seed(&state.db, &hash, &owner_node_id);
 
-    // Record upload bandwidth
-    state.bandwidth.record_upload(size_bytes);
-
     // Broadcast file addition to the swarm
     let record = BlobRecord {
         hash: hash.clone(),
@@ -398,6 +456,29 @@ pub async fn upload_file_bytes(
         ..Default::default()
     };
     broadcast_catalog_event(&engine.endpoint, &engine.sync_alpn, SyncMessage::FileAdded(record)).await;
+
+    let elapsed = start_time.elapsed().as_secs_f64();
+    let speed = if elapsed > 0.02 {
+        (size_bytes as f64 / elapsed) as u64
+    } else {
+        0
+    };
+
+    let _ = app.emit(
+        "import-progress",
+        ImportProgressPayload {
+            import_id,
+            archive_name: clean_name.clone(),
+            current_entry: 1,
+            total_entries: 1,
+            bytes_processed: size_bytes,
+            total_bytes: size_bytes,
+            current_file: clean_name.clone(),
+            bytes_per_sec: speed,
+            status: "completed".to_string(),
+            error: None,
+        },
+    );
 
     tracing::info!(hash = %hash, name = %clean_name, owner = %owner_node_id, bytes = size_bytes, "Uploaded file to workspace");
     Ok(hash)
@@ -721,8 +802,10 @@ pub async fn pick_zip_dialog() -> Result<Option<SelectedFileInfo>, String> {
 /// Generic helper to unpack and import any seekable ZIP archive into Iroh store & SQLite.
 async fn import_zip_archive_internal<R: std::io::Read + std::io::Seek>(
     mut archive: zip::ZipArchive<R>,
+    archive_name: &str,
     target_folder: Option<String>,
     state: &AppState,
+    app: Option<&AppHandle>,
 ) -> Result<ZipImportSummary, String> {
     use std::io::Read;
 
@@ -748,7 +831,45 @@ async fn import_zip_archive_internal<R: std::io::Read + std::io::Seek>(
         None => None,
     };
 
-    for i in 0..archive.len() {
+    let total_entries = archive.len();
+    let mut total_uncompressed_bytes: u64 = 0;
+    for idx in 0..total_entries {
+        if let Ok(entry) = archive.by_index(idx) {
+            if !entry.is_dir() {
+                total_uncompressed_bytes += entry.size();
+            }
+        }
+    }
+
+    let import_id = format!(
+        "zip-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis()
+    );
+    let start_time = std::time::Instant::now();
+    let mut last_emit_time = std::time::Instant::now();
+
+    if let Some(app) = app {
+        let _ = app.emit(
+            "import-progress",
+            ImportProgressPayload {
+                import_id: import_id.clone(),
+                archive_name: archive_name.to_string(),
+                current_entry: 0,
+                total_entries,
+                bytes_processed: 0,
+                total_bytes: total_uncompressed_bytes,
+                current_file: String::new(),
+                bytes_per_sec: 0,
+                status: "importing".to_string(),
+                error: None,
+            },
+        );
+    }
+
+    for i in 0..total_entries {
         let mut file = match archive.by_index(i) {
             Ok(f) => f,
             Err(e) => {
@@ -850,7 +971,6 @@ async fn import_zip_archive_internal<R: std::io::Read + std::io::Seek>(
         }
 
         let _ = record_peer_seed(&state.db, &hash, &owner_node_id);
-        state.bandwidth.record_upload(size_bytes);
 
         let record = BlobRecord {
             hash: hash.clone(),
@@ -874,6 +994,58 @@ async fn import_zip_archive_internal<R: std::io::Read + std::io::Seek>(
 
         summary.files_imported += 1;
         summary.total_bytes += size_bytes;
+
+        if let Some(app) = app {
+            let now = std::time::Instant::now();
+            if now.duration_since(last_emit_time).as_millis() >= 100 || i + 1 == total_entries {
+                last_emit_time = now;
+                let elapsed = start_time.elapsed().as_secs_f64();
+                let bps = if elapsed > 0.05 {
+                    (summary.total_bytes as f64 / elapsed) as u64
+                } else {
+                    0
+                };
+                let _ = app.emit(
+                    "import-progress",
+                    ImportProgressPayload {
+                        import_id: import_id.clone(),
+                        archive_name: archive_name.to_string(),
+                        current_entry: i + 1,
+                        total_entries,
+                        bytes_processed: summary.total_bytes,
+                        total_bytes: total_uncompressed_bytes,
+                        current_file: entry_name.clone(),
+                        bytes_per_sec: bps,
+                        status: "importing".to_string(),
+                        error: None,
+                    },
+                );
+            }
+        }
+    }
+
+    if let Some(app) = app {
+        let elapsed = start_time.elapsed().as_secs_f64();
+        let bps = if elapsed > 0.05 {
+            (summary.total_bytes as f64 / elapsed) as u64
+        } else {
+            0
+        };
+        let _ = app.emit(
+            "import-progress",
+            ImportProgressPayload {
+                import_id: import_id.clone(),
+                archive_name: archive_name.to_string(),
+                current_entry: total_entries,
+                total_entries,
+                bytes_processed: summary.total_bytes,
+                total_bytes: total_uncompressed_bytes.max(summary.total_bytes),
+                current_file: "Completed".to_string(),
+                bytes_per_sec: bps,
+                status: "completed".to_string(),
+                error: None,
+            },
+        );
     }
 
     tracing::info!(
@@ -888,32 +1060,39 @@ async fn import_zip_archive_internal<R: std::io::Read + std::io::Seek>(
 /// Unpack and import in-memory ZIP archive bytes (e.g. from web drag-and-drop).
 #[tauri::command]
 pub async fn import_zip_bytes(
+    app: AppHandle,
     data: Vec<u8>,
     target_folder: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<ZipImportSummary, String> {
     let cursor = std::io::Cursor::new(data);
     let archive = zip::ZipArchive::new(cursor).map_err(|e| format!("invalid zip archive: {e}"))?;
-    import_zip_archive_internal(archive, target_folder, &state).await
+    import_zip_archive_internal(archive, "Archive.zip", target_folder, &state, Some(&app)).await
 }
 
 /// Import a local ZIP archive file directly from disk via streaming BufReader (supports multi-GB ZIPs).
 #[tauri::command]
 pub async fn import_zip_file(
+    app: AppHandle,
     file_path: String,
     target_folder: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<ZipImportSummary, String> {
     let path = std::path::Path::new(&file_path);
+    let archive_name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "Archive.zip".to_string());
     let file = std::fs::File::open(path).map_err(|e| format!("cannot open zip file '{file_path}': {e}"))?;
     let reader = std::io::BufReader::new(file);
     let archive = zip::ZipArchive::new(reader).map_err(|e| format!("invalid zip archive: {e}"))?;
-    import_zip_archive_internal(archive, target_folder, &state).await
+    import_zip_archive_internal(archive, &archive_name, target_folder, &state, Some(&app)).await
 }
 
 /// Upload a file directly from a disk path (supports multi-GB files without memory exhaustion).
 #[tauri::command]
 pub async fn upload_file_path(
+    app: AppHandle,
     file_path: String,
     target_name: Option<String>,
     state: State<'_, AppState>,
@@ -931,11 +1110,37 @@ pub async fn upload_file_path(
     let clean_name = crate::storage::path_utils::sanitize_virtual_path(&raw_name)
         .map_err(|e| format!("Invalid filename: {e}"))?;
 
+    let import_id = format!(
+        "upload-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis()
+    );
+
+    let _ = app.emit(
+        "import-progress",
+        ImportProgressPayload {
+            import_id: import_id.clone(),
+            archive_name: clean_name.clone(),
+            current_entry: 0,
+            total_entries: 1,
+            bytes_processed: 0,
+            total_bytes: size_bytes,
+            current_file: clean_name.clone(),
+            bytes_per_sec: 0,
+            status: "importing".to_string(),
+            error: None,
+        },
+    );
+
+    let start_time = std::time::Instant::now();
+
     let guard = state.engine.read().await;
     let engine = guard.as_ref().ok_or("Iroh engine not yet started")?;
     let owner_node_id = engine.node_id().to_string();
 
-    let outcome = engine
+    let outcome = match engine
         .blobs
         .clone()
         .client()
@@ -946,10 +1151,49 @@ pub async fn upload_file_path(
             iroh_blobs::rpc::client::blobs::WrapOption::NoWrap,
         )
         .await
-        .map_err(|e| format!("failed starting file streaming import: {e}"))?
-        .finish()
-        .await
-        .map_err(|e| format!("failed streaming file import: {e}"))?;
+    {
+        Ok(in_progress) => match in_progress.finish().await {
+            Ok(outcome) => outcome,
+            Err(e) => {
+                let err_msg = format!("failed streaming file import: {e}");
+                let _ = app.emit(
+                    "import-progress",
+                    ImportProgressPayload {
+                        import_id: import_id.clone(),
+                        archive_name: clean_name.clone(),
+                        current_entry: 0,
+                        total_entries: 1,
+                        bytes_processed: 0,
+                        total_bytes: size_bytes,
+                        current_file: clean_name.clone(),
+                        bytes_per_sec: 0,
+                        status: "error".to_string(),
+                        error: Some(err_msg.clone()),
+                    },
+                );
+                return Err(err_msg);
+            }
+        },
+        Err(e) => {
+            let err_msg = format!("failed starting file streaming import: {e}");
+            let _ = app.emit(
+                "import-progress",
+                ImportProgressPayload {
+                    import_id: import_id.clone(),
+                    archive_name: clean_name.clone(),
+                    current_entry: 0,
+                    total_entries: 1,
+                    bytes_processed: 0,
+                    total_bytes: size_bytes,
+                    current_file: clean_name.clone(),
+                    bytes_per_sec: 0,
+                    status: "error".to_string(),
+                    error: Some(err_msg.clone()),
+                },
+            );
+            return Err(err_msg);
+        }
+    };
 
     let hash = outcome.hash.to_hex().to_string();
 
@@ -969,11 +1213,10 @@ pub async fn upload_file_path(
     .map_err(|e| e.to_string())?;
 
     let _ = record_peer_seed(&state.db, &hash, &owner_node_id);
-    state.bandwidth.record_upload(size_bytes);
 
     let record = BlobRecord {
         hash: hash.clone(),
-        name: Some(clean_name),
+        name: Some(clean_name.clone()),
         size_bytes,
         last_accessed_at: std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -990,6 +1233,29 @@ pub async fn upload_file_path(
     };
 
     broadcast_catalog_event(&engine.endpoint, &engine.sync_alpn, SyncMessage::FileAdded(record)).await;
+
+    let elapsed = start_time.elapsed().as_secs_f64();
+    let speed = if elapsed > 0.02 {
+        (size_bytes as f64 / elapsed) as u64
+    } else {
+        0
+    };
+
+    let _ = app.emit(
+        "import-progress",
+        ImportProgressPayload {
+            import_id,
+            archive_name: clean_name.clone(),
+            current_entry: 1,
+            total_entries: 1,
+            bytes_processed: size_bytes,
+            total_bytes: size_bytes,
+            current_file: clean_name.clone(),
+            bytes_per_sec: speed,
+            status: "completed".to_string(),
+            error: None,
+        },
+    );
 
     Ok(hash)
 }

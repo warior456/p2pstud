@@ -107,3 +107,16 @@ export interface ZipImportSummary {
   total_bytes: number;
   errors: string[];
 }
+
+export interface ImportProgress {
+  import_id?: string;
+  archive_name: string;
+  current_entry: number;
+  total_entries: number;
+  bytes_processed: number;
+  total_bytes: number;
+  current_file: string;
+  bytes_per_sec: number;
+  status: 'importing' | 'completed' | 'error';
+  error?: string | null;
+}

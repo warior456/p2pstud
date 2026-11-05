@@ -56,4 +56,37 @@ describe('TelemetryBar Component', () => {
 
     expect(screen.getByText(/Mirror/i)).toBeInTheDocument();
   });
+
+  it('renders separate importing badge when import is actively in progress', () => {
+    const stats: StorageStats = {
+      used_bytes: 1000000,
+      quota_bytes: 5368709120,
+      pinned_bytes: 0,
+      peer_count: 2,
+      full_mirror: false,
+      upload_bytes_per_sec: 0, // Pure network upload: 0
+      download_bytes_per_sec: 0, // Pure network download: 0
+    };
+
+    const importProgress = {
+      archive_name: 'semester1.zip',
+      current_entry: 10,
+      total_entries: 57,
+      bytes_processed: 50000000,
+      total_bytes: 200000000,
+      current_file: 'slide.pdf',
+      bytes_per_sec: 20971520, // 20 MB/s
+      status: 'importing' as const,
+    };
+
+    render(<TelemetryBar stats={stats} importProgress={importProgress} />);
+
+    // Network speeds show 0.0 KB/s
+    expect(screen.getAllByText(/0.0 KB\/s/i).length).toBe(2);
+
+    // Dedicated import badge shows importing indicator and 20.0 MB/s
+    expect(screen.getByText(/Importing:/i)).toBeInTheDocument();
+    expect(screen.getByText(/semester1.zip/i)).toBeInTheDocument();
+    expect(screen.getByText(/20.0 MB\/s/i)).toBeInTheDocument();
+  });
 });

@@ -1,9 +1,10 @@
-import { Users, Database, Shield, Wifi } from 'lucide-react';
-import { StorageStats, NetworkProfileInfo } from '../../types';
+import { Users, Database, Shield, Wifi, PackageOpen } from 'lucide-react';
+import { StorageStats, NetworkProfileInfo, ImportProgress } from '../../types';
 
 interface TelemetryBarProps {
   stats: StorageStats | null;
   networkProfile?: NetworkProfileInfo | null;
+  importProgress?: ImportProgress | null;
   onOpenSettings?: () => void;
   onOpenNetworkSettings?: () => void;
 }
@@ -23,6 +24,7 @@ function formatSpeed(bytesPerSec: number): string {
 export const TelemetryBar: React.FC<TelemetryBarProps> = ({ 
   stats, 
   networkProfile,
+  importProgress,
   onOpenSettings,
   onOpenNetworkSettings 
 }) => {
@@ -96,16 +98,34 @@ export const TelemetryBar: React.FC<TelemetryBarProps> = ({
         )}
       </div>
 
-      {/* Center: Live dynamic network speeds */}
-      <div className="flex items-center gap-5 font-mono text-xs">
-        <div className="flex items-center gap-1.5 text-blue-400 font-medium">
-          <span className="text-sm">↑</span>
-          <span>{upSpeed}</span>
+      {/* Center: Live dynamic network speeds & active importing badge */}
+      <div className="flex items-center gap-4 font-mono text-xs">
+        <div className="flex items-center gap-4 bg-gray-950/70 px-2.5 py-1 rounded border border-gray-800/80">
+          <div className="flex items-center gap-1.5 text-blue-400 font-medium" title="P2P Swarm Network Upload Speed">
+            <span className="text-sm">↑</span>
+            <span>{upSpeed}</span>
+          </div>
+          <div className="flex items-center gap-1.5 text-emerald-400 font-medium" title="P2P Swarm Network Download Speed">
+            <span className="text-sm">↓</span>
+            <span>{downSpeed}</span>
+          </div>
         </div>
-        <div className="flex items-center gap-1.5 text-emerald-400 font-medium">
-          <span className="text-sm">↓</span>
-          <span>{downSpeed}</span>
-        </div>
+
+        {importProgress && importProgress.status === 'importing' && (
+          <div
+            className="flex items-center gap-2 px-2.5 py-1 bg-indigo-950/90 border border-indigo-700/70 rounded text-indigo-300 text-[11px] animate-pulse"
+            title={`Importing: ${importProgress.archive_name} (${formatSpeed(importProgress.bytes_per_sec)})`}
+          >
+            <PackageOpen className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
+            <span className="font-semibold text-indigo-200">Importing:</span>
+            <span className="truncate max-w-[120px]" title={importProgress.archive_name}>
+              {importProgress.archive_name}
+            </span>
+            <span className="font-mono text-indigo-300">
+              {formatSpeed(importProgress.bytes_per_sec)}
+            </span>
+          </div>
+        )}
       </div>
 
       {/* Right: Cache footprint & settings shortcut */}
