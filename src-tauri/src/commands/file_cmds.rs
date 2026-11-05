@@ -757,8 +757,16 @@ async fn import_zip_archive_internal<R: std::io::Read + std::io::Seek>(
             }
         };
 
+        let entry_name = match file.name() {
+            Ok(n) => n.to_string(),
+            Err(e) => {
+                summary.errors.push(format!("entry {i} has invalid name/header: {e}"));
+                continue;
+            }
+        };
+
         if file.is_dir() {
-            let enclosed = file.name().trim_end_matches('/');
+            let enclosed = entry_name.trim_end_matches('/');
             let raw = if let Some(ref prefix) = target_prefix {
                 format!("{prefix}/{enclosed}")
             } else {
@@ -774,7 +782,7 @@ async fn import_zip_archive_internal<R: std::io::Read + std::io::Seek>(
         let enclosed = match file.enclosed_name() {
             Some(path) => path.to_string_lossy().replace('\\', "/"),
             None => {
-                summary.errors.push(format!("Zip Slip directory traversal detected for entry {}", file.name()));
+                summary.errors.push(format!("Zip Slip directory traversal detected for entry {entry_name}"));
                 continue;
             }
         };
@@ -788,7 +796,7 @@ async fn import_zip_archive_internal<R: std::io::Read + std::io::Seek>(
         let sanitized_path = match crate::storage::path_utils::sanitize_virtual_path(&raw_virtual_path) {
             Ok(p) => p,
             Err(e) => {
-                summary.errors.push(format!("Invalid path for entry '{}': {e}", file.name()));
+                summary.errors.push(format!("Invalid path for entry '{entry_name}': {e}"));
                 continue;
             }
         };
