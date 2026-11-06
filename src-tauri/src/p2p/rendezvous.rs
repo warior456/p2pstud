@@ -41,8 +41,28 @@ pub fn derive_rendezvous_topic(swarm_secret: &str) -> String {
     format!("p2pstud-{}", &hex[..24])
 }
 
+/// Count active peers seen in the active network recently.
+pub fn get_active_peer_count(db: &Database, our_node_id: &str) -> usize {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
+    let cutoff = now - 900; // last 15 minutes
+    let conn = db.lock();
+    let count: i64 = conn
+        .query_row(
+            "SELECT COUNT(DISTINCT peer_node_id) FROM file_seeds WHERE peer_node_id != ?1 AND last_seen_at >= ?2",
+            rusqlite::params![our_node_id, cutoff],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    count.max(0) as usize
+}
+
 /// Spawn the automated swarm rendezvous background task.
 /// Periodically publishes our presence and fetches other active peers on the topic.
+/// Automatically adapts polling speed: fast (every 15s) when searching for initial peers,
+/// and relaxed (every 60s) once other swarm nodes are discovered.
 pub fn start_swarm_rendezvous(
     endpoint: Endpoint,
     db: Arc<Database>,
@@ -60,13 +80,22 @@ pub fn start_swarm_rendezvous(
             }
         };
 
-        let mut interval = tokio::time::interval(Duration::from_secs(20));
+        let our_node_id = endpoint.id().to_string();
+
         loop {
-            interval.tick().await;
+            // Adaptive interval: 15s when searching (0 peers), 60s when peers are connected
+            let peer_count = get_active_peer_count(&db, &our_node_id);
+            let next_delay = if peer_count == 0 {
+                Duration::from_secs(15)
+            } else {
+                Duration::from_secs(60)
+            };
 
             if let Err(e) = run_rendezvous_cycle(&client, &endpoint, &db, &store).await {
                 tracing::debug!("Swarm rendezvous cycle notice: {e}");
             }
+
+            tokio::time::sleep(next_delay).await;
         }
     });
 }

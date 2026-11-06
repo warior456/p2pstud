@@ -451,10 +451,16 @@ export function NetworkSettings() {
             </code>
           </div>
           <p className="text-[11px] text-indigo-900 leading-relaxed">
-            All students sharing your current workspace passphrase automatically discover each other every 20 seconds. Once connected, workspace files synchronize directly peer-to-peer or via the encrypted EU relay.
+            Automated discovery runs continuously: every 15s when searching for peers, and automatically relaxes to every 60s once swarm peers are connected. Once connected, workspace files synchronize directly peer-to-peer or via the encrypted EU relay.
           </p>
           {discoveryMsg && (
-            <div className="mt-2 text-xs font-medium text-emerald-800 bg-emerald-50 border border-emerald-200 p-2 rounded">
+            <div
+              className={`mt-2 text-xs font-medium p-2 rounded border ${
+                discoveryMsg.toLowerCase().includes('fail') || discoveryMsg.toLowerCase().includes('wait')
+                  ? 'text-amber-800 bg-amber-50 border-amber-200'
+                  : 'text-emerald-800 bg-emerald-50 border-emerald-200'
+              }`}
+            >
               {discoveryMsg}
             </div>
           )}

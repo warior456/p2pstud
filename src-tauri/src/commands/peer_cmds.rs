@@ -337,8 +337,20 @@ pub async fn get_swarm_version_info(
 /// Trigger an immediate rendezvous announcement and peer discovery sweep.
 #[tauri::command]
 pub async fn trigger_swarm_discovery(state: State<'_, AppState>) -> Result<String, String> {
-    let guard = state.engine.read().await;
-    let engine = guard.as_ref().ok_or("Iroh engine not yet started")?;
+    // Wait briefly (up to 5 seconds) if the engine is currently starting up
+    let engine = {
+        let mut acquired = None;
+        for _ in 0..10 {
+            let guard = state.engine.read().await;
+            if let Some(ref e) = *guard {
+                acquired = Some(e.clone());
+                break;
+            }
+            drop(guard);
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        }
+        acquired.ok_or_else(|| "P2P network engine is still starting up. Please wait a few seconds and try again.".to_string())?
+    };
     let db = state.db.clone();
     let store = engine.store.clone();
     let endpoint = engine.endpoint.clone();

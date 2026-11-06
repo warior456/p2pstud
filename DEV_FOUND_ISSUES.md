@@ -1,5 +1,22 @@
 # DEV_FOUND_ISSUES.md — Resolved Issues Log
 
+## Issues & Resolutions (Version 0.1.22)
+
+### 1. Swarm Rendezvous Startup Timing & Adaptive Discovery Speed
+- **Issue:** Clicking "Discover Peers Now" immediately upon launching P2PStud resulted in `"Discovery trigger failed: Iroh engine not yet started"`.
+- **Root Cause:**
+  - Tauri loads and renders the UI in milliseconds, while the background thread takes 1–2 seconds to initialize cryptographic keys, load the 3GB local blob store from disk, and bind QUIC sockets.
+  - Calling `trigger_swarm_discovery` during that initial startup window returned an immediate error instead of waiting for initialization to finish.
+  - Background rendezvous discovery was running at a static 20-second interval regardless of swarm connection state.
+- **Fix:**
+  - `src-tauri/src/commands/peer_cmds.rs`: `trigger_swarm_discovery` now polls and awaits engine readiness for up to 5 seconds before returning an error, eliminating the startup race condition.
+  - `src-tauri/src/p2p/rendezvous.rs`: Implemented **adaptive automated swarm discovery**:
+    - **No peers connected (`peer_count == 0`)**: Runs fast every **15 seconds** for instant peer discovery in classrooms or libraries.
+    - **Peers connected (`peer_count > 0`)**: Automatically reduces speed and relaxes to **60 seconds**, minimizing bandwidth and CPU usage.
+  - `src/components/Settings/NetworkSettings.tsx`: Fixed status banner styling so engine initialization or network notices render with appropriate warning styles rather than misleading green success boxes.
+
+---
+
 ## Issues & Resolutions (Version 0.1.21)
 
 ### 1. KU Leuven ICTS Campus Security Trigger & Intrusion Detection
