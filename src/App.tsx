@@ -695,12 +695,25 @@ export default function App() {
 
   const handleApplyUpdateOnRestart = async () => {
     try {
+      setToastMessage('Downloading update package in background...');
       await invoke('download_app_update');
       setIsUpdatePending(true);
       setAvailableUpdate(null);
-      setToastMessage('Update scheduled. It will automatically install when you next restart P2PStud.');
+      setToastMessage('Update downloaded. It will install silently when you next close or restart P2PStud.');
     } catch (err) {
-      alert(`Failed to schedule update: ${err}`);
+      alert(`Failed to stage update: ${err}`);
+    }
+  };
+
+  const handleUpdateAndRestartNow = async () => {
+    try {
+      setToastMessage('Downloading update and restarting...');
+      await invoke('download_app_update');
+      setIsUpdatePending(true);
+      setAvailableUpdate(null);
+      await invoke('confirm_app_exit', { installUpdate: true });
+    } catch (err) {
+      alert(`Failed to apply update: ${err}`);
     }
   };
 
@@ -1675,16 +1688,22 @@ export default function App() {
             <div className="flex-1 min-w-0">
               <div className="font-semibold text-xs text-white">Update Available: v{availableUpdate.version}</div>
               <p className="text-[11px] text-slate-300 mt-1 line-clamp-2">{availableUpdate.notes}</p>
-              <div className="flex items-center gap-2 mt-3">
+              <div className="flex flex-wrap items-center gap-2 mt-3">
                 <button
-                  onClick={handleApplyUpdateOnRestart}
+                  onClick={handleUpdateAndRestartNow}
                   className="px-3 py-1 bg-blue-600 hover:bg-blue-500 text-white rounded text-xs font-semibold cursor-pointer shadow-xs"
                 >
-                  Update on Next Restart
+                  Update & Restart Now
+                </button>
+                <button
+                  onClick={handleApplyUpdateOnRestart}
+                  className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-600 rounded text-xs font-medium cursor-pointer"
+                >
+                  On Next Restart
                 </button>
                 <button
                   onClick={handleDismissUpdateToast}
-                  className="px-2.5 py-1 text-slate-400 hover:text-white text-xs cursor-pointer"
+                  className="px-2 py-1 text-slate-400 hover:text-white text-xs cursor-pointer"
                 >
                   Later
                 </button>

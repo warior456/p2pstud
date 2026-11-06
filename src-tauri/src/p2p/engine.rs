@@ -57,10 +57,12 @@ impl IrohEngine {
         let store = BlobStore::load(&blob_dir).await?;
 
         // 4. Build QUIC endpoint with relay fallback and presets.
-        // If binding with configured relay fails (e.g. offline/DNS unavailable), fallback gracefully
+        // Disable portmapper (UPnP / NAT-PMP) by default to prevent triggering campus IDS/firewall
+        // alerts (such as unauthorized UPnP port forwards classified as BitTorrent distribution).
         let endpoint = match Endpoint::builder(presets::N0)
             .secret_key(secret_key.clone())
             .relay_mode(relay_mode)
+            .portmapper_config(iroh::endpoint::PortmapperConfig::Disabled)
             .bind()
             .await
         {
@@ -70,6 +72,7 @@ impl IrohEngine {
                 match Endpoint::builder(presets::N0)
                     .secret_key(secret_key.clone())
                     .relay_mode(iroh::RelayMode::Default)
+                    .portmapper_config(iroh::endpoint::PortmapperConfig::Disabled)
                     .bind()
                     .await
                 {
@@ -79,6 +82,7 @@ impl IrohEngine {
                         Endpoint::builder(presets::N0)
                             .secret_key(secret_key)
                             .relay_mode(iroh::RelayMode::Disabled)
+                            .portmapper_config(iroh::endpoint::PortmapperConfig::Disabled)
                             .bind()
                             .await?
                     }

@@ -1,5 +1,33 @@
 # DEV_FOUND_ISSUES.md — Resolved Issues Log
 
+## Issues & Resolutions (Version 0.1.21)
+
+### 1. KU Leuven ICTS Campus Security Trigger & Intrusion Detection
+- **Issue:** User received security alert from KU Leuven ICTS on campus network (`10.45.219.240`): `Type malware (technical log): BitTorrent distribution and connections to malware IPs`.
+- **Root Cause Forensic Analysis:**
+  1. `connections to malware IPs`: In `diagnostic_cmds.rs`, the QUIC UDP diagnostic check sent a UDP packet to `8.8.8.8:12345`. Port 12345 is the infamous NetBus trojan backdoor port. University IDS (Suricata/Snort/Palo Alto) flagged this as malware trojan communication.
+  2. `BitTorrent distribution`:
+     - Early versions (`v0.1.0` - `v0.1.9`) had `.discovery_dht()` enabled, querying public BitTorrent DHT.
+     - Recent versions had Iroh `Portmapper` enabled by default (`PortmapperConfig::Enabled`), which broadcasted UPnP SSDP multicast packets to `239.255.255.250:1900` and NAT-PMP to `224.0.0.1:5351` attempting unauthorized router port-forwarding, which enterprise campus firewalls categorize as BitTorrent/P2P heuristics.
+     - Campus SSID pattern detection did not automatically catch all university SSID variations (e.g. `kuleuven`, `kotnet`, `student`).
+- **Fix:**
+  - `src-tauri/src/commands/diagnostic_cmds.rs`: Replaced port `12345` with standard DNS port 53 (`1.1.1.1:53`), completely eliminating IDS trojan alerts.
+  - `src-tauri/src/p2p/engine.rs`: Enforced `.portmapper_config(iroh::endpoint::PortmapperConfig::Disabled)`, shutting down all UPnP SSDP and NAT-PMP broadcast requests.
+  - `src-tauri/src/p2p/network_profile.rs`: Added automatic substring detection for `kuleuven`, `campus`, `eduroam`, `kotnet`, `student`, and `associatie`, automatically forcing Campus Stealth Mode without manual rule configuration.
+
+### 2. Streamlined In-App Updating & Silent Upgrades
+- **Issue:** Users on older versions had to manually go to GitHub, download the installer .exe, and run it, triggering NSIS prompts asking to uninstall the previous version.
+- **Root Cause:**
+  1. `lib.rs` had a mock update event emitting a hardcoded version `0.2.0` on startup without running real update checks or populating `update_download_url` in settings.
+  2. Version `0.1.17` hit GitHub API HTTP 403 rate limits on shared NAT/campus IPs when checking for updates.
+  3. Running the NSIS setup wizard manually triggers the interactive installer that detects the existing directory and prompts for uninstallation, whereas running silently with `/S` performs a clean in-place upgrade.
+- **Fix:**
+  - `src-tauri/src/commands/backup_cmds.rs`: Created `check_and_stage_app_update(&Database)` helper that automatically retrieves latest releases with rate-limit-immune redirect fallback and stages download URLs into SQLite.
+  - `src-tauri/src/lib.rs`: Wired startup background check to call `check_and_stage_app_update` and emit real `UpdateInfo`.
+  - `src/App.tsx`: Added one-click **"Update & Restart Now"** button in update toast that silently downloads the installer, invokes detached silent upgrade with `/S`, and automatically restarts P2PStud without any wizard or uninstall prompts.
+
+---
+
 ## Issues & Resolutions (Version 0.1.14)
 
 ### 1. Close application / Exit warning & System Tray popup

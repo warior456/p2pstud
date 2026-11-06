@@ -204,26 +204,16 @@ pub fn run() {
                     }
                 }
 
-                // Step 40 (R23.3): Non-intrusive 10-second delayed startup update check
+                // Step 40 (R23.3): Non-intrusive 10-second delayed startup update check against GitHub releases
                 let app_for_updater = app_handle_for_workers.clone();
                 let db_for_updater = db_clone.clone();
                 tauri::async_runtime::spawn(async move {
                     tokio::time::sleep(std::time::Duration::from_secs(10)).await;
-                    let dismissed = db_for_updater.get_setting("update_dismissed_session").unwrap_or_default().unwrap_or_default() == "true";
-                    let current_version = env!("CARGO_PKG_VERSION");
-                    let latest_version = "0.2.0";
-                    if !dismissed && latest_version != current_version {
-                        let _ = app_for_updater.emit(
-                            "update-available",
-                            commands::backup_cmds::UpdateInfo {
-                                current_version: current_version.to_string(),
-                                version: latest_version.to_string(),
-                                notes: "Major update with enhanced P2P swarm speeds, zero-config discovery & multi-file operations.".to_string(),
-                                download_size_bytes: 14_500_000,
-                                is_pending: false,
-                                update_available: true,
-                            },
-                        );
+                    if let Ok(info) = commands::backup_cmds::check_and_stage_app_update(&db_for_updater).await {
+                        if info.update_available {
+                            tracing::info!(remote = %info.version, current = %info.current_version, "Update available, notifying frontend");
+                            let _ = app_for_updater.emit("update-available", info);
+                        }
                     }
                 });
             });

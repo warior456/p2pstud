@@ -74,8 +74,10 @@ pub async fn run_connection_doctor(
     results.push(mdns_res);
 
     // 2. Test QUIC UDP
+    // Use standard DNS port 53 (1.1.1.1:53) to verify outbound UDP reachability.
+    // Safe and standard: avoids triggering intrusion detection systems / trojan signatures (e.g. port 12345 NetBus).
     let quic_udp_ok = match tokio::time::timeout(Duration::from_millis(1500), tokio::net::UdpSocket::bind("0.0.0.0:0")).await {
-        Ok(Ok(sock)) => sock.connect("8.8.8.8:12345").await.is_ok(),
+        Ok(Ok(sock)) => sock.connect("1.1.1.1:53").await.is_ok(),
         _ => false,
     };
 

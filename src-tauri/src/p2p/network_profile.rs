@@ -256,6 +256,18 @@ pub fn resolve_network_profile(
     }
 
     if let Some(ssid) = current_ssid {
+        let lower = ssid.to_lowercase();
+        // Automatic campus heuristic for Belgian and international university networks
+        if lower.contains("eduroam")
+            || lower.contains("campus")
+            || lower.contains("kuleuven")
+            || lower.contains("kotnet")
+            || lower.contains("student")
+            || lower.contains("associatie")
+        {
+            return (NetworkProfile::Campus, None);
+        }
+
         if let Ok(Some(profile)) = get_rule_for_ssid(db, ssid) {
             return (profile, None);
         }

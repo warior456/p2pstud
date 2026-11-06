@@ -11,6 +11,7 @@ use zip::write::SimpleFileOptions;
 use zip::ZipWriter;
 
 use crate::storage::hosting_worker::is_blob_cached;
+use crate::storage::db::Database;
 use crate::AppState;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -384,20 +385,18 @@ struct GitHubAsset {
     browser_download_url: String,
 }
 
-#[tauri::command]
-pub async fn check_app_update(_app: AppHandle, state: State<'_, AppState>) -> Result<UpdateInfo, String> {
+/// Internal helper to check GitHub releases and stage update settings into SQLite.
+pub async fn check_and_stage_app_update(db: &Database) -> Result<UpdateInfo, String> {
     let current_version = env!("CARGO_PKG_VERSION").to_string();
 
     // Check if an update is already pending installation on restart
-    let pending = state
-        .db
+    let pending = db
         .get_setting("update_pending")
         .unwrap_or_default()
         .unwrap_or_default()
         == "true";
 
-    let pending_version = state
-        .db
+    let pending_version = db
         .get_setting("update_target_version")
         .unwrap_or_default()
         .unwrap_or_else(|| current_version.clone());
@@ -407,8 +406,7 @@ pub async fn check_app_update(_app: AppHandle, state: State<'_, AppState>) -> Re
             current_version: current_version.clone(),
             version: pending_version,
             notes: "Pending update ready to apply upon app restart".to_string(),
-            download_size_bytes: state
-                .db
+            download_size_bytes: db
                 .get_setting("update_asset_size")
                 .unwrap_or_default()
                 .and_then(|s| s.parse::<u64>().ok())
@@ -419,8 +417,7 @@ pub async fn check_app_update(_app: AppHandle, state: State<'_, AppState>) -> Re
     }
 
     // Check if user dismissed updates for this session
-    let dismissed = state
-        .db
+    let dismissed = db
         .get_setting("update_dismissed_session")
         .unwrap_or_default()
         .unwrap_or_default()
@@ -551,10 +548,10 @@ pub async fn check_app_update(_app: AppHandle, state: State<'_, AppState>) -> Re
 
     if is_newer && !dismissed && matched_asset.is_some() {
         let asset = matched_asset.unwrap();
-        let _ = state.db.set_setting("update_target_version", &remote_ver_str);
-        let _ = state.db.set_setting("update_download_url", &asset.browser_download_url);
-        let _ = state.db.set_setting("update_asset_name", &asset.name);
-        let _ = state.db.set_setting("update_asset_size", &asset.size.to_string());
+        let _ = db.set_setting("update_target_version", &remote_ver_str);
+        let _ = db.set_setting("update_download_url", &asset.browser_download_url);
+        let _ = db.set_setting("update_asset_name", &asset.name);
+        let _ = db.set_setting("update_asset_size", &asset.size.to_string());
 
         Ok(UpdateInfo {
             current_version,
@@ -578,6 +575,11 @@ pub async fn check_app_update(_app: AppHandle, state: State<'_, AppState>) -> Re
             update_available: false,
         })
     }
+}
+
+#[tauri::command]
+pub async fn check_app_update(_app: AppHandle, state: State<'_, AppState>) -> Result<UpdateInfo, String> {
+    check_and_stage_app_update(&state.db).await
 }
 
 /// Download application update installer from GitHub releases to disk.
