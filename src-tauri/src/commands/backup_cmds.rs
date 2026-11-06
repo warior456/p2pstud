@@ -377,7 +377,7 @@ struct GitHubRelease {
     assets: Vec<GitHubAsset>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct GitHubAsset {
     name: String,
     size: u64,
@@ -456,35 +456,92 @@ pub async fn check_app_update(_app: AppHandle, state: State<'_, AppState>) -> Re
         }
     };
 
-    if !resp.status().is_success() {
-        tracing::warn!(status = %resp.status(), "GitHub releases API returned non-success status");
-        return Ok(UpdateInfo {
-            current_version: current_version.clone(),
-            version: current_version,
-            notes: format!("Update server returned status {}", resp.status()),
-            download_size_bytes: 0,
-            is_pending: false,
-            update_available: false,
-        });
-    }
+    let (remote_ver_str, notes_str, matched_asset) = if resp.status().is_success() {
+        if let Ok(release) = resp.json::<GitHubRelease>().await {
+            let remote_ver = release.tag_name.trim().trim_start_matches('v').to_string();
+            let matched = {
+                #[cfg(target_os = "windows")]
+                {
+                    release
+                        .assets
+                        .iter()
+                        .find(|a| a.name.to_lowercase().ends_with("-setup.exe"))
+                        .or_else(|| {
+                            release.assets.iter().find(|a| {
+                                let name = a.name.to_lowercase();
+                                name.ends_with(".exe")
+                                    && !name.starts_with("anchor")
+                                    && !name.ends_with(".msi")
+                            })
+                        })
+                        .cloned()
+                }
+                #[cfg(target_os = "macos")]
+                {
+                    release
+                        .assets
+                        .iter()
+                        .find(|a| a.name.to_lowercase().ends_with(".dmg") || a.name.to_lowercase().ends_with(".tar.gz"))
+                        .cloned()
+                }
+                #[cfg(target_os = "linux")]
+                {
+                    release
+                        .assets
+                        .iter()
+                        .find(|a| (a.name.to_lowercase().ends_with(".appimage") || a.name.to_lowercase().ends_with(".deb")) && !a.name.to_lowercase().starts_with("anchor"))
+                        .cloned()
+                }
+                #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+                {
+                    None
+                }
+            };
+            (remote_ver, release.body.unwrap_or_else(|| "New release available on GitHub.".to_string()), matched)
+        } else {
+            (current_version.clone(), String::new(), None)
+        }
+    } else {
+        tracing::warn!(status = %resp.status(), "GitHub releases API returned non-success status, attempting web redirect fallback...");
+        // Fallback when GitHub API is rate-limited (HTTP 403) or blocked: follow HTML redirect
+        if let Ok(redir_resp) = client.get("https://github.com/warior456/p2pstud/releases/latest").send().await {
+            let final_url = redir_resp.url().as_str();
+            if let Some(tag_part) = final_url.split("/releases/tag/").nth(1) {
+                let tag = tag_part.trim().trim_matches('/');
+                let ver = tag.trim_start_matches('v').to_string();
 
-    let release = match resp.json::<GitHubRelease>().await {
-        Ok(rel) => rel,
-        Err(e) => {
-            tracing::warn!(error = %e, "Failed to parse GitHub release JSON");
-            return Ok(UpdateInfo {
-                current_version: current_version.clone(),
-                version: current_version,
-                notes: "Failed to parse update manifest from GitHub".to_string(),
-                download_size_bytes: 0,
-                is_pending: false,
-                update_available: false,
-            });
+                #[cfg(target_os = "windows")]
+                let (asset_name, dl_url) = (
+                    format!("p2pstud_{ver}_x64-setup.exe"),
+                    format!("https://github.com/warior456/p2pstud/releases/download/{tag}/p2pstud_{ver}_x64-setup.exe"),
+                );
+                #[cfg(target_os = "macos")]
+                let (asset_name, dl_url) = (
+                    format!("p2pstud_{ver}_aarch64.dmg"),
+                    format!("https://github.com/warior456/p2pstud/releases/download/{tag}/p2pstud_{ver}_aarch64.dmg"),
+                );
+                #[cfg(target_os = "linux")]
+                let (asset_name, dl_url) = (
+                    format!("p2pstud_{ver}_amd64.AppImage"),
+                    format!("https://github.com/warior456/p2pstud/releases/download/{tag}/p2pstud_{ver}_amd64.AppImage"),
+                );
+
+                let asset = Some(GitHubAsset {
+                    name: asset_name,
+                    size: 15 * 1024 * 1024,
+                    browser_download_url: dl_url,
+                });
+
+                (ver, format!("New release {tag} available on GitHub."), asset)
+            } else {
+                (current_version.clone(), format!("Update server returned status {}", resp.status()), None)
+            }
+        } else {
+            (current_version.clone(), format!("Update server returned status {}", resp.status()), None)
         }
     };
 
-    let remote_ver_str = release.tag_name.trim().trim_start_matches('v');
-    let remote_semver = semver::Version::parse(remote_ver_str).ok();
+    let remote_semver = semver::Version::parse(&remote_ver_str).ok();
     let current_semver = semver::Version::parse(&current_version).ok();
 
     let is_newer = match (remote_semver, current_semver) {
@@ -492,57 +549,17 @@ pub async fn check_app_update(_app: AppHandle, state: State<'_, AppState>) -> Re
         _ => remote_ver_str != current_version,
     };
 
-    // Find matching installer asset for host platform
-    let matched_asset = {
-        #[cfg(target_os = "windows")]
-        {
-            // Strictly target NSIS installer setup executable (-setup.exe), then non-anchor .exe, ignoring .msi
-            release
-                .assets
-                .iter()
-                .find(|a| a.name.to_lowercase().ends_with("-setup.exe"))
-                .or_else(|| {
-                    release.assets.iter().find(|a| {
-                        let name = a.name.to_lowercase();
-                        name.ends_with(".exe")
-                            && !name.starts_with("anchor")
-                            && !name.ends_with(".msi")
-                    })
-                })
-        }
-        #[cfg(target_os = "macos")]
-        {
-            release.assets.iter().find(|a| {
-                let name = a.name.to_lowercase();
-                name.ends_with(".dmg") || name.ends_with(".tar.gz")
-            })
-        }
-        #[cfg(target_os = "linux")]
-        {
-            release.assets.iter().find(|a| {
-                let name = a.name.to_lowercase();
-                (name.ends_with(".appimage") || name.ends_with(".deb")) && !name.starts_with("anchor")
-            })
-        }
-        #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
-        {
-            None
-        }
-    };
-
     if is_newer && !dismissed && matched_asset.is_some() {
         let asset = matched_asset.unwrap();
-        let _ = state.db.set_setting("update_target_version", remote_ver_str);
+        let _ = state.db.set_setting("update_target_version", &remote_ver_str);
         let _ = state.db.set_setting("update_download_url", &asset.browser_download_url);
         let _ = state.db.set_setting("update_asset_name", &asset.name);
         let _ = state.db.set_setting("update_asset_size", &asset.size.to_string());
 
         Ok(UpdateInfo {
             current_version,
-            version: remote_ver_str.to_string(),
-            notes: release
-                .body
-                .unwrap_or_else(|| "New release available on GitHub.".to_string()),
+            version: remote_ver_str,
+            notes: notes_str,
             download_size_bytes: asset.size,
             is_pending: false,
             update_available: true,
@@ -550,11 +567,11 @@ pub async fn check_app_update(_app: AppHandle, state: State<'_, AppState>) -> Re
     } else {
         Ok(UpdateInfo {
             current_version: current_version.clone(),
-            version: remote_ver_str.to_string(),
+            version: remote_ver_str,
             notes: if is_newer && matched_asset.is_none() {
                 "New version found, but no compatible installer artifact was found for this platform.".to_string()
             } else {
-                "P2P Workspace is up to date.".to_string()
+                notes_str
             },
             download_size_bytes: 0,
             is_pending: false,

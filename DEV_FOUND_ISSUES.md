@@ -162,5 +162,18 @@
   - Added **Automated Swarm Rendezvous** card in `src/components/Settings/NetworkSettings.tsx` showing the active topic and a one-click "Discover Peers Now" button.
   - Bumped version to `0.1.19` across `package.json`, `src-tauri/Cargo.toml`, and `src-tauri/tauri.conf.json`.
 
+---
+
+## Issues & Resolutions (Version 0.1.20)
+
+### 1. GitHub API Rate-Limit Resilience (Updater Fallback)
+- **Issue:** Older app version (0.1.17) could not find the 0.1.19 update on GitHub Releases (`check_app_update` reported "P2P Workspace is up to date" or failed).
+- **Root Cause:** GitHub imposes a strict unauthenticated rate limit of 60 requests/hour per IP on `api.github.com`. When querying `api.github.com/repos/warior456/p2pstud/releases/latest` from shared campus/coworking IPs, GitHub returned `HTTP 403 Forbidden ("API rate limit exceeded")`. The updater treated this non-success status as "no update available".
+- **Fix:**
+  - In `src-tauri/src/commands/backup_cmds.rs`: Added an automatic rate-limit fallback. If `api.github.com` returns a non-success status (e.g. HTTP 403 Rate Limited), the updater queries `https://github.com/warior456/p2pstud/releases/latest` via standard HTTP redirect.
+  - The web redirect (`302 Found -> /releases/tag/v...`) has zero API rate limits and immediately resolves the latest release tag (e.g. `v0.1.19`), constructing the direct setup package download URL without being blocked.
+  - Bumped version to `0.1.20` across `package.json`, `src-tauri/Cargo.toml`, and `src-tauri/tauri.conf.json`.
+
+
 
 

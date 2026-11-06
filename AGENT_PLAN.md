@@ -46,7 +46,7 @@ At the end of every session (or when interrupted), update the `## Progress Track
 ## Progress Tracker
 
 > **Last session:** 2026-11-06
-> **Last completed task:** Step 51 completed: Implemented Automated HTTPS Swarm Rendezvous (Zero-Config Peer Discovery) over Port 443 in `p2p/rendezvous.rs`: enables instant peer discovery across client-isolated Wi-Fi routers and campus firewalls using topic-hashed presence announcements; added `trigger_swarm_discovery` and `get_rendezvous_topic` IPC commands; integrated discovery UI into Network Settings. Version bumped to 0.1.19 across `package.json`, `src-tauri/Cargo.toml`, and `src-tauri/tauri.conf.json`.
+> **Last completed task:** Step 52 completed: Hardened GitHub Release updater against API rate limits (HTTP 403 Forbidden): added redirect fallback to `https://github.com/warior456/p2pstud/releases/latest` to resolve latest release tags and direct asset downloads when GitHub API limit is exhausted. Version bumped to 0.1.20 across `package.json`, `src-tauri/Cargo.toml`, and `src-tauri/tauri.conf.json`.
 > **Next action:** Production release testing and distribution.
 
 | # | Step | Status | Notes |
@@ -102,6 +102,7 @@ At the end of every session (or when interrupted), update the `## Progress Track
 | 49 | Offline-First Resilience: Preloaded BlobStore, Disk NodeId Ownership & Offline File Reading | ✅ | Preloaded local BlobStore in AppState on boot; offline cache recognition for 3GB cached blobs in `list_files`; direct offline byte reading in `read_file_bytes`; persistent disk Ed25519 identity fallback for `get_node_id` & file ownership; endpoint fallback & retry loop. Version bumped to 0.1.16. |
 | 50 | Seamless In-Place NSIS Auto-Updating (No Uninstall/Reinstall Prompts) | ✅ | Configured NSIS `installMode: "currentUser"` & `allowDowngrades: true`; removed `msi` from bundle targets; prioritized `-setup.exe` in asset matching; detached windowless updater runner waits for process exit, runs silent `/S` in-place upgrade, and relaunches the upgraded application. Version bumped to 0.1.17. |
 | 51 | Automated HTTPS Swarm Rendezvous (Zero-Config Peer Discovery) | ✅ | Implemented `p2p/rendezvous.rs` topic-based discovery over HTTPS port 443; enables zero-config peer pairing on client-isolated Wi-Fi and firewalled campus networks without DHT or manual ticket exchange; added manual discovery trigger and UI status in Network Settings. Version bumped to 0.1.19. |
+| 52 | GitHub Updater Rate-Limit Resilience | ✅ | Added HTML redirect fallback on `releases/latest` to resolve latest release and assets when `api.github.com` unauthenticated IP rate limit (HTTP 403) is exhausted on shared campus networks. Version bumped to 0.1.20. |
 
 ---
 
