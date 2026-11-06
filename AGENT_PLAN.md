@@ -45,8 +45,8 @@ At the end of every session (or when interrupted), update the `## Progress Track
 
 ## Progress Tracker
 
-> **Last session:** 2026-11-05
-> **Last completed task:** Step 50 completed: Resolved seamless in-place application auto-updating on Windows: eliminated MSI uninstall/reinstall requirement by configuring NSIS with `installMode: "currentUser"` and `allowDowngrades: true`; removed `msi` from `bundle.targets`; prioritized `-setup.exe` in GitHub release asset matching; and implemented a detached windowless PowerShell background updater script in `install_app_update` that waits for process termination to release file locks, executes silent `/S` in-place upgrades without wizard/uninstall prompts, and automatically relaunches the updated executable. Synchronized version 0.1.17 across `package.json`, `src-tauri/Cargo.toml`, and `src-tauri/tauri.conf.json`.
+> **Last session:** 2026-11-06
+> **Last completed task:** Step 51 completed: Implemented Automated HTTPS Swarm Rendezvous (Zero-Config Peer Discovery) over Port 443 in `p2p/rendezvous.rs`: enables instant peer discovery across client-isolated Wi-Fi routers and campus firewalls using topic-hashed presence announcements; added `trigger_swarm_discovery` and `get_rendezvous_topic` IPC commands; integrated discovery UI into Network Settings. Version bumped to 0.1.19 across `package.json`, `src-tauri/Cargo.toml`, and `src-tauri/tauri.conf.json`.
 > **Next action:** Production release testing and distribution.
 
 | # | Step | Status | Notes |
@@ -101,6 +101,7 @@ At the end of every session (or when interrupted), update the `## Progress Track
 | 48 | EU Relay Standardization, Restored Window [X] Minimize, Streamlined Sole-Seed Quit, Connection Doctor & DB Delete | ✅ | Western Europe EU relay lock; ToS verification; TCP 443 live reachability probe; direct quit on non-sole-seed and warning popup on sole seed; restored [X] minimizing to tray; Connection Doctor concrete results and Blocked rendering; Clear Database & Delete Database buttons. Version bumped to 0.1.15. |
 | 49 | Offline-First Resilience: Preloaded BlobStore, Disk NodeId Ownership & Offline File Reading | ✅ | Preloaded local BlobStore in AppState on boot; offline cache recognition for 3GB cached blobs in `list_files`; direct offline byte reading in `read_file_bytes`; persistent disk Ed25519 identity fallback for `get_node_id` & file ownership; endpoint fallback & retry loop. Version bumped to 0.1.16. |
 | 50 | Seamless In-Place NSIS Auto-Updating (No Uninstall/Reinstall Prompts) | ✅ | Configured NSIS `installMode: "currentUser"` & `allowDowngrades: true`; removed `msi` from bundle targets; prioritized `-setup.exe` in asset matching; detached windowless updater runner waits for process exit, runs silent `/S` in-place upgrade, and relaunches the upgraded application. Version bumped to 0.1.17. |
+| 51 | Automated HTTPS Swarm Rendezvous (Zero-Config Peer Discovery) | ✅ | Implemented `p2p/rendezvous.rs` topic-based discovery over HTTPS port 443; enables zero-config peer pairing on client-isolated Wi-Fi and firewalled campus networks without DHT or manual ticket exchange; added manual discovery trigger and UI status in Network Settings. Version bumped to 0.1.19. |
 
 ---
 

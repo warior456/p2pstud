@@ -5,4 +5,5 @@ pub mod engine;
 pub mod identity;
 pub mod network_profile;
 pub mod relay;
+pub mod rendezvous;
 pub mod sync;

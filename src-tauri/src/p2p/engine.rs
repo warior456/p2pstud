@@ -122,6 +122,9 @@ impl IrohEngine {
             }
         });
 
+        // 6. Start automated HTTPS Swarm Rendezvous discovery
+        crate::p2p::rendezvous::start_swarm_rendezvous(endpoint.clone(), db.clone(), store.clone());
+
         Ok(IrohEngine {
             endpoint,
             blobs,

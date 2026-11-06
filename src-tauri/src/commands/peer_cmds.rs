@@ -333,3 +333,34 @@ pub async fn get_swarm_version_info(
     let current_version = env!("CARGO_PKG_VERSION");
     Ok(crate::storage::blob_tracker::calculate_swarm_median_version(&state.db, current_version))
 }
+
+/// Trigger an immediate rendezvous announcement and peer discovery sweep.
+#[tauri::command]
+pub async fn trigger_swarm_discovery(state: State<'_, AppState>) -> Result<String, String> {
+    let guard = state.engine.read().await;
+    let engine = guard.as_ref().ok_or("Iroh engine not yet started")?;
+    let db = state.db.clone();
+    let store = engine.store.clone();
+    let endpoint = engine.endpoint.clone();
+
+    tokio::spawn(async move {
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(8))
+            .build()
+            .unwrap_or_default();
+        let _ = crate::p2p::rendezvous::run_rendezvous_cycle(&client, &endpoint, &db, &store).await;
+    });
+
+    Ok("Swarm rendezvous discovery initiated".to_string())
+}
+
+/// Get the active rendezvous topic name for the current network.
+#[tauri::command]
+pub async fn get_rendezvous_topic(state: State<'_, AppState>) -> Result<String, String> {
+    let secret = state
+        .db
+        .get_setting("network_secret")
+        .unwrap_or_default()
+        .unwrap_or_default();
+    Ok(crate::p2p::rendezvous::derive_rendezvous_topic(&secret))
+}

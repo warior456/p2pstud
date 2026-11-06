@@ -302,6 +302,8 @@ pub fn run() {
             commands::peer_cmds::get_sole_seed_files,
             commands::peer_cmds::get_swarm_version_info,
             commands::peer_cmds::reconnect_swarm,
+            commands::peer_cmds::trigger_swarm_discovery,
+            commands::peer_cmds::get_rendezvous_topic,
             commands::diagnostic_cmds::run_connection_doctor,
             commands::backup_cmds::export_app_backup,
             commands::backup_cmds::pick_backup_save_dialog,

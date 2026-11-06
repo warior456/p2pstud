@@ -52,6 +52,9 @@ export function NetworkSettings() {
   const [copiedId, setCopiedId] = useState<boolean>(false);
   const [copiedTicket, setCopiedTicket] = useState<boolean>(false);
   const [peers, setPeers] = useState<PeerInfo[]>([]);
+  const [rendezvousTopic, setRendezvousTopic] = useState<string>('');
+  const [triggeringDiscovery, setTriggeringDiscovery] = useState<boolean>(false);
+  const [discoveryMsg, setDiscoveryMsg] = useState<string | null>(null);
 
   // Network Databases & Multi-Swarm Workspaces
   const [databases, setDatabases] = useState<NetworkDatabaseInfo[]>([]);
@@ -115,6 +118,27 @@ export function NetworkSettings() {
       const peerList = await invoke<PeerInfo[]>('list_peers');
       if (peerList) setPeers(peerList);
     } catch {}
+
+    try {
+      const topic = await invoke<string>('get_rendezvous_topic');
+      if (topic) setRendezvousTopic(topic);
+    } catch {}
+  };
+
+  const handleTriggerDiscovery = async () => {
+    setTriggeringDiscovery(true);
+    setDiscoveryMsg(null);
+    try {
+      await invoke('trigger_swarm_discovery');
+      setDiscoveryMsg('Presence announced! Polling for swarm peers...');
+      setTimeout(() => {
+        loadNetworkInfo();
+      }, 1500);
+    } catch (err) {
+      setDiscoveryMsg(`Discovery trigger failed: ${err}`);
+    } finally {
+      setTimeout(() => setTriggeringDiscovery(false), 2000);
+    }
   };
 
   useEffect(() => {
@@ -393,6 +417,46 @@ export function NetworkSettings() {
             <p className="text-[10px] font-mono text-gray-400 truncate">
               Direct Socket Address: {nodeAddr}
             </p>
+          )}
+        </div>
+      </div>
+
+      {/* Automated Swarm Rendezvous (Zero-Config Discovery) */}
+      <div className="bg-white p-6 rounded-xl border border-gray-200 shadow-xs space-y-4">
+        <div className="flex items-center justify-between border-b border-gray-100 pb-3 flex-wrap gap-2">
+          <div className="flex items-center gap-2.5">
+            <Radio className="w-5 h-5 text-indigo-600" />
+            <div>
+              <h3 className="text-sm font-bold text-gray-900">Automated Swarm Rendezvous</h3>
+              <p className="text-xs text-gray-500">
+                Zero-config discovery over HTTPS (Port 443). Bypasses router client isolation and campus firewalls.
+              </p>
+            </div>
+          </div>
+          <button
+            onClick={handleTriggerDiscovery}
+            disabled={triggeringDiscovery}
+            className="px-3 py-1.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-colors disabled:opacity-50 cursor-pointer"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${triggeringDiscovery ? 'animate-spin' : ''}`} />
+            <span>{triggeringDiscovery ? 'Broadcasting...' : 'Discover Peers Now'}</span>
+          </button>
+        </div>
+
+        <div className="bg-indigo-50/60 rounded-lg p-3 text-xs space-y-2 border border-indigo-100">
+          <div className="flex items-center justify-between flex-wrap gap-2">
+            <span className="font-semibold text-indigo-950">Active Swarm Rendezvous Topic:</span>
+            <code className="bg-white border border-indigo-200 px-2 py-0.5 rounded text-[11px] font-mono text-indigo-700 select-all">
+              {rendezvousTopic || 'p2pstud-open-swarm'}
+            </code>
+          </div>
+          <p className="text-[11px] text-indigo-900 leading-relaxed">
+            All students sharing your current workspace passphrase automatically discover each other every 20 seconds. Once connected, workspace files synchronize directly peer-to-peer or via the encrypted EU relay.
+          </p>
+          {discoveryMsg && (
+            <div className="mt-2 text-xs font-medium text-emerald-800 bg-emerald-50 border border-emerald-200 p-2 rounded">
+              {discoveryMsg}
+            </div>
           )}
         </div>
       </div>

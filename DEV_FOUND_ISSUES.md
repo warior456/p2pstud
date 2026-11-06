@@ -134,4 +134,33 @@
       4. Exits the running application immediately with `app.exit(0)`.
   - Bumped version to `0.1.17` across `package.json`, `src-tauri/Cargo.toml`, and `src-tauri/tauri.conf.json`.
 
+---
+
+## Issues & Resolutions (Version 0.1.18)
+
+### 1. Connect Peer Parameter Mapping Fix
+- **Issue:** Adding a peer via "Add Peer to Swarm" failed because the frontend invoked `connect_peer` with `nodeAddrOrTicket` while the Rust backend command expected `node_id`.
+- **Fix:** Updated `connect_peer` in `src-tauri/src/commands/peer_cmds.rs` to accept both `node_id` and `node_addr_or_ticket`, and updated `NetworkSettings.tsx` to pass both fields.
+
+---
+
+## Issues & Resolutions (Version 0.1.19)
+
+### 1. Automated HTTPS Swarm Rendezvous (Zero-Config Peer Discovery)
+- **Issue:** Peers on the same campus/coworking Wi-Fi (`maakleerplek - cowork`) could not discover each other because router client isolation blocked local mDNS packets and university firewalls blocked raw BitTorrent UDP/DHT traffic.
+- **Root Cause:**
+  1. Router Client Isolation actively drops all local broadcast and multicast packets between devices on the same Wi-Fi.
+  2. Public Iroh relays (`euw1-1.relay.iroh.network`) are blind packet forwarders with zero-knowledge encryption: they do not maintain public peer matchmaking lists.
+  3. DHT is a key-value dictionary without broadcast capability, and raw DHT is disabled in campus stealth mode to avoid firewall blocks.
+- **Fix:**
+  - Implemented `src-tauri/src/p2p/rendezvous.rs`:
+    - Derives a deterministic, opaque 24-hex topic from the user's Swarm Passphrase using BLAKE3 (e.g. `p2pstud-644917...` for open swarm, or unique hash for private groups).
+    - Starts a background rendezvous worker that periodically publishes the node's `EndpointTicket` (direct addresses + relay URL) over HTTPS (port 443) and polls for active peers on the same topic.
+    - As soon as peers appear on the topic, automatically initiates QUIC connections (`endpoint.connect`) and workspace catalog synchronization (`sync_catalog_with_peer`).
+    - Works 100% through campus firewalls, eduroam, and client-isolated Wi-Fi without manual ticket exchange.
+  - Added IPC commands `trigger_swarm_discovery` and `get_rendezvous_topic` to `peer_cmds.rs` and registered them in `lib.rs`.
+  - Added **Automated Swarm Rendezvous** card in `src/components/Settings/NetworkSettings.tsx` showing the active topic and a one-click "Discover Peers Now" button.
+  - Bumped version to `0.1.19` across `package.json`, `src-tauri/Cargo.toml`, and `src-tauri/tauri.conf.json`.
+
+
 
