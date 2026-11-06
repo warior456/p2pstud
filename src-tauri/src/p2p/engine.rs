@@ -54,7 +54,23 @@ impl IrohEngine {
             _ => data_dir.join("blobs"),
         };
         std::fs::create_dir_all(&blob_dir)?;
-        let store = BlobStore::load(&blob_dir).await?;
+        let store = match BlobStore::load(&blob_dir).await {
+            Ok(s) => s,
+            Err(e) => {
+                let err_str = e.to_string();
+                if err_str.contains("redb v2") || err_str.contains("migration") || err_str.contains("Database error") {
+                    tracing::warn!("Incompatible or obsolete blob store index detected ({err_str}). Backing up legacy index and rebuilding redb store...");
+                    let old_db = blob_dir.join("blobs.db");
+                    if old_db.exists() {
+                        let backup = blob_dir.join("blobs.db.v2.bak");
+                        let _ = std::fs::rename(&old_db, &backup);
+                    }
+                    BlobStore::load(&blob_dir).await?
+                } else {
+                    return Err(e.into());
+                }
+            }
+        };
 
         // 4. Build QUIC endpoint with relay fallback and presets.
         // Disable portmapper (UPnP / NAT-PMP) by default to prevent triggering campus IDS/firewall

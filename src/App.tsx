@@ -96,6 +96,7 @@ export default function App() {
   // Auto-updater, network classification, and quit modal states
   const [availableUpdate, setAvailableUpdate] = useState<UpdateInfo | null>(null);
   const [isUpdatePending, setIsUpdatePending] = useState<boolean>(false);
+  const [isUpdatingNow, setIsUpdatingNow] = useState<boolean>(false);
   const [dismissedNetworkPrompt, setDismissedNetworkPrompt] = useState<boolean>(false);
   const [showQuitModal, setShowQuitModal] = useState<boolean>(false);
   const [soleSeedsOnQuit, setSoleSeedsOnQuit] = useState<any[]>([]);
@@ -707,12 +708,14 @@ export default function App() {
 
   const handleUpdateAndRestartNow = async () => {
     try {
-      setToastMessage('Downloading update and restarting...');
+      setIsUpdatingNow(true);
+      setToastMessage('Downloading update (15 MB)... please wait a moment.');
       await invoke('download_app_update');
+      setToastMessage('Download complete! Applying update and restarting...');
       setIsUpdatePending(true);
-      setAvailableUpdate(null);
       await invoke('confirm_app_exit', { installUpdate: true });
     } catch (err) {
+      setIsUpdatingNow(false);
       alert(`Failed to apply update: ${err}`);
     }
   };
@@ -1691,19 +1694,23 @@ export default function App() {
               <div className="flex flex-wrap items-center gap-2 mt-3">
                 <button
                   onClick={handleUpdateAndRestartNow}
-                  className="px-3 py-1 bg-blue-600 hover:bg-blue-500 text-white rounded text-xs font-semibold cursor-pointer shadow-xs"
+                  disabled={isUpdatingNow}
+                  className="px-3 py-1 bg-blue-600 hover:bg-blue-500 text-white rounded text-xs font-semibold cursor-pointer shadow-xs disabled:opacity-50 flex items-center gap-1.5"
                 >
-                  Update & Restart Now
+                  {isUpdatingNow && <RefreshCw className="w-3.5 h-3.5 animate-spin" />}
+                  <span>{isUpdatingNow ? 'Downloading & Restarting...' : 'Update & Restart Now'}</span>
                 </button>
                 <button
                   onClick={handleApplyUpdateOnRestart}
-                  className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-600 rounded text-xs font-medium cursor-pointer"
+                  disabled={isUpdatingNow}
+                  className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-600 rounded text-xs font-medium cursor-pointer disabled:opacity-50"
                 >
                   On Next Restart
                 </button>
                 <button
                   onClick={handleDismissUpdateToast}
-                  className="px-2 py-1 text-slate-400 hover:text-white text-xs cursor-pointer"
+                  disabled={isUpdatingNow}
+                  className="px-2 py-1 text-slate-400 hover:text-white text-xs cursor-pointer disabled:opacity-50"
                 >
                   Later
                 </button>

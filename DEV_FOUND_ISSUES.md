@@ -1,5 +1,28 @@
 # DEV_FOUND_ISSUES.md — Resolved Issues Log
 
+## Issues & Resolutions (Version 0.1.23)
+
+### 1. Iroh Engine Crash on Legacy redb v2 Index (`migration from redb v2 no longer supported`)
+- **Issue:** P2P engine failed to start on existing installations, causing "Complete Node Ticket" to be stuck on "Generating ticket..." and swarm discovery to fail with "P2P network engine is still starting up".
+- **Root Cause:**
+  - Upgrading `iroh-blobs` to `0.104` moved the underlying storage engine to `redb v3`.
+  - When loading an existing user blob directory containing a legacy `blobs.db` created under `redb v2`, `BlobStore::load` threw `migration from redb v2 no longer supported; upgrade with an older redb version first`.
+  - This prevented the engine from ever initializing and caused `state.engine` to remain `None` permanently.
+- **Fix:**
+  - `src-tauri/src/p2p/engine.rs`: Added automatic recovery for obsolete/incompatible database indexes. If `BlobStore::load` detects a legacy `redb v2` or migration error, it safely backs up `blobs.db` to `blobs.db.v2.bak` and initializes a fresh `redb v3` index, preserving all existing `.data` and `.obao4` course files intact. Verified with live integration test booting the real user data directory in 0.19 seconds.
+
+### 2. Silent In-Place Updater Process Lock & Hanging Restarts
+- **Issue:** Clicking "Update & Restart Now" appeared to do nothing; process remained running and the new version did not start.
+- **Root Cause:**
+  - `confirm_app_exit` and `install_app_update` previously invoked `app.exit(0)`, which was intercepted and cancelled by Tauri's `WindowEvent::CloseRequested` handler (`api.prevent_close()`), keeping `p2pstud.exe` running and locking the executable.
+  - The silent NSIS installer failed because Windows blocked overwriting an actively executing binary (`ERROR_SHARING_VIOLATION`).
+  - No downloading visual feedback was given while the ~15MB installer was transferring over HTTPS.
+- **Fix:**
+  - `src-tauri/src/commands/backup_cmds.rs`: Updated detached PowerShell updater script to forcefully terminate the old process ID and kill any locked instances before invoking NSIS silently with `/S`, followed by `std::process::exit(0)` to release all OS locks immediately.
+  - `src/App.tsx`: Added `isUpdatingNow` spinner state, disabled button during download, and displayed clear stage indicators ("Downloading update (15 MB)..." and "Applying update and restarting...").
+
+---
+
 ## Issues & Resolutions (Version 0.1.22)
 
 ### 1. Swarm Rendezvous Startup Timing & Adaptive Discovery Speed

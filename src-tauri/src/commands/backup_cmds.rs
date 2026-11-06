@@ -646,7 +646,7 @@ pub async fn download_app_update(app: AppHandle, state: State<'_, AppState>) -> 
 
 /// Apply the pending update by spawning the installer and exiting the app.
 #[tauri::command]
-pub async fn install_app_update(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+pub async fn install_app_update(_app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
     let installer_path_str = state
         .db
         .get_setting("update_installer_path")
@@ -679,30 +679,34 @@ pub async fn install_app_update(app: AppHandle, state: State<'_, AppState>) -> R
             .replace('\'', "''");
 
         // Use detached PowerShell script that:
-        // 1. Waits for current p2pstud process to exit and release file locks
+        // 1. Force terminates the running p2pstud process to guarantee file lock release
         // 2. Executes NSIS silently with /S (does in-place upgrade, no uninstall prompt)
         // 3. Relaunches the updated executable
         let script = if installer_path_str.ends_with(".msi") {
             format!(
-                "try {{ Wait-Process -Id {pid} -Timeout 10 -ErrorAction SilentlyContinue }} catch {{}}; \
+                "try {{ Stop-Process -Id {pid} -Force -ErrorAction SilentlyContinue }} catch {{}}; \
                  Start-Sleep -Milliseconds 600; \
                  Start-Process -FilePath 'msiexec.exe' -ArgumentList '/i', '\"{}\"', '/passive', '/norestart' -Wait; \
                  Start-Sleep -Milliseconds 800; \
                  $target = '{current_exe}'; \
-                 $fallback = [System.Environment]::GetFolderPath('LocalApplicationData') + '\\Programs\\p2pstud\\p2pstud.exe'; \
-                 if (-not (Test-Path $target)) {{ $target = $fallback }}; \
+                 $f1 = [System.Environment]::GetFolderPath('LocalApplicationData') + '\\p2pstud\\p2pstud.exe'; \
+                 $f2 = [System.Environment]::GetFolderPath('LocalApplicationData') + '\\Programs\\p2pstud\\p2pstud.exe'; \
+                 if (-not (Test-Path $target)) {{ if (Test-Path $f1) {{ $target = $f1 }} elseif (Test-Path $f2) {{ $target = $f2 }} }}; \
                  if (Test-Path $target) {{ Start-Process -FilePath $target }}",
                 escaped_installer
             )
         } else {
             format!(
-                "try {{ Wait-Process -Id {pid} -Timeout 10 -ErrorAction SilentlyContinue }} catch {{}}; \
+                "try {{ Stop-Process -Id {pid} -Force -ErrorAction SilentlyContinue }} catch {{}}; \
+                 Start-Sleep -Milliseconds 800; \
+                 Get-Process -Name 'p2pstud' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue; \
                  Start-Sleep -Milliseconds 600; \
                  Start-Process -FilePath '{escaped_installer}' -ArgumentList '/S' -Wait; \
-                 Start-Sleep -Milliseconds 800; \
+                 Start-Sleep -Milliseconds 1200; \
                  $target = '{current_exe}'; \
-                 $fallback = [System.Environment]::GetFolderPath('LocalApplicationData') + '\\Programs\\p2pstud\\p2pstud.exe'; \
-                 if (-not (Test-Path $target)) {{ $target = $fallback }}; \
+                 $f1 = [System.Environment]::GetFolderPath('LocalApplicationData') + '\\p2pstud\\p2pstud.exe'; \
+                 $f2 = [System.Environment]::GetFolderPath('LocalApplicationData') + '\\Programs\\p2pstud\\p2pstud.exe'; \
+                 if (-not (Test-Path $target)) {{ if (Test-Path $f1) {{ $target = $f1 }} elseif (Test-Path $f2) {{ $target = $f2 }} }}; \
                  if (Test-Path $target) {{ Start-Process -FilePath $target }}",
             )
         };
@@ -716,8 +720,7 @@ pub async fn install_app_update(app: AppHandle, state: State<'_, AppState>) -> R
             .creation_flags(CREATE_NO_WINDOW | DETACHED_PROCESS)
             .spawn();
 
-        app.exit(0);
-        return Ok(());
+        std::process::exit(0);
     }
 
     #[cfg(target_os = "macos")]
@@ -725,8 +728,7 @@ pub async fn install_app_update(app: AppHandle, state: State<'_, AppState>) -> R
         let _ = std::process::Command::new("open")
             .arg(&installer_path)
             .spawn();
-        app.exit(0);
-        return Ok(());
+        std::process::exit(0);
     }
 
     #[cfg(target_os = "linux")]
@@ -738,8 +740,7 @@ pub async fn install_app_update(app: AppHandle, state: State<'_, AppState>) -> R
                 .status();
         }
         let _ = std::process::Command::new(&installer_path).spawn();
-        app.exit(0);
-        return Ok(());
+        std::process::exit(0);
     }
 
     #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
@@ -766,7 +767,7 @@ pub async fn confirm_app_exit(
     if install_update {
         install_app_update(app, state).await?;
     } else {
-        app.exit(0);
+        std::process::exit(0);
     }
     Ok(())
 }
