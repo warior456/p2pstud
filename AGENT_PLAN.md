@@ -46,8 +46,8 @@ At the end of every session (or when interrupted), update the `## Progress Track
 ## Progress Tracker
 
 > **Last session:** 2026-11-07
-> **Last completed task:** Step 59 completed: Upgraded `zip` crate to `9.4.1` and synchronized `Cargo.lock` & `src-tauri/Cargo.lock` to resolve Dependabot alerts; removed duplicate `src-tauri` cargo directory entry in `.github/dependabot.yml`; added live download progress streaming and foreground staged installer launcher in `BackupSettings.tsx` and `App.tsx`; intercepted close requested event to prevent hard quit in `lib.rs`; bumped version to 0.1.29 across `package.json`, `src-tauri/Cargo.toml`, and `src-tauri/tauri.conf.json`.
-> **Next action:** Production release build and distribution.
+> **Last completed task:** Step 60 completed: Successfully compiled optimized release binary and packaged NSIS desktop installer bundle `p2pstud_0.1.29_x64-setup.exe` (13.82 MiB) with upgraded `zip 9.4.1`, live update download progress bar, staged installer launcher, and safe window close intercept.
+> **Next action:** Production release distribution and testing.
 
 | # | Step | Status | Notes |
 |---|---|---|---|
@@ -110,6 +110,7 @@ At the end of every session (or when interrupted), update the `## Progress Track
 | 57 | Zero-Domain Light VPS Anchor Defaults & Deployment Documentation | ✅ | Standardized `docker/Dockerfile`, `docker-compose.yml`, `docker/.env.example`, and `docker/p2pstud-anchor.service` to default to zero-domain `--no-relay` storage mode with public EU relay fallback; documented light VPS setup in `README.md`; bumped version to 0.1.28. |
 | 58 | Windows Release NSIS Installer Packaging (v0.1.28) | ✅ | Successfully compiled release binary and packaged NSIS desktop installer bundle (`p2pstud_0.1.28_x64-setup.exe`, 13.82 MiB) with all 37 Vitest tests passing. |
 | 59 | Dependabot Alert Fix (zip 9.4.1), Lockfile Sync & Live Updater Progress (v0.1.29) | ✅ | Upgraded `zip` crate to `9.4.1`, synced root and `src-tauri` Cargo.lock, deduplicated `dependabot.yml` cargo config, added live update download progress streaming and foreground setup launcher, prevented abrupt window close in `lib.rs`, and bumped version to 0.1.29. |
+| 60 | Windows Release NSIS Installer Packaging (v0.1.29) | ✅ | Successfully compiled optimized release binary and packaged NSIS desktop installer bundle (`p2pstud_0.1.29_x64-setup.exe`, 13.82 MiB) with all 37 Vitest tests passing. |
 
 ---
 
