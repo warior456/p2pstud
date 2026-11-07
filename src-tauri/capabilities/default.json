@@ -1,0 +1,28 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Default capability for all application windows",
+  "windows": [
+    "main",
+    "*"
+  ],
+  "permissions": [
+    "core:default",
+    "core:event:default",
+    "core:event:allow-listen",
+    "core:event:allow-unlisten",
+    "core:event:allow-emit",
+    "core:event:allow-emit-to",
+    "core:app:default",
+    "core:path:default",
+    "core:window:default",
+    "core:webview:default",
+    "core:image:default",
+    "core:resources:default",
+    "core:menu:default",
+    "core:tray:default",
+    "shell:default",
+    "fs:default",
+    "autostart:default"
+  ]
+}

@@ -46,7 +46,7 @@ At the end of every session (or when interrupted), update the `## Progress Track
 ## Progress Tracker
 
 > **Last session:** 2026-11-07
-> **Last completed task:** Step 62 completed: Ownership encoding normalization, blob store auto-healing, dead/non-updating UI fixes, and silent in-place binary auto-updater (v0.1.32).
+> **Last completed task:** Step 63 completed: Importer progress events ACL permission fix, responsive disk speed calculation, completed state transition, and banner auto-dismiss lifecycle (v0.1.33).
 > **Next action:** Production release distribution and testing.
 
 | # | Step | Status | Notes |
@@ -113,6 +113,7 @@ At the end of every session (or when interrupted), update the `## Progress Track
 | 60 | Windows Release NSIS Installer Packaging (v0.1.29) | ✅ | Successfully compiled optimized release binary and packaged NSIS desktop installer bundle (`p2pstud_0.1.29_x64-setup.exe`, 13.82 MiB) with all 37 Vitest tests passing. |
 | 61 | Automated Swarm Discovery, Relay Modernization & Peer Visibility (v0.1.30) | ✅ | Fixed dead Iroh 0.x relay domain to `euc1-1.relay.n0.iroh.link`, enabled `AddrFilter::unfiltered()` for local/direct IP dialing, converted `CatalogSyncHandler` to multiplexed accept bi-stream loop, resolved announce reflection bug, included non-seeding peers in peer counts/listing via `peer_versions` and in-memory active endpoints, augmented bare NodeId connects with active relay, updated DB migration 0016, and passed all integration and unit tests. |
 | 62 | NodeId Canonicalization, Disk Blob Auto-Heal & Silent In-Place Binary Updater (v0.1.32) | ✅ | Resolved base32 vs hex node ID mismatch for "You (Owner)" badge; added physical disk blob auto-healing for 3.7GB cached blobs; fixed Sole-Seed banner click-to-filter & interactive Node ID copying; replaced interactive foreground installer with silent in-place binary replacement across Windows, Linux & macOS; exported intermediary standalone binaries in GitHub Actions without duplicate builds. |
+| 63 | Importer Progress Bar, Live Disk Speed & Auto-Dismiss Lifecycle (v0.1.33) | ✅ | Created `src-tauri/capabilities/default.json` restoring Tauri v2 `core:event` IPC permissions so frontend receives `import-progress` events; added dual app/window event delivery; implemented rolling local disk speed throughput calculation; guaranteed `status: 'completed'` and 3.5s auto-dismissal in `ImportingBanner.tsx` and `handleExecuteZipUnpack`. |
 
 ---
 

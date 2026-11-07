@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 import { PackageOpen, CheckCircle2, AlertCircle, X, HardDrive, Loader2 } from 'lucide-react';
 import { ImportProgress } from '../types';
 
@@ -24,13 +24,24 @@ function formatSpeed(bytesPerSec: number): string {
 }
 
 export const ImportingBanner: React.FC<ImportingBannerProps> = ({ progress, onDismiss }) => {
+  useEffect(() => {
+    if (progress?.status === 'completed') {
+      const timer = setTimeout(() => {
+        onDismiss();
+      }, 3500);
+      return () => clearTimeout(timer);
+    }
+  }, [progress?.status, onDismiss]);
+
   if (!progress) return null;
 
   const isCompleted = progress.status === 'completed';
   const isError = progress.status === 'error';
   const isImporting = progress.status === 'importing';
 
-  const percent = progress.total_bytes > 0
+  const percent = isCompleted
+    ? 100
+    : progress.total_bytes > 0
     ? Math.min(100, Math.round((progress.bytes_processed / progress.total_bytes) * 100))
     : progress.total_entries > 0
     ? Math.min(100, Math.round((progress.current_entry / progress.total_entries) * 100))
@@ -76,6 +87,11 @@ export const ImportingBanner: React.FC<ImportingBannerProps> = ({ progress, onDi
                   {percent}%
                 </span>
               )}
+              {isCompleted && (
+                <span className="text-[10px] bg-emerald-100 text-emerald-700 px-1.5 py-0.5 rounded font-mono font-medium">
+                  100%
+                </span>
+              )}
             </div>
 
             <div className="flex items-center gap-3 text-[11px] text-gray-600 mt-0.5 flex-wrap">
@@ -87,9 +103,9 @@ export const ImportingBanner: React.FC<ImportingBannerProps> = ({ progress, onDi
                   </span>
                   <span>•</span>
                   <span>
-                    {progress.total_entries > 1
+                    {progress.total_entries > 0
                       ? `${progress.current_entry} / ${progress.total_entries} entries`
-                      : 'Indexing file'}
+                      : 'Indexing files'}
                   </span>
                   {progress.total_bytes > 0 && (
                     <>
@@ -142,10 +158,10 @@ export const ImportingBanner: React.FC<ImportingBannerProps> = ({ progress, onDi
       </div>
 
       {/* Progress Bar (Voortgangsbalk) */}
-      {isImporting && (
-        <div className="w-full bg-indigo-200/80 rounded-full h-1.5 overflow-hidden mt-2">
+      {(isImporting || isCompleted) && (
+        <div className={`w-full rounded-full h-1.5 overflow-hidden mt-2 ${isCompleted ? 'bg-emerald-200' : 'bg-indigo-200/80'}`}>
           <div
-            className="bg-indigo-600 h-1.5 rounded-full transition-all duration-150 ease-out"
+            className={`h-1.5 rounded-full transition-all duration-150 ease-out ${isCompleted ? 'bg-emerald-600' : 'bg-indigo-600'}`}
             style={{ width: `${percent}%` }}
           />
         </div>
@@ -153,4 +169,3 @@ export const ImportingBanner: React.FC<ImportingBannerProps> = ({ progress, onDi
     </div>
   );
 };
-

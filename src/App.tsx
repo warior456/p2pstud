@@ -120,13 +120,15 @@ export default function App() {
         refetchStats();
         setTimeout(() => {
           setImportProgress((curr) => (curr?.status === 'completed' ? null : curr));
-        }, 4000);
+        }, 3500);
       }
     })
       .then((unsub) => {
         unlisten = unsub;
       })
-      .catch(() => {});
+      .catch((err) => {
+        console.warn('Could not register import-progress listener:', err);
+      });
 
     return () => {
       if (unlisten) unlisten();
@@ -594,9 +596,22 @@ export default function App() {
         msg += `\n\n${summary.errors.length} file(s) skipped:\n` + summary.errors.slice(0, 3).join('\n');
       }
       setToastMessage(msg);
+      setImportProgress({
+        archive_name: target.name,
+        current_entry: summary.files_imported,
+        total_entries: summary.files_imported,
+        bytes_processed: summary.total_bytes,
+        total_bytes: summary.total_bytes,
+        current_file: 'Completed',
+        bytes_per_sec: 0,
+        status: 'completed',
+      });
       await loadWorkspaceFiles();
       await loadWorkspaceFolders();
       refetchStats();
+      setTimeout(() => {
+        setImportProgress((curr) => (curr?.status === 'completed' ? null : curr));
+      }, 3500);
     } catch (err) {
       setImportProgress({
         archive_name: target.name,
@@ -609,6 +624,9 @@ export default function App() {
         status: 'error',
         error: String(err),
       });
+      setTimeout(() => {
+        setImportProgress((curr) => (curr?.status === 'error' ? null : curr));
+      }, 5000);
       alert(`ZIP import failed: ${err}`);
     } finally {
       setImportingZip(false);
@@ -640,8 +658,21 @@ export default function App() {
         await invoke('upload_file_bytes', { name: targetName, data: bytes });
       }
       setToastMessage(`Uploaded archive "${target.name}" as single file.`);
+      setImportProgress({
+        archive_name: target.name,
+        current_entry: 1,
+        total_entries: 1,
+        bytes_processed: target.size_bytes || 0,
+        total_bytes: target.size_bytes || 0,
+        current_file: 'Completed',
+        bytes_per_sec: 0,
+        status: 'completed',
+      });
       await loadWorkspaceFiles();
       refetchStats();
+      setTimeout(() => {
+        setImportProgress((curr) => (curr?.status === 'completed' ? null : curr));
+      }, 3500);
     } catch (err) {
       alert(`Upload failed: ${err}`);
     } finally {

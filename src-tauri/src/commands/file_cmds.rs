@@ -27,6 +27,17 @@ pub struct ImportProgressPayload {
     pub error: Option<String>,
 }
 
+/// Helper function to reliably emit import progress to both the global app handle
+/// and explicitly to the main webview window.
+pub(crate) fn emit_import_progress(app: Option<&AppHandle>, payload: &ImportProgressPayload) {
+    if let Some(app) = app {
+        let _ = app.emit("import-progress", payload);
+        if let Some(win) = app.get_webview_window("main") {
+            let _ = win.emit("import-progress", payload);
+        }
+    }
+}
+
 /// List all tracked files and blobs from the SQLite database with live cache status.
 /// Works 100% offline using the preloaded local store and SQLite metadata.
 #[tauri::command]
@@ -466,9 +477,9 @@ pub async fn upload_file_bytes(
             .as_millis()
     );
 
-    let _ = app.emit(
-        "import-progress",
-        ImportProgressPayload {
+    emit_import_progress(
+        Some(&app),
+        &ImportProgressPayload {
             import_id: import_id.clone(),
             archive_name: clean_name.clone(),
             current_entry: 0,
@@ -497,9 +508,9 @@ pub async fn upload_file_bytes(
         Ok(t) => t,
         Err(e) => {
             let err_msg = format!("blob import failed: {e}");
-            let _ = app.emit(
-                "import-progress",
-                ImportProgressPayload {
+            emit_import_progress(
+                Some(&app),
+                &ImportProgressPayload {
                     import_id: import_id.clone(),
                     archive_name: clean_name.clone(),
                     current_entry: 0,
@@ -568,9 +579,9 @@ pub async fn upload_file_bytes(
         0
     };
 
-    let _ = app.emit(
-        "import-progress",
-        ImportProgressPayload {
+    emit_import_progress(
+        Some(&app),
+        &ImportProgressPayload {
             import_id,
             archive_name: clean_name.clone(),
             current_entry: 1,
@@ -985,26 +996,25 @@ async fn import_zip_archive_internal<R: std::io::Read + std::io::Seek>(
             .unwrap_or_default()
             .as_millis()
     );
-    let start_time = std::time::Instant::now();
     let mut last_emit_time = std::time::Instant::now();
+    let mut last_emit_bytes = 0u64;
+    let mut rolling_bps = 0u64;
 
-    if let Some(app) = app {
-        let _ = app.emit(
-            "import-progress",
-            ImportProgressPayload {
-                import_id: import_id.clone(),
-                archive_name: archive_name.to_string(),
-                current_entry: 0,
-                total_entries,
-                bytes_processed: 0,
-                total_bytes: total_uncompressed_bytes,
-                current_file: String::new(),
-                bytes_per_sec: 0,
-                status: "importing".to_string(),
-                error: None,
-            },
-        );
-    }
+    emit_import_progress(
+        app,
+        &ImportProgressPayload {
+            import_id: import_id.clone(),
+            archive_name: archive_name.to_string(),
+            current_entry: 0,
+            total_entries,
+            bytes_processed: 0,
+            total_bytes: total_uncompressed_bytes,
+            current_file: "Starting extraction...".to_string(),
+            bytes_per_sec: 0,
+            status: "importing".to_string(),
+            error: None,
+        },
+    );
 
     for i in 0..total_entries {
         let mut file = match archive.by_index(i) {
@@ -1132,58 +1142,54 @@ async fn import_zip_archive_internal<R: std::io::Read + std::io::Seek>(
         summary.files_imported += 1;
         summary.total_bytes += size_bytes;
 
-        if let Some(app) = app {
-            let now = std::time::Instant::now();
-            if now.duration_since(last_emit_time).as_millis() >= 100 || i + 1 == total_entries {
-                last_emit_time = now;
-                let elapsed = start_time.elapsed().as_secs_f64();
-                let bps = if elapsed > 0.05 {
-                    (summary.total_bytes as f64 / elapsed) as u64
+        let now = std::time::Instant::now();
+        let dt = now.duration_since(last_emit_time).as_secs_f64();
+        if dt >= 0.08 || i + 1 == total_entries {
+            let delta_bytes = summary.total_bytes.saturating_sub(last_emit_bytes);
+            if dt > 0.01 {
+                let inst_bps = (delta_bytes as f64 / dt) as u64;
+                rolling_bps = if rolling_bps == 0 {
+                    inst_bps
                 } else {
-                    0
+                    ((rolling_bps as f64 * 0.35) + (inst_bps as f64 * 0.65)) as u64
                 };
-                let _ = app.emit(
-                    "import-progress",
-                    ImportProgressPayload {
-                        import_id: import_id.clone(),
-                        archive_name: archive_name.to_string(),
-                        current_entry: i + 1,
-                        total_entries,
-                        bytes_processed: summary.total_bytes,
-                        total_bytes: total_uncompressed_bytes,
-                        current_file: entry_name.clone(),
-                        bytes_per_sec: bps,
-                        status: "importing".to_string(),
-                        error: None,
-                    },
-                );
             }
+            last_emit_time = now;
+            last_emit_bytes = summary.total_bytes;
+
+            emit_import_progress(
+                app,
+                &ImportProgressPayload {
+                    import_id: import_id.clone(),
+                    archive_name: archive_name.to_string(),
+                    current_entry: i + 1,
+                    total_entries,
+                    bytes_processed: summary.total_bytes,
+                    total_bytes: total_uncompressed_bytes.max(summary.total_bytes),
+                    current_file: entry_name.clone(),
+                    bytes_per_sec: rolling_bps,
+                    status: "importing".to_string(),
+                    error: None,
+                },
+            );
         }
     }
 
-    if let Some(app) = app {
-        let elapsed = start_time.elapsed().as_secs_f64();
-        let bps = if elapsed > 0.05 {
-            (summary.total_bytes as f64 / elapsed) as u64
-        } else {
-            0
-        };
-        let _ = app.emit(
-            "import-progress",
-            ImportProgressPayload {
-                import_id: import_id.clone(),
-                archive_name: archive_name.to_string(),
-                current_entry: total_entries,
-                total_entries,
-                bytes_processed: summary.total_bytes,
-                total_bytes: total_uncompressed_bytes.max(summary.total_bytes),
-                current_file: "Completed".to_string(),
-                bytes_per_sec: bps,
-                status: "completed".to_string(),
-                error: None,
-            },
-        );
-    }
+    emit_import_progress(
+        app,
+        &ImportProgressPayload {
+            import_id: import_id.clone(),
+            archive_name: archive_name.to_string(),
+            current_entry: total_entries,
+            total_entries,
+            bytes_processed: summary.total_bytes,
+            total_bytes: total_uncompressed_bytes.max(summary.total_bytes),
+            current_file: "Completed".to_string(),
+            bytes_per_sec: 0,
+            status: "completed".to_string(),
+            error: None,
+        },
+    );
 
     tracing::info!(
         imported = summary.files_imported,
@@ -1255,9 +1261,9 @@ pub async fn upload_file_path(
             .as_millis()
     );
 
-    let _ = app.emit(
-        "import-progress",
-        ImportProgressPayload {
+    emit_import_progress(
+        Some(&app),
+        &ImportProgressPayload {
             import_id: import_id.clone(),
             archive_name: clean_name.clone(),
             current_entry: 0,
@@ -1290,9 +1296,9 @@ pub async fn upload_file_path(
         }
         Err(e) => {
             let err_msg = format!("failed streaming file import: {e}");
-            let _ = app.emit(
-                "import-progress",
-                ImportProgressPayload {
+            emit_import_progress(
+                Some(&app),
+                &ImportProgressPayload {
                     import_id: import_id.clone(),
                     archive_name: clean_name.clone(),
                     current_entry: 0,
@@ -1355,9 +1361,9 @@ pub async fn upload_file_path(
         0
     };
 
-    let _ = app.emit(
-        "import-progress",
-        ImportProgressPayload {
+    emit_import_progress(
+        Some(&app),
+        &ImportProgressPayload {
             import_id,
             archive_name: clean_name.clone(),
             current_entry: 1,

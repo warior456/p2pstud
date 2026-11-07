@@ -122,4 +122,15 @@ mod tests {
         let _key = load_or_create_secret_key(dir.path()).unwrap();
         assert!(dir.path().join("iroh_secret.key").exists());
     }
+
+    #[test]
+    fn test_endpoint_id_parse_base32_and_hex() {
+        use std::str::FromStr;
+        let b32_str = "uqpewh6pnmgqje4zt4t3b4aouf4lz3vpynmc6vvsjwbaknmo3twa";
+        let hex_str = "a41e4b1fcf6b0d0493999f27b0f00ea178bceeafc3582f56b24d8205358edcec";
+        let parsed_b32 = iroh::EndpointId::from_str(b32_str).unwrap();
+        let parsed_hex = iroh::EndpointId::from_str(hex_str).unwrap();
+        assert_eq!(parsed_b32, parsed_hex);
+        println!("Both parsed to the exact same EndpointId: {:?}", parsed_b32);
+    }
 }
