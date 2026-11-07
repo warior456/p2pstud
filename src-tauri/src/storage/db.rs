@@ -793,7 +793,26 @@ impl Database {
              DELETE FROM quarantine_reports;
              DELETE FROM transfer_resume_queue;",
         )?;
+        drop(conn);
+
+        // Also purge physical blob files from disk to match the cleared database
+        let blob_dir = self.resolve_blob_dir();
+        let _ = crate::storage::path_utils::cleanup_orphaned_disk_blobs(&blob_dir, self);
+
         Ok(())
+    }
+
+    /// Return the base data directory for this database.
+    pub fn data_dir(&self) -> &Path {
+        &self.data_dir
+    }
+
+    /// Resolve the active blob storage directory (respecting custom_blob_dir setting).
+    pub fn resolve_blob_dir(&self) -> PathBuf {
+        match self.get_setting("custom_blob_dir") {
+            Ok(Some(custom)) if !custom.trim().is_empty() => PathBuf::from(custom.trim()),
+            _ => self.data_dir.join("blobs"),
+        }
     }
 
     /// Retrieve a settings value by key. Returns `Ok(None)` if not set.

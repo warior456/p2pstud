@@ -89,6 +89,10 @@ pub async fn run_lifecycle_pruning_pass(
             }
         }
 
+        // Physically remove files (.data, .obao4, etc.) from disk
+        let blob_dir = db.resolve_blob_dir();
+        crate::storage::path_utils::delete_blob_files_from_disk(&blob_dir, &hash_str);
+
         // Delete from SQLite
         if delete_blob(db, &hash_str).is_ok() {
             purged.push(hash_str.clone());

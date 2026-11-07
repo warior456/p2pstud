@@ -46,7 +46,7 @@ At the end of every session (or when interrupted), update the `## Progress Track
 ## Progress Tracker
 
 > **Last session:** 2026-11-07
-> **Last completed task:** Step 66 completed: Local LAN UDP Broadcast Discovery & Multi-Provider Rendezvous Fallback (v0.1.36).
+> **Last completed task:** Step 67 completed: Cache Size Physical Disk Synchronization & Orphaned Blob Pruning (v0.1.37).
 > **Next action:** Production release distribution and testing.
 
 | # | Step | Status | Notes |
@@ -117,6 +117,7 @@ At the end of every session (or when interrupted), update the `## Progress Track
 | 64 | Restored Window Close Button [X] Minimize-to-Tray (v0.1.34) | ✅ | Restored `window.hide()` on `CloseRequested` in `src-tauri/src/lib.rs` resolving regression where clicking window close `[X]` was intercepted without hiding or closing the window; maintains continuous background P2P seeding while tray quit and UI power button handle application termination. |
 | 65 | Active Upload Bandwidth Measurement Integration (v0.1.35) | ✅ | Hooked `BandwidthTracker::record_upload` across `upload_file_path`, `upload_file_bytes`, `add_file`, `import_zip_archive_internal`, and QUIC catalog sync streams in `p2p/sync.rs`; added global bandwidth accessors so live upload throughput `↑ X.X MB/s` reflects real upload activity in the telemetry bar. |
 | 66 | Local LAN UDP Broadcast Discovery & Multi-Provider Rendezvous Fallback (v0.1.36) | ✅ | Implemented zero-configuration local LAN and loopback peer discovery via UDP broadcast socket on port 27888 with Ed25519 signature verification; added multi-provider HTTPS rendezvous fallback (`ntfy.tedomum.fr`, `ntfy.adminforge.de`, `ntfy.sh`) resolving public `ntfy.sh` 429 quota exhaustion; auto-connects peers immediately even with clean/reset databases. |
+| 67 | Cache Size Physical Disk Synchronization & Orphaned Blob Pruning (v0.1.37) | ✅ | Reconciled cache size discrepancy between UI and Windows Explorer by measuring physical blob store directory usage (`calculate_dir_size`); implemented physical disk file deletion (`delete_blob_files_from_disk`) across file deletions, cache purges, LRU eviction, and lifecycle pruning; added automatic orphaned disk blob pruning (`cleanup_orphaned_disk_blobs`) on startup, DB clear, and cache purge. |
 
 ---
 

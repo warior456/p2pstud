@@ -59,7 +59,11 @@ pub struct AppSettings {
 /// Return current storage statistics to the frontend.
 #[tauri::command]
 pub async fn get_storage_stats(state: State<'_, AppState>) -> Result<StorageStats, String> {
-    let used_bytes = total_bytes(&state.db).map_err(|e| e.to_string())?;
+    let db_bytes = total_bytes(&state.db).map_err(|e| e.to_string())?;
+    let blob_dir = state.db.resolve_blob_dir();
+    let disk_bytes = crate::storage::path_utils::calculate_dir_size(&blob_dir);
+    // Reflect actual disk consumption so displayed cache matches Windows Explorer
+    let used_bytes = disk_bytes.max(db_bytes);
     let pinned_bytes = total_pinned_bytes(&state.db).map_err(|e| e.to_string())?;
 
     let full_mirror = state
@@ -283,6 +287,7 @@ pub async fn purge_cache(state: State<'_, AppState>) -> Result<u64, String> {
     let guard = state.engine.read().await;
     let engine = guard.as_ref().ok_or("Iroh engine not yet started")?;
 
+    let blob_dir = state.db.resolve_blob_dir();
     let mut freed_bytes: u64 = 0;
     for blob in unpinned {
         let _ = engine.store.tags().delete(blob.hash.as_bytes()).await;
@@ -290,7 +295,13 @@ pub async fn purge_cache(state: State<'_, AppState>) -> Result<u64, String> {
             let _ = engine.store.tags().delete(name.as_bytes()).await;
         }
         let _ = delete_blob(&state.db, &blob.hash);
+        crate::storage::path_utils::delete_blob_files_from_disk(&blob_dir, &blob.hash);
         freed_bytes += blob.size_bytes;
+    }
+
+    // Also clean up any orphaned .data or .obao4 files not in local_blobs
+    if let Ok(orphaned_freed) = crate::storage::path_utils::cleanup_orphaned_disk_blobs(&blob_dir, &state.db) {
+        freed_bytes += orphaned_freed;
     }
 
     tracing::info!(freed_bytes, "Purged unpinned cache");

@@ -181,10 +181,15 @@ pub fn run() {
                     }
                 };
 
-                // Auto-heal local blob index: scan blob_dir/data for any existing .data files not indexed in store
+                // Auto-heal local blob index and clean up orphaned files
                 let heal_store = loaded_store.clone();
-                let heal_data_dir = blob_dir.join("data");
+                let heal_blob_dir = blob_dir.clone();
+                let heal_db = db_clone.clone();
                 tauri::async_runtime::spawn(async move {
+                    // First prune any orphaned files on disk left over from old sessions / database resets
+                    let _ = storage::path_utils::cleanup_orphaned_disk_blobs(&heal_blob_dir, &heal_db);
+
+                    let heal_data_dir = heal_blob_dir.join("data");
                     if let Ok(mut dir_entries) = tokio::fs::read_dir(&heal_data_dir).await {
                         while let Ok(Some(entry)) = dir_entries.next_entry().await {
                             let path = entry.path();

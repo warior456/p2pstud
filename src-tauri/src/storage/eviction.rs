@@ -108,7 +108,22 @@ pub async fn run_eviction_pass(db: &Arc<Database>, engine: &IrohEngine) -> Resul
     let high_mark = (quota as f64 * EVICTION_HIGH_WATERMARK) as u64;
     let low_mark = (quota as f64 * EVICTION_LOW_WATERMARK) as u64;
 
-    let mut used = total_unpinned_bytes(db)?;
+    let blob_dir = db.resolve_blob_dir();
+    let disk_bytes = crate::storage::path_utils::calculate_dir_size(&blob_dir);
+    let db_bytes = total_unpinned_bytes(db)?;
+    let mut used = disk_bytes.max(db_bytes);
+
+    // If cache usage exceeds high watermark, first prune any orphaned files on disk
+    if used > high_mark {
+        if let Ok(freed) = crate::storage::path_utils::cleanup_orphaned_disk_blobs(&blob_dir, db) {
+            if freed > 0 {
+                tracing::info!(freed, "Cleaned up orphaned blobs from disk during eviction");
+                let updated_disk = crate::storage::path_utils::calculate_dir_size(&blob_dir);
+                used = updated_disk.max(db_bytes);
+            }
+        }
+    }
+
     if used <= high_mark {
         return Ok(0);
     }
@@ -164,6 +179,7 @@ pub async fn run_eviction_pass(db: &Arc<Database>, engine: &IrohEngine) -> Resul
 
             // Remove from our SQLite tracker.
             delete_blob(db, hash_str)?;
+            crate::storage::path_utils::delete_blob_files_from_disk(&blob_dir, hash_str);
             used = used.saturating_sub(blob.size_bytes);
             deleted += 1;
             progress = true;

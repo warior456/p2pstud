@@ -646,6 +646,10 @@ pub async fn delete_file(
     // Delete blob data tags from local Iroh store
     let _ = engine.store.tags().delete(hash.as_bytes()).await;
 
+    // Physically delete blob files (.data, .obao4, etc.) from disk
+    let blob_dir = state.db.resolve_blob_dir();
+    crate::storage::path_utils::delete_blob_files_from_disk(&blob_dir, &hash);
+
     // Broadcast deletion event to the swarm
     broadcast_catalog_event(
         &engine.endpoint,

@@ -229,6 +229,107 @@ pub fn normalize_virtual_path(input: &str, folder_sibling_names: &[&str]) -> Res
     Ok(normalized_path)
 }
 
+/// Recursively calculate the total byte size of all files in a directory.
+pub fn calculate_dir_size(path: &Path) -> u64 {
+    if !path.exists() {
+        return 0;
+    }
+    let mut total = 0u64;
+    let mut stack = vec![path.to_path_buf()];
+    while let Some(current) = stack.pop() {
+        if let Ok(entries) = std::fs::read_dir(&current) {
+            for entry in entries.flatten() {
+                if let Ok(meta) = entry.metadata() {
+                    if meta.is_file() {
+                        total += meta.len();
+                    } else if meta.is_dir() {
+                        stack.push(entry.path());
+                    }
+                }
+            }
+        }
+    }
+    total
+}
+
+/// Remove physical blob files (.data, .obao4, .sizes4, .bitfield) from disk.
+pub fn delete_blob_files_from_disk(blob_dir: &Path, hash: &str) {
+    let extensions = ["data", "obao4", "sizes4", "bitfield"];
+    let data_dir = blob_dir.join("data");
+    for ext in extensions {
+        let p1 = data_dir.join(format!("{hash}.{ext}"));
+        let _ = std::fs::remove_file(p1);
+        let p2 = blob_dir.join(format!("{hash}.{ext}"));
+        let _ = std::fs::remove_file(p2);
+    }
+}
+
+/// Scan blob storage directory and prune any orphaned physical files (.data, .obao4, etc.)
+/// that do not exist in the active `local_blobs` database table.
+pub fn cleanup_orphaned_disk_blobs(
+    blob_dir: &Path,
+    db: &crate::storage::db::Database,
+) -> Result<u64> {
+    let data_dir = blob_dir.join("data");
+    if !data_dir.exists() {
+        return Ok(0);
+    }
+
+    let known_hashes: std::collections::HashSet<String> = {
+        let conn = db.lock();
+        let mut stmt = conn.prepare("SELECT hash FROM local_blobs")?;
+        let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+        rows.flatten().collect()
+    };
+
+    let mut freed_bytes = 0u64;
+
+    // Scan data_dir
+    if let Ok(entries) = std::fs::read_dir(&data_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if let Some(file_name) = path.file_name().and_then(|f| f.to_str()) {
+                if let Some(hash_candidate) = file_name.split('.').next() {
+                    if hash_candidate.len() == 64
+                        && hash_candidate.chars().all(|c| c.is_ascii_hexdigit())
+                        && !known_hashes.contains(hash_candidate)
+                    {
+                        if let Ok(meta) = entry.metadata() {
+                            freed_bytes += meta.len();
+                        }
+                        let _ = std::fs::remove_file(&path);
+                        tracing::info!(hash = %hash_candidate, "Removed orphaned blob file from disk: {:?}", path);
+                    }
+                }
+            }
+        }
+    }
+
+    // Also scan root blob_dir for legacy un-nested .data files
+    if let Ok(entries) = std::fs::read_dir(blob_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_file() {
+                if let Some(file_name) = path.file_name().and_then(|f| f.to_str()) {
+                    if let Some(hash_candidate) = file_name.split('.').next() {
+                        if hash_candidate.len() == 64
+                            && hash_candidate.chars().all(|c| c.is_ascii_hexdigit())
+                            && !known_hashes.contains(hash_candidate)
+                        {
+                            if let Ok(meta) = entry.metadata() {
+                                freed_bytes += meta.len();
+                            }
+                            let _ = std::fs::remove_file(&path);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(freed_bytes)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
