@@ -1,9 +1,10 @@
 # KU Leuven Student Identity & Groep T Swarm Authentication Specification
 
-> **Status:** Proposed / Design Specification (Not Implemented)  
+> **Status:** Deferred / Phase 3 Specification (Not Implemented in Current Release)  
 > **Target Network:** `groept` Campus P2P Swarm  
 > **Author:** Antigravity Architect & Security Team  
-> **Date:** 2026-11-04  
+> **Last Updated:** 2026-11-07  
+> **Deployment Constraints:** Zero custom domains (direct VPS IP only, zero DNS dependencies), ultra-lightweight VPS hosting (< 10 MB additional RAM, 0 extra daemon processes or databases).
 
 ---
 
@@ -12,6 +13,10 @@
 Currently, swarm isolation in `p2pstud` relies on a Pre-Shared Key (PSK / Network Secret) that derives a dynamic QUIC ALPN. While effective against casual discovery, a static PSK suffers from the **"Discord/WhatsApp Leak" problem**: if one student posts the secret in a public chat or online forum, any non-KU Leuven user can join the network indefinitely.
 
 This document specifies an individual, cryptographically bound authentication model using **Decentralized Capability Tickets (Individual Attestations)**. Instead of sharing a common passphrase, each student authenticates their institutional identity (`@student.kuleuven.be`) once and receives a non-transferable, digitally signed ticket bound strictly to their local device's Ed25519 key (`NodeId`).
+
+> [!NOTE]
+> **Implementation Scope & Roadmap:**
+> This flow is intentionally deferred and is **not implemented in current application releases**. Swarm isolation currently operates via dynamic ALPN and rendezvous discovery. When implemented in Phase 3, it is designed to run completely domain-less and daemon-less inside the existing Rust `anchor` process.
 
 ---
 
@@ -27,7 +32,14 @@ This document specifies an individual, cryptographically bound authentication mo
 
 ---
 
-## 3. Cryptographic Architecture
+## 3. Cryptographic Architecture & Anchor Node Verification
+
+### How the Anchor Node is Cryptographically Verified (Zero Domain / Pure Ed25519)
+Because `p2pstud` operates without requiring domain names or DNS control, anchor authentication uses self-sovereign public key cryptography rather than traditional TLS Certificate Authorities (like Let's Encrypt):
+1. **Self-Authenticating Node Identity:** When the headless anchor node runs for the first time on the VPS, it generates an Ed25519 keypair saved to `/var/lib/p2pstud/iroh_secret.key`. The Anchor's public key (`NodeId`) is printed to the server logs.
+2. **Pinned Authority Signature:** The Anchor's Ed25519 public key is either embedded in the client or configured by the student via the anchor's Node Ticket.
+3. **Transport Proof:** When a student client connects to the Anchor's bare IP (`<vps_ip>:<port>`), the QUIC / TLS 1.3 handshake uses raw public keys. An attacker spoofing the IP address cannot impersonate the anchor because they lack the VPS's private key.
+4. **Open-Source Cryptographic Invariant:** All client and anchor source code is public and open source. Security does not rely on obscurity: anyone can view the codebase and public keys, but mathematical properties of Ed25519 ensure that only the entity holding the server's secret key (`/var/lib/p2pstud/iroh_secret.key`, `chmod 600`) can sign tickets or complete the server-side QUIC handshake. Rogue nodes running the open-source code generate different keypairs and will be immediately rejected by student devices.
 
 ```
                                ┌──────────────────────────────────────────────┐
@@ -111,21 +123,22 @@ When two nodes connect over QUIC (ALPN `/p2pstud/sync/1/groept`):
 
 ## 6. Authentication Flows
 
-### Flow A: Email OTP via KU Leuven Inbox (Recommended)
+### Flow A: Email OTP via KU Leuven Inbox (Zero-Domain & Light Server Architecture)
+
+> **Implementation Constraint:** This flow is designed for zero custom domain ownership and light server hosting (512MB–1GB RAM VPS). It does not require DNS control, TLS CA certs, Redis, or external databases.
 
 1. **User Action:**
    - Student clicks **"Join Groep T Campus Swarm"** in settings.
    - Enters their student email: `r0123456@student.kuleuven.be`.
-2. **Backend Validation:**
+2. **Backend Validation (Embedded in Rust `anchor` Binary):**
    - Regex check: `^r[0-9]{7}@student\.kuleuven\.be$`.
    - Rate limit: max 3 requests per IP / email per hour.
-   - Generates random 6-digit numeric OTP with 10-minute TTL in Redis/SQLite.
+   - Generates random 6-digit numeric OTP with 10-minute sliding TTL stored in an **in-memory thread-safe map** (`Arc<RwLock<HashMap<EmailHash, OtpEntry>>>`) with background GC pruning. RAM consumption is `< 100 KB`.
    - Transmits email via outbound relay:
-     - **Zero-domain approach (No domain required):** Gmail SMTP (`smtp.gmail.com:587`) using a dedicated Google Account with an App Password. Because emails originate directly from Google's servers, they carry authentic Google DKIM and SPF signatures that pass KU Leuven's Microsoft 365 Defender filters without getting junked.
-     - **Custom-domain approach:** Resend or Brevo API (requires adding DKIM/SPF DNS records to a registered domain).
+     - **Permanent Zero-Domain Relay:** Authenticated Gmail SMTP (`smtp.gmail.com:587` with TLS using a Google App Password) via the Rust `lettre` crate embedded in `anchor`. Outbound emails carry authentic Google DKIM (`d=gmail.com`) and SPF signatures, passing Microsoft 365 Defender filters and arriving in the student's KU Leuven Outlook inbox without junking.
 3. **Ticket Issuance:**
    - Student enters the code in `p2pstud`.
-   - App calls `POST /api/auth/verify-otp` with:
+   - App calls `POST http://<vps_ip>:8080/api/auth/verify-otp` (embedded `axum` endpoint in `anchor.rs`) with:
      ```json
      {
        "email": "r0123456@student.kuleuven.be",
@@ -133,7 +146,7 @@ When two nodes connect over QUIC (ALPN `/p2pstud/sync/1/groept`):
        "node_id": "8b9a1c...ed25519_node_id..."
      }
      ```
-   - Server validates code, constructs the ticket, signs it, and returns it to the app.
+   - Server validates code, constructs the ticket, signs it with its Ed25519 authority key, and returns it to the app.
 
 ---
 

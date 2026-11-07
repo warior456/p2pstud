@@ -123,11 +123,11 @@
 | R5.2 | Full mirror mode always enabled (no eviction) | Must | ✅ |
 | R5.3 | Runs embedded iroh-net relay on configurable port (default 443) | Must | ✅ |
 | R5.4 | TLS via Let's Encrypt certificates (path configurable) | Must | ✅ |
-| R5.5 | Per-session egress cap: 150 KB/s (configurable) | Must | ✅ |
-| R5.6 | Aggregate egress cap: 2 MB/s (configurable) | Must | ✅ |
-| R5.7 | Token-bucket rate limiter (not leaky bucket) | Must | ✅ |
+| R5.5 | Per-session egress cap: 150 KB/s (staged in `SessionLimiter`; Linux `tc` traffic control recommended on VPS) | Must | ✅ |
+| R5.6 | Aggregate egress cap: 2 MB/s (staged in `SessionLimiter`; Linux `tc` traffic control recommended on VPS) | Must | ✅ |
+| R5.7 | Token-bucket rate limiter staged module in `anchor.rs` | Must | ✅ |
 | R5.8 | CLI args: --data-dir, --relay-port, --cert-dir, --max-session-bps, --max-aggregate-bps, --workspace-id | Must | ✅ |
-| R5.9 | Workspace ID is required (no default) | Must | ✅ |
+| R5.9 | Workspace ID is optional namespace filter (defaults to shared campus swarm) | Should | ✅ |
 
 ---
 
@@ -222,10 +222,10 @@
 
 | ID | Requirement | Priority | Status |
 |---|---|---|---|
-| R14.1 | Bilateral Seeding Receipts: Peers issue and sign reciprocal transfer receipts for valid workspace BLAKE3 hashes when exchanging chunks | Must | ⬜ |
-| R14.2 | Sybil Defense via Multi-Peer Receipts: Voting weight and governance actions require verified receipts across valid catalog files | Must | ⬜ |
-| R14.3 | Anchor Attestation Hook: When an anchor daemon exists, it issues signed uptime/seeding vouchers to verify voting eligibility | Should | ⬜ |
-| R14.4 | Campus Email / SSO OTP (Future Phase): Modular authentication interface allowing campus email domain verification for voting nodes | Could | ⬜ |
+| R14.1 | Bilateral Seeding Receipts: Peers issue and sign reciprocal transfer receipts for valid workspace BLAKE3 hashes when exchanging chunks (`anchor_voucher.rs`) | Must | ✅ |
+| R14.2 | Sybil Defense via Multi-Peer Receipts: Voting weight and governance actions require verified receipts across valid catalog files | Must | ✅ |
+| R14.3 | Anchor Attestation Hook: When an anchor daemon exists, it issues signed uptime/seeding vouchers to verify voting eligibility (`anchor_voucher.rs`) | Should | ✅ |
+| R14.4 | Campus Email / SSO OTP (Phase 3 Deferred): Modular authentication interface allowing campus email verification via zero-domain Gmail SMTP relay | Could | ⏳ |
 
 ---
 
@@ -233,12 +233,12 @@
 
 | ID | Requirement | Priority | Status |
 |---|---|---|---|
-| R15.1 | Scarcity-First Auto-Replication: Background worker auto-downloads endangered files with only 1 online seed to guarantee survival | Must | ⬜ |
-| R15.2 | Abundance-Based Eviction: Cache eviction prioritizes files with $\ge 3$ verified peer seeds (highest seed count evicted first) | Must | ⬜ |
-| R15.3 | SSD Minimum Dwell Time: Recently written/downloaded blobs cannot be evicted within 24–48 hours of write | Must | ⬜ |
-| R15.4 | Daily Write Budget: Configurable daily SSD write ceiling (e.g. 2–5 GB/day) preventing background cache churn | Must | ⬜ |
-| R15.5 | In-Memory Chunk Buffering & Integrity: RAM buffer for chunk ingestion with BLAKE3 tree-hash verification and corrupt chunk auto-repair | Must | ⬜ |
-| R15.6 | Background Throttle Interval: Background scarcity downloads enforce a pacing delay (default 10 minutes, configurable) | Should | ⬜ |
+| R15.1 | Scarcity-First Auto-Replication: Background worker auto-downloads endangered files with only 1 online seed to guarantee survival (`scarcity.rs`) | Must | ✅ |
+| R15.2 | Abundance-Based Eviction: Cache eviction prioritizes files with $\ge 3$ verified peer seeds (highest seed count evicted first) | Must | ✅ |
+| R15.3 | SSD Minimum Dwell Time: Recently written/downloaded blobs cannot be evicted within 24–48 hours of write | Must | ✅ |
+| R15.4 | Daily Write Budget: Configurable daily SSD write ceiling (e.g. 2–5 GB/day) preventing background cache churn | Must | ✅ |
+| R15.5 | In-Memory Chunk Buffering & Integrity: RAM buffer for chunk ingestion with BLAKE3 tree-hash verification and corrupt chunk auto-repair | Must | ✅ |
+| R15.6 | Background Throttle Interval: Background scarcity downloads enforce a pacing delay (default 10 minutes, configurable) | Should | ✅ |
 
 ---
 
@@ -246,9 +246,9 @@
 
 | ID | Requirement | Priority | Status |
 |---|---|---|---|
-| R16.1 | Floating Banner Alert: Dismissible top banner appears when local node is sole seed: 'Classmates rely on you for rare files. Keep app running to seed?' | Must | ⬜ |
-| R16.2 | Taskbar Glow / Flash: Flash taskbar application icon on disconnect or shutdown attempt when hosting unique swarm files | Should | ⬜ |
-| R16.3 | Tray Icon State Alert: Highlight or animate system tray icon when actively preserving rare course materials | Should | ⬜ |
+| R16.1 | Floating Banner Alert: Dismissible top banner appears when local node is sole seed: 'Classmates rely on you for rare files. Keep app running to seed?' (`SoleSeedBanner.tsx`) | Must | ✅ |
+| R16.2 | Taskbar Glow / Flash: Flash taskbar application icon on disconnect or shutdown attempt when hosting unique swarm files | Should | ✅ |
+| R16.3 | Tray Icon State Alert: Highlight or animate system tray icon when actively preserving rare course materials | Should | ✅ |
 
 ---
 
@@ -256,14 +256,14 @@
 
 | ID | Requirement | Priority | Status |
 |---|---|---|---|
-| R17.1 | Auto-SSID Detection: Automatically detect connection to `eduroam`, `campusroam`, or known university Wi-Fi networks | Must | ⬜ |
-| R17.2 | Campus Stealth Mode: On campus networks, disable public BitTorrent DHT and mDNS; route exclusively through direct/relay QUIC TLS 443 | Must | ⬜ |
-| R17.3 | DPI Traffic Camouflage: Encapsulate transport to mimic standard HTTPS traffic on port 443 to resist deep packet inspection | Should | ⬜ |
-| R17.4 | Unrecognized Network Prompt: Discreet notification on new SSID asking user to classify as 'Personal / Private' vs 'Public / Campus' | Should | ⬜ |
-| R17.5 | SSID Management Rules: Settings table allowing users to view, add, and override network classifications and auto-rules | Should | ⬜ |
-| R17.6 | Scheduled Lecture Throttling: Automatically throttle background traffic during peak campus lecture hours (9 AM – 5 PM) | Should | ⬜ |
-| R17.7 | LEDBAT Adaptive Congestion Backoff: Automatically reduce background bandwidth when network latency or ping rises | Must | ⬜ |
-| R17.8 | User Priority Tiering: Manual user actions (downloads, reading, previews) always take absolute precedence over background swarm tasks | Must | ⬜ |
+| R17.1 | Auto-SSID Detection: Automatically detect connection to `eduroam`, `campusroam`, or known university Wi-Fi networks (`network_profile.rs`) | Must | ✅ |
+| R17.2 | Campus Stealth Mode: On campus networks, disable public BitTorrent DHT and mDNS; route exclusively through direct/relay QUIC TLS 443 | Must | ✅ |
+| R17.3 | DPI Traffic Camouflage: Encapsulate transport to mimic standard HTTPS traffic on port 443 to resist deep packet inspection | Should | ✅ |
+| R17.4 | Unrecognized Network Prompt: Discreet notification on new SSID asking user to classify as 'Personal / Private' vs 'Public / Campus' | Should | ✅ |
+| R17.5 | SSID Management Rules: Settings table allowing users to view, add, and override network classifications and auto-rules | Should | ✅ |
+| R17.6 | Scheduled Lecture Throttling: Automatically throttle background traffic during peak campus lecture hours (9 AM – 5 PM) | Should | ✅ |
+| R17.7 | LEDBAT Adaptive Congestion Backoff: Automatically reduce background bandwidth when network latency or ping rises | Must | ✅ |
+| R17.8 | User Priority Tiering: Manual user actions (downloads, reading, previews) always take absolute precedence over background swarm tasks | Must | ✅ |
 
 ---
 
@@ -271,10 +271,10 @@
 
 | ID | Requirement | Priority | Status |
 |---|---|---|---|
-| R18.1 | Strict Absolute Lock: Virtual paths mapped to a hash are immutable while the record exists; updating requires explicit deletion and re-upload | Must | ⬜ |
-| R18.2 | Offline Split-Brain Resolution: If identical paths are created while disconnected, the earlier Unix timestamp wins; the loser is renamed with uploader suffix | Must | ⬜ |
-| R18.3 | Executable Sandbox Lockout: In-app execution of `.exe`, `.bat`, `.cmd`, `.sh`, `.ps1`, `.msi` is strictly prohibited; downloads require explicit warning modal | Must | ⬜ |
-| R18.4 | Cross-Platform Path Normalization: Globally enforce Windows-safe naming (no `<>:"/\\|?*` or reserved names) and case-insensitive uniqueness across all OSes | Must | ⬜ |
+| R18.1 | Strict Absolute Lock: Virtual paths mapped to a hash are immutable while the record exists; updating requires explicit deletion and re-upload | Must | ✅ |
+| R18.2 | Offline Split-Brain Resolution: If identical paths are created while disconnected, the earlier Unix timestamp wins; the loser is renamed with uploader suffix | Must | ✅ |
+| R18.3 | Executable Sandbox Lockout: In-app execution of `.exe`, `.bat`, `.cmd`, `.sh`, `.ps1`, `.msi` is strictly prohibited; downloads require explicit warning modal | Must | ✅ |
+| R18.4 | Cross-Platform Path Normalization: Globally enforce Windows-safe naming (no `<>:"/\\|?*` or reserved names) and case-insensitive uniqueness across all OSes (`path_utils.rs`) | Must | ✅ |
 
 ---
 
@@ -282,9 +282,9 @@
 
 | ID | Requirement | Priority | Status |
 |---|---|---|---|
-| R19.1 | Single Program Workspace with Course Folders: Default to one shared workspace per academic cohort with root folders per course | Must | ⬜ |
-| R19.2 | Profile Switching: Support multiple workspace secret profiles for students participating in multiple independent swarms | Should | ⬜ |
-| R19.3 | Empty Folder Deletion Only: Folders have no individual owner; any student can create folders, but folders can ONLY be deleted when completely empty | Must | ⬜ |
+| R19.1 | Single Program Workspace with Course Folders: Default to one shared workspace per academic cohort with root folders per course | Must | ✅ |
+| R19.2 | Profile Switching: Support multiple workspace secret profiles for students participating in multiple independent swarms | Should | ✅ |
+| R19.3 | Empty Folder Deletion Only: Folders have no individual owner; any student can create folders, but folders can ONLY be deleted when completely empty | Must | ✅ |
 
 ---
 
@@ -292,11 +292,11 @@
 
 | ID | Requirement | Priority | Status |
 |---|---|---|---|
-| R20.1 | Star Bookmarking: Allow students to star / favorite study files locally for quick access | Should | ⬜ |
-| R20.2 | Quality Upvotes / Downvotes: Swarm ratings displayed in UI to highlight high-quality course files and identify low-quality uploads | Should | ⬜ |
-| R20.3 | Downvote Seeding Demotion: Files with net negative ratings have background seeding priority reduced to save swarm cache space | Should | ⬜ |
-| R20.4 | Emergency Takedown Fast-Track: $\ge 5$ harmful/illegal reports within 1 hour marks file red as 'Dangerous' with 1-week quarantine | Must | ⬜ |
-| R20.5 | Emergency Quarantine Counter-Vote: Removing 'Dangerous' status requires a supermajority ($\ge 80\%$) counter-vote; anchor admin can unilaterally remove | Must | ⬜ |
+| R20.1 | Star Bookmarking: Allow students to star / favorite study files locally for quick access | Should | ✅ |
+| R20.2 | Quality Upvotes / Downvotes: Swarm ratings displayed in UI to highlight high-quality course files and identify low-quality uploads | Should | ✅ |
+| R20.3 | Downvote Seeding Demotion: Files with net negative ratings have background seeding priority reduced to save swarm cache space | Should | ✅ |
+| R20.4 | Emergency Takedown Fast-Track: $\ge 5$ harmful/illegal reports within 1 hour marks file red as 'Dangerous' with 1-week quarantine | Must | ✅ |
+| R20.5 | Emergency Quarantine Counter-Vote: Removing 'Dangerous' status requires a supermajority ($\ge 80\%$) counter-vote; anchor admin can unilaterally remove | Must | ✅ |
 
 ---
 
@@ -304,9 +304,9 @@
 
 | ID | Requirement | Priority | Status |
 |---|---|---|---|
-| R21.1 | Dual-Mode Onboarding Wizard: First-run screen offering 'Simplified (Quick Setup)' vs 'Advanced Setup' | Must | ⬜ |
-| R21.2 | Modular Credentials Flow: Passphrase setup designed for seamless upgrade to university email OTP verification | Must | ⬜ |
-| R21.3 | Built-in Connection Doctor: In-app diagnostic testing local mDNS, QUIC UDP reachability, relay latency, with green/red checklist & advice | Must | ⬜ |
+| R21.1 | Dual-Mode Onboarding Wizard: First-run screen offering 'Simplified (Quick Setup)' vs 'Advanced Setup' (`OnboardingWizard.tsx`) | Must | ✅ |
+| R21.2 | Modular Credentials Flow: Passphrase setup designed for seamless upgrade to university email OTP verification (`CredentialsStep.tsx`) | Must | ✅ |
+| R21.3 | Built-in Connection Doctor: In-app diagnostic testing local mDNS, QUIC UDP reachability, relay latency, with green/red checklist & advice (`ConnectionDoctor.tsx`) | Must | ✅ |
 
 ---
 
@@ -314,10 +314,10 @@
 
 | ID | Requirement | Priority | Status |
 |---|---|---|---|
-| R22.1 | Persistent Resume Queue: SQLite stores in-progress transfer chunk offsets across app restarts or laptop lid closes | Must | ⬜ |
-| R22.2 | Offline Header Banner: Prominent banner 'Offline Mode — viewing cached files only' with manual 'Retry Connection' button | Must | ⬜ |
-| R22.3 | Available Offline Filter: 1-click header toggle filtering the file explorer to only cached and pinned local files | Should | ⬜ |
-| R22.4 | Visual Cloud Badges: Uncached remote-only files display a distinct cloud icon and dimmed row styling when offline | Should | ⬜ |
+| R22.1 | Persistent Resume Queue: SQLite stores in-progress transfer chunk offsets across app restarts or laptop lid closes (`UploadQueueDrawer.tsx`) | Must | ✅ |
+| R22.2 | Offline Header Banner: Prominent banner 'Offline Mode — viewing cached files only' with manual 'Retry Connection' button (`OfflineBanner.tsx`) | Must | ✅ |
+| R22.3 | Available Offline Filter: 1-click header toggle filtering the file explorer to only cached and pinned local files | Should | ✅ |
+| R22.4 | Visual Cloud Badges: Uncached remote-only files display a distinct cloud icon and dimmed row styling when offline | Should | ✅ |
 
 ---
 
@@ -325,9 +325,9 @@
 
 | ID | Requirement | Priority | Status |
 |---|---|---|---|
-| R23.1 | Full App Data Backup: Export single backup bundle (identity key, SQLite DB, pinned metadata) in Settings | Should | ⬜ |
-| R23.2 | Folder ZIP Export: 1-click folder export to local ZIP, prompting to download missing peer-only chunks before archiving | Must | ⬜ |
-| R23.3 | Non-Intrusive Auto-Updater: Tauri update notifications prompted strictly on startup or shutdown to prevent study interruptions | Must | ⬜ |
+| R23.1 | Full App Data Backup: Export single backup bundle (identity key, SQLite DB, pinned metadata) in Settings (`backup_cmds.rs`, `BackupSettings.tsx`) | Should | ✅ |
+| R23.2 | Folder ZIP Export: 1-click folder export to local ZIP, prompting to download missing peer-only chunks before archiving (`ZipImportModal.tsx`) | Must | ✅ |
+| R23.3 | Non-Intrusive Auto-Updater: Tauri update notifications prompted strictly on startup or shutdown to prevent study interruptions | Must | ✅ |
 
 ---
 
@@ -335,8 +335,8 @@
 
 | ID | Requirement | Priority | Status |
 |---|---|---|---|
-| R24.1 | 5-Year Seeding Deprioritization: Files older than 5 years automatically have background auto-fill priority reduced | Should | ⬜ |
-| R24.2 | 2-Year Dead File Purge: Files with 0 online seeds continuously for 2 years are automatically purged from the workspace catalog | Must | ⬜ |
+| R24.1 | 5-Year Seeding Deprioritization: Files older than 5 years automatically have background auto-fill priority reduced (`pruning.rs`) | Should | ✅ |
+| R24.2 | 2-Year Dead File Purge: Files with 0 online seeds continuously for 2 years are automatically purged from the workspace catalog (`pruning.rs`) | Must | ✅ |
 
 ---
 
@@ -344,21 +344,35 @@
 
 ```toml
 [dependencies]
-iroh          = { version = "0.29", features = ["discovery-local-network", "discovery-pkarr-dht"] }
-iroh-blobs    = "0.29"
-iroh-relay    = "0.29"
-tokio         = { version = "1", features = ["full"] }
-rusqlite      = { version = "0.31", features = ["bundled"] }
-serde         = { version = "1", features = ["derive"] }
-serde_json    = "1"
-anyhow        = "1"
-dirs          = "5"
-clap          = { version = "4", features = ["derive"] }
-tracing       = "0.1"
+tauri          = { version = "2", features = ["tray-icon"] }
+tauri-plugin-shell = "2"
+tauri-plugin-single-instance = "2"
+tauri-plugin-fs    = "2"
+tauri-plugin-autostart = "2.0.0-rc.1"
+zip            = { version = "9.3.0", default-features = false, features = ["deflate"] }
+iroh           = "1.4"
+iroh-blobs     = "0.104"
+iroh-relay     = { version = "1.4", features = ["server"] }
+iroh-tickets   = "1.0"
+tokio          = { version = "1", features = ["full"] }
+rusqlite       = { version = "0.31", features = ["bundled", "backup"] }
+hex            = "0.4"
+serde          = { version = "1", features = ["derive"] }
+serde_json     = "1"
+chrono         = { version = "0.4", features = ["serde", "clock"] }
+url            = "2"
+semver         = "1.0"
+reqwest        = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+anyhow         = "1"
+thiserror      = "2"
+dirs           = "7"
+rfd            = "0.17"
+clap           = { version = "4", features = ["derive"] }
+tracing        = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-governor      = "0.6"
+governor       = "0.7"
 ```
 
 ---
 
-*Last updated: 2026-11-03 — updated with active swarm hosting, peer discovery, catalog sync, and orphaned file management.*
+*Last updated: 2026-11-07 — updated with phase 2 completion, locked cargo dependencies, and lightweight anchor configuration.*

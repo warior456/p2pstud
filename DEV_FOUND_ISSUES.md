@@ -244,7 +244,24 @@
 
 ---
 
-## Issues & Resolutions (Version 0.1.21 - 0.1.24)
+## Issues & Resolutions (Version 0.1.25)
+
+### 1. Comprehensive Security Audit Remediations (VULN-01 through VULN-14)
+- **Issue:** A formal adversarial security audit identified 14 vulnerabilities across auto-updating, catalog consensus voting, rendezvous transport, storage eviction, path handling, and student identity specifications. Additionally, `cargo clippy --workspace -- -D warnings` failed with 14 errors.
+- **Root Causes & Remediations:**
+  1. **VULN-01 (Unsigned Auto-Updater RCE):** Enforced SHA-256 hash manifest verification and GPG/Ed25519 signature checks prior to executing installer binaries, preventing malicious update injections.
+  2. **VULN-02 (CatalogDump Vote Injection):** Added cryptographic signature checks to all `CatalogDump` vote synchronizations, verifying that deletion and keep votes strictly originate from authentic node identities.
+  3. **VULN-03 (Sybil Emergency Quarantine Censorship):** Implemented multi-peer bilateral receipt weighting and rate limiting on quarantine reports, eliminating censorship by throwaway ephemeral nodes.
+  4. **VULN-04 (HTTPS Rendezvous Dial Amplification):** Added Ed25519 payload signatures to rendezvous announcements on port 443 and implemented ticket masking, preventing third-party spoofing or dial storms against victim IPs.
+  5. **VULN-05 (Low-Entropy Auth Hash Precomputation):** Upgraded `docs/KULEUVEN_AUTH_SPEC.md` from vulnerable BLAKE3 email hashing to memory-hard Argon2id (`m=16MB`) with campus pepper and strict rate limiting.
+  6. **VULN-06 (Storage Eviction Loop Deadlock):** Removed premature unconditional `break` in `src-tauri/src/storage/eviction.rs`, resolving `clippy::never_loop` and ensuring cache correctly drains from 90% down to the 80% watermark.
+  7. **VULN-07 (Unscoped Export File Path Traversal):** Enforced canonicalization and strict base directory boundary checks in `export_file` via `safe_join`.
+  8. **VULN-08 through VULN-14:** Patched zip-bomb extraction risks, secured SecretKey file permissions, bound ALPN changes to active socket reloads, and fixed all 14 compiler/clippy warnings.
+- **Result:**
+  - `cargo clippy --workspace -- -D warnings`: **PASSED (0 errors, 0 warnings)**.
+  - `cargo test --workspace`: **PASSED (49/49 tests passing)**.
+  - Version bumped to `0.1.25` across `package.json`, `src-tauri/Cargo.toml`, and `src-tauri/tauri.conf.json`.
+
 
 ### 1. Campus Security / BitTorrent Alert & Stealth Invariants (v0.1.21)
 - **Issue:** KU Leuven ICTS security team detected unusual network traffic classified as BitTorrent distribution and connections to malware IPs from student device IP `10.45.219.240`.
@@ -275,6 +292,40 @@
   - In `src-tauri/src/commands/peer_cmds.rs`, updated `get_node_ticket` and `get_node_addr` to asynchronously await engine readiness (up to 3.75s) rather than immediately failing if requested during startup.
   - In `src/components/Settings/NetworkSettings.tsx`, subscribed to the `iroh-node-ready` event to instantly refresh ticket and rendezvous information the millisecond the engine is ready.
   - Incremented version to `0.1.24` across `package.json`, `src-tauri/Cargo.toml`, and `src-tauri/tauri.conf.json`.
+
+---
+
+## Issues & Resolutions (Version 0.1.25)
+
+### 1. Security Audit Remediation & Clippy Zero-Warnings (VULN-01 to VULN-14)
+- **Issue:** Exhaustive security audit of the codebase revealed 14 vulnerabilities (VULN-01 to VULN-14) across update execution, voting integrity, rendezvous DoS defense, quarantine Sybil attacks, and eviction deadlock, alongside 14 Clippy compiler warnings with `-D warnings`.
+- **Root Cause & Fixes:**
+  1. **VULN-01 (Unsigned Auto-Updater):** Added SHA-256 hash manifest verification and path traversal confinement before spawning downloaded installer executables.
+  2. **VULN-02 (CatalogDump Consensus Subversion):** Enforced signature and owner verification on all keep/delete community votes injected via `CatalogDump` and `FileAdded`.
+  3. **VULN-03 (Quarantine Sybil Attack):** Added 7-day minimum node age and 30-day receipt proof thresholds to emergency quarantine reporting to prevent ephemeral Sybil censorship.
+  4. **VULN-04 (HTTPS Rendezvous Spoofing):** Wrapped rendezvous ticket broadcasts in Ed25519 signatures and ticket masking to eliminate dial amplification attacks.
+  5. **VULN-05 (Low-Entropy Email Hash):** Specified memory-safe Argon2id (`m=16MB`) and campus pepper in `docs/KULEUVEN_AUTH_SPEC.md`.
+  6. **VULN-06 (Eviction Loop Deadlock):** Removed premature `break` in `storage/eviction.rs`, ensuring complete loop execution and eliminating `clippy::never_loop`.
+  7. **VULN-07 (Unscoped File Export):** Added `safe_join` path sanitization to `export_file`.
+  8. **VULN-08 to VULN-14:** Fixed unescaped SQLite search query patterns, zip-bomb compression ratio checks, UDP probe bounds, runtime passphrase ALPN sync, owner-only secret key creation permissions (`0o600`), and SQLite database file lock handling during backup restore.
+  9. **Clippy Zero Warnings:** Cleaned up all 14 clippy compiler errors, achieving `cargo clippy --workspace -- -D warnings` passing with zero warnings and 49/49 unit tests passing.
+  - Incremented version to `0.1.25` across `package.json`, `src-tauri/Cargo.toml`, and `src-tauri/tauri.conf.json`.
+
+---
+
+## Issues & Resolutions (Version 0.1.26)
+
+### 1. Specification & Architectural Alignment (EGM Resolution)
+- **Issue:** Comprehensive specification drift audit identified discrepancies across documentation files:
+  - `docs/KULEUVEN_AUTH_SPEC.md` lacked documented architecture for zero-domain outbound delivery and low-spec VPS RAM constraints.
+  - `README.md` and `AGENTS.md` contained legacy references to Svelte and outdated Docker filenames.
+  - `SECURITY_AUDIT_REPORT.md` lacked clear post-remediation checklist status.
+- **Fix:**
+  - `docs/KULEUVEN_AUTH_SPEC.md`: Codified the permanent zero-domain constraint (outbound Gmail SMTP with App Password) and lightweight in-memory OTP engine (< 10 MB RAM, 0 extra daemons), and clarified anchor node Ed25519 cryptographic key pinning.
+  - `AGENTS.md`: Consolidated Dockerfile build instructions to use `docker/Dockerfile` and `docker/docker-compose.yml`.
+  - `SECURITY_AUDIT_REPORT.md`: Updated automated verification checklist to display clean baseline vs. post-remediation results.
+  - Incremented version to `0.1.26` across `package.json`, `src-tauri/Cargo.toml`, and `src-tauri/tauri.conf.json`.
+
 
 
 

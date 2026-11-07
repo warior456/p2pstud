@@ -46,7 +46,7 @@ At the end of every session (or when interrupted), update the `## Progress Track
 ## Progress Tracker
 
 > **Last session:** 2026-11-07
-> **Last completed task:** Step 53 completed: Addressed all 14 security and architectural findings from `SECURITY_AUDIT_REPORT.md` (VULN-01 to VULN-14). Resolved all 14 compiler/clippy errors, eliminated eviction deadlock, enforced updater cryptographic verification & path confinement, authenticated consensus delete/keep votes in CatalogDump, added anti-sybil defenses to emergency quarantine, hardened HTTPS rendezvous with Ed25519 signatures and ticket masking, upgraded KU Leuven auth specification to Argon2id, added zip-bomb protections, fixed UDP diagnostic probe, synchronized ALPN on passphrase change, secured SecretKey file creation permissions, prevented SQLite active connection overwrite on backup restore, and restricted Markdown preview against remote image exfiltration. Synchronized version bump to 0.1.25 across `package.json`, `src-tauri/Cargo.toml`, and `src-tauri/tauri.conf.json`.
+> **Last completed task:** Step 54 completed: Addressed all 14 security and architectural findings from `SECURITY_AUDIT_REPORT.md` (VULN-01 to VULN-14). Resolved all 14 compiler/clippy errors, eliminated eviction deadlock, enforced updater cryptographic verification & path confinement, authenticated consensus delete/keep votes in CatalogDump, added anti-sybil defenses to emergency quarantine, hardened HTTPS rendezvous with Ed25519 signatures and ticket masking, upgraded KU Leuven auth specification to Argon2id, added zip-bomb protections, fixed UDP diagnostic probe, synchronized ALPN on passphrase change, secured SecretKey file creation permissions, prevented SQLite active connection overwrite on backup restore, and restricted Markdown preview against remote image exfiltration. Synchronized version bump to 0.1.25 across `package.json`, `src-tauri/Cargo.toml`, and `src-tauri/tauri.conf.json`.
 > **Next action:** Production release testing and distribution.
 
 | # | Step | Status | Notes |
@@ -104,6 +104,7 @@ At the end of every session (or when interrupted), update the `## Progress Track
 | 51 | Automated HTTPS Swarm Rendezvous (Zero-Config Peer Discovery) | ✅ | Implemented `p2p/rendezvous.rs` topic-based discovery over HTTPS port 443; enables zero-config peer pairing on client-isolated Wi-Fi and firewalled campus networks without DHT or manual ticket exchange; added manual discovery trigger and UI status in Network Settings. Version bumped to 0.1.19. |
 | 52 | GitHub Updater Rate-Limit Resilience | ✅ | Added HTML redirect fallback on `releases/latest` to resolve latest release and assets when `api.github.com` unauthenticated IP rate limit (HTTP 403) is exhausted on shared campus networks. Version bumped to 0.1.20. |
 | 53 | Single-Store Architecture, Concurrent Redb Lock Fix & Ready-Polling Discovery | ✅ | Unified BlobStore initialization to prevent concurrent redb open conflicts between preload and IrohEngine; added graceful readiness polling to `get_node_ticket`, `get_node_addr`, and `trigger_swarm_discovery`; hooked `iroh-node-ready` in Network Settings; bumped version to 0.1.24. |
+| 54 | Security Audit Remediations & Clippy Cleanup (VULN-01 to VULN-14) | ✅ | Remediated all 14 security vulnerabilities from `SECURITY_AUDIT_REPORT.md`, resolved 14 clippy compiler warnings with `-D warnings`, eliminated eviction deadlock, enforced updater cryptographic verification & path confinement, and bumped version to 0.1.25. |
 
 ---
 
@@ -126,7 +127,7 @@ Build a lightweight, cross-platform desktop application (Windows + Linux) that e
 | P2P identity + transport | `iroh` + `iroh-net` | QUIC; relay fallback on port 443 |
 | Content-addressed storage | `iroh-blobs` | BLAKE3 integrity on every chunk |
 | Local state | `rusqlite` (SQLite) | Tracks blobs, timestamps, pin state |
-| Frontend | React or Svelte + TailwindCSS + Lucide Icons | Bundled via Vite |
+| Frontend | React 18 + TailwindCSS + Lucide Icons | Bundled via Vite |
 | PDF viewer | `pdfjs-dist` or `@react-pdf-viewer/core` | |
 | Markdown editor | `@monaco-editor/react` or Milkdown/TipTap | Split-pane live preview |
 | Async runtime | `tokio` (already used by Iroh) | |
@@ -143,59 +144,84 @@ Build a lightweight, cross-platform desktop application (Windows + Linux) that e
 
 ```
 p2pstud/
-Γö£ΓöÇΓöÇ AGENT_PLAN.md                  ΓåÉ This file (update progress tracker here)
-Γö£ΓöÇΓöÇ Cargo.toml                     ΓåÉ Workspace root
-Γö£ΓöÇΓöÇ Cargo.lock
-Γö£ΓöÇΓöÇ src-tauri/
-Γöé   Γö£ΓöÇΓöÇ Cargo.toml
-Γöé   Γö£ΓöÇΓöÇ tauri.conf.json
-Γöé   Γö£ΓöÇΓöÇ src/
-Γöé   Γöé   Γö£ΓöÇΓöÇ main.rs                ΓåÉ Tauri app entry, registers IPC commands
-Γöé   Γöé   Γö£ΓöÇΓöÇ lib.rs
-Γöé   Γöé   Γö£ΓöÇΓöÇ p2p/
-Γöé   Γöé   Γöé   Γö£ΓöÇΓöÇ mod.rs
-Γöé   Γöé   Γöé   Γö£ΓöÇΓöÇ engine.rs          ΓåÉ Iroh node lifecycle manager
-Γöé   Γöé   Γöé   Γö£ΓöÇΓöÇ relay.rs           ΓåÉ Relay/DERP config helpers
-Γöé   Γöé   Γöé   ΓööΓöÇΓöÇ identity.rs        ΓåÉ SecretKey persistence (dirs::data_dir)
-Γöé   Γöé   Γö£ΓöÇΓöÇ storage/
-Γöé   Γöé   Γöé   Γö£ΓöÇΓöÇ mod.rs
-Γöé   Γöé   Γöé   Γö£ΓöÇΓöÇ db.rs              ΓåÉ SQLite connection pool + migrations
-Γöé   Γöé   Γöé   Γö£ΓöÇΓöÇ blob_tracker.rs    ΓåÉ CRUD on local_blobs table
-Γöé   Γöé   Γöé   ΓööΓöÇΓöÇ eviction.rs        ΓåÉ LRU eviction background worker
-Γöé   Γöé   ΓööΓöÇΓöÇ commands/
-Γöé   Γöé       Γö£ΓöÇΓöÇ mod.rs
-Γöé   Γöé       Γö£ΓöÇΓöÇ storage_cmds.rs    ΓåÉ get_storage_stats, set_cache_limit
-Γöé   Γöé       Γö£ΓöÇΓöÇ file_cmds.rs       ΓåÉ pin_file, unpin_file, read_file_stream
-Γöé   Γöé       ΓööΓöÇΓöÇ peer_cmds.rs       ΓåÉ list_peers, connection status
-Γöé   ΓööΓöÇΓöÇ bin/
-Γöé       ΓööΓöÇΓöÇ anchor.rs              ΓåÉ Headless anchor daemon binary
-Γö£ΓöÇΓöÇ src/                           ΓåÉ Frontend source
-Γöé   Γö£ΓöÇΓöÇ main.tsx (or main.ts)
-Γöé   Γö£ΓöÇΓöÇ App.tsx
-Γöé   Γö£ΓöÇΓöÇ components/
-Γöé   Γöé   Γö£ΓöÇΓöÇ Explorer/
-Γöé   Γöé   Γöé   Γö£ΓöÇΓöÇ FileTree.tsx
-Γöé   Γöé   Γöé   Γö£ΓöÇΓöÇ FileRow.tsx        ΓåÉ Sync status badges
-Γöé   Γöé   Γöé   ΓööΓöÇΓöÇ Breadcrumbs.tsx
-Γöé   Γöé   Γö£ΓöÇΓöÇ Viewers/
-Γöé   Γöé   Γöé   Γö£ΓöÇΓöÇ PdfViewer.tsx
-Γöé   Γöé   Γöé   ΓööΓöÇΓöÇ MarkdownEditor.tsx
-Γöé   Γöé   Γö£ΓöÇΓöÇ Settings/
-Γöé   Γöé   Γöé   ΓööΓöÇΓöÇ CacheSlider.tsx
-Γöé   Γöé   ΓööΓöÇΓöÇ Footer/
-Γöé   Γöé       ΓööΓöÇΓöÇ TelemetryBar.tsx
-Γöé   ΓööΓöÇΓöÇ hooks/
-Γöé       Γö£ΓöÇΓöÇ useStorageStats.ts
-Γöé       ΓööΓöÇΓöÇ usePeerStatus.ts
-Γö£ΓöÇΓöÇ docker/                        ΓåÉ Optional. Primary deliverable is the binary.
-Γöé   Γö£ΓöÇΓöÇ Dockerfile                 ΓåÉ Single image: relay + storage node combined
-Γöé   Γö£ΓöÇΓöÇ docker-compose.yml         ΓåÉ One-command VPS deploy (single container)
-Γöé   ΓööΓöÇΓöÇ .env.example               ΓåÉ Documents required env vars
-Γö£ΓöÇΓöÇ .github/
-Γöé   ΓööΓöÇΓöÇ workflows/
-Γöé       Γö£ΓöÇΓöÇ build.yml              ΓåÉ Cross-compile Windows + Linux
-Γöé       ΓööΓöÇΓöÇ test.yml
-ΓööΓöÇΓöÇ README.md
+├── AGENT_PLAN.md                  → This file (update progress tracker here)
+├── Cargo.toml                     → Workspace root
+├── Cargo.lock
+├── src-tauri/
+│   ├── Cargo.toml
+│   ├── tauri.conf.json
+│   ├── src/
+│   │   ├── main.rs                → Tauri app entry, registers IPC commands
+│   │   ├── lib.rs
+│   │   ├── p2p/
+│   │   │   ├── mod.rs
+│   │   │   ├── anchor_voucher.rs  → Attestation vouchers issued by anchors
+│   │   │   ├── bandwidth.rs       → Live upload/download rate tracking
+│   │   │   ├── engine.rs          → Iroh node lifecycle manager
+│   │   │   ├── identity.rs        → SecretKey persistence (dirs::data_dir)
+│   │   │   ├── network_profile.rs → Eduroam SSID detection & campus stealth
+│   │   │   ├── relay.rs           → Relay/DERP config helpers
+│   │   │   ├── rendezvous.rs      → HTTPS zero-config peer discovery
+│   │   │   └── sync.rs            → Peer catalog synchronization
+│   │   ├── storage/
+│   │   │   ├── mod.rs
+│   │   │   ├── blob_tracker.rs    → CRUD on local_blobs table
+│   │   │   ├── db.rs              → SQLite connection pool + migrations
+│   │   │   ├── eviction.rs        → LRU eviction background worker
+│   │   │   ├── hosting_worker.rs  → Swarm auto-fill hosting worker
+│   │   │   ├── path_utils.rs      → Cross-platform path sanitization (safe_join)
+│   │   │   ├── pruning.rs         → 5-year seeding decay & 2-year dead purge
+│   │   │   └── scarcity.rs        → Scarcity-first auto-download & SSD protection
+│   │   ├── commands/
+│   │   │   ├── mod.rs
+│   │   │   ├── backup_cmds.rs     → App data backup, ZIP export & restore
+│   │   │   ├── diagnostic_cmds.rs → Connection Doctor diagnostics
+│   │   │   ├── file_cmds.rs       → pin_file, unpin_file, read_file_stream
+│   │   │   ├── peer_cmds.rs       → list_peers, connection status, rendezvous
+│   │   │   └── storage_cmds.rs    → get_storage_stats, set_cache_limit
+│   │   └── bin/
+│   │       └── anchor.rs          → Headless anchor daemon binary
+│   └── tests/
+├── src/                           → Frontend source (React 18 + TypeScript)
+│   ├── main.tsx
+│   ├── App.tsx
+│   ├── components/
+│   │   ├── ImportingBanner.tsx
+│   │   ├── OfflineBanner.tsx
+│   │   ├── SoleSeedBanner.tsx
+│   │   ├── Explorer/
+│   │   │   ├── Breadcrumbs.tsx
+│   │   │   ├── FileRow.tsx
+│   │   │   ├── FileTree.tsx
+│   │   │   ├── UploadQueueDrawer.tsx
+│   │   │   └── ZipImportModal.tsx
+│   │   ├── Onboarding/
+│   │   │   ├── ConnectionDoctor.tsx
+│   │   │   ├── CredentialsStep.tsx
+│   │   │   ├── OnboardingAdvanced.tsx
+│   │   │   ├── OnboardingSimple.tsx
+│   │   │   └── OnboardingWizard.tsx
+│   │   ├── Settings/
+│   │   │   ├── BackupSettings.tsx
+│   │   │   ├── CacheSlider.tsx
+│   │   │   └── NetworkSettings.tsx
+│   │   ├── Viewers/
+│   │   │   ├── MarkdownEditor.tsx
+│   │   │   └── PdfViewer.tsx
+│   │   └── Footer/
+│   │       └── TelemetryBar.tsx
+│   └── hooks/
+│       ├── usePeerStatus.ts
+│       └── useStorageStats.ts
+├── docker/
+│   ├── Dockerfile
+│   ├── docker-compose.yml
+│   ├── p2pstud-anchor.service
+│   └── .env.example
+├── .github/
+│   └── workflows/
+│       └── build.yml
+└── README.md
 ```
 
 ---

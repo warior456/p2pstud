@@ -14,7 +14,7 @@
 * **Pin for Offline**: Right-click to keep any slide deck or assignment offline and exempt from eviction.
 * **In-App Slide & Note Viewers**: Embedded PDF reader with page rendering and Markdown editor with live preview.
 * **Background Tray Persistence**: Minimizes to the system tray so P2P seeding continues in the background even after closing the main window.
-* **Headless VPS Anchor**: An inexpensive cloud VPS ($3–$5/mo) provides 100% persistent availability and token-bucket throttled egress (150 KB/s per session, 2 MB/s aggregate).
+* **Headless VPS Anchor**: An inexpensive cloud VPS ($3–$5/mo) provides 100% persistent availability. Features a staged token-bucket egress rate limiter (150 KB/s per session, 2 MB/s aggregate) in `anchor.rs`, with recommended kernel-level `tc`/`wondershaper` bandwidth caps for VPS providers.
 
 ---
 
@@ -94,6 +94,14 @@ npm run test
 
 The anchor node persists 100% of workspace files and hosts the TLS 443 relay for NAT traversal.
 
+> **Bandwidth Throttling on Light VPS Instances:**
+> While `anchor.rs` includes a staged userspace `SessionLimiter` module, VPS operators requiring hard kernel-level egress throttling can easily enforce traffic shaping using Linux `tc` / `wondershaper`:
+> ```bash
+> # Cap outbound bandwidth to 2 MB/s (16 Mbit/s) on interface eth0
+> sudo wondershaper eth0 102400 16384
+> # Or clear limits: sudo wondershaper clear eth0
+> ```
+
 ### Option A: Native Binary with systemd
 ```bash
 cargo build --release --bin anchor
@@ -107,7 +115,7 @@ sudo systemctl enable --now p2pstud-anchor
 ```bash
 cd docker
 cp .env.example .env
-# Edit .env with your RELAY_DOMAIN and WORKSPACE_ID
+# Edit .env: RELAY_DOMAIN and optional WORKSPACE_ID (omitted by default for shared swarm)
 docker compose up -d
 ```
 

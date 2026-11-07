@@ -84,7 +84,7 @@ The **OrchestratorAgent** (the top-level agent in the session) is responsible fo
 
 | Field | Value |
 |---|---|
-| **Role** | Implements the Svelte/React frontend |
+| **Role** | Implements the React 18 (Vite + TypeScript + Tailwind CSS) frontend |
 | **Spawned by** | OrchestratorAgent |
 | **Plan steps** | 8, 9, 10, 11, 12 |
 | **Owns (write)** | `src/` (all frontend source), `index.html`, `vite.config.ts`, `package.json`, `tailwind.config.js` |
@@ -120,7 +120,7 @@ The **OrchestratorAgent** (the top-level agent in the session) is responsible fo
 | **Role** | Implements the headless VPS anchor binary and all Docker infrastructure |
 | **Spawned by** | OrchestratorAgent |
 | **Plan steps** | 13, 14, 15 |
-| **Owns (write)** | `src-tauri/src/bin/anchor.rs`, `docker/Dockerfile.anchor`, `docker/Dockerfile.node`, `docker/docker-compose.yml`, `docker/docker-compose.single.yml`, `docker/.env.example` |
+| **Owns (write)** | `src-tauri/src/bin/anchor.rs`, `docker/Dockerfile`, `docker/docker-compose.yml`, `docker/p2pstud-anchor.service`, `docker/.env.example` |
 | **Must NOT touch** | `src-tauri/src/` (non-bin), `src/` |
 
 **Startup instructions:**
@@ -131,9 +131,8 @@ The **OrchestratorAgent** (the top-level agent in the session) is responsible fo
 
 **Completion criteria:**
 - `cargo build --release --bin anchor` succeeds.
-- `docker build -f docker/Dockerfile.anchor .` succeeds.
-- `docker build -f docker/Dockerfile.node .` succeeds (headless node variant).
-- `docker compose -f docker/docker-compose.single.yml up --dry-run` succeeds.
+- `docker build -f docker/Dockerfile .` succeeds.
+- `docker compose -f docker/docker-compose.yml up --dry-run` succeeds.
 - Rate limiter unit test: simulate 10 sessions each requesting 1 MB/s → assert aggregate stays ≤ 2 MB/s.
 - Report back to OrchestratorAgent with: CLI flags implemented, Docker image sizes, any TLS setup steps remaining.
 
@@ -157,14 +156,14 @@ The **OrchestratorAgent** (the top-level agent in the session) is responsible fo
 **Required test cases (must all pass before Step 16 is marked ✅):**
 
 ```
-[ ] eviction::tests::eviction_removes_oldest_first
-[ ] eviction::tests::pinned_blobs_survive_eviction
-[ ] eviction::tests::eviction_target_is_80_percent
-[ ] eviction::tests::full_mirror_skips_eviction
-[ ] storage::tests::path_traversal_rejected
-[ ] storage::tests::path_within_base_accepted
-[ ] p2p::tests::secret_key_round_trips
-[ ] integration::tests::two_nodes_transfer_blob  (feature-gated)
+[x] eviction::tests::eviction_removes_oldest_first
+[x] eviction::tests::pinned_blobs_survive_eviction
+[x] eviction::tests::eviction_target_is_80_percent
+[x] eviction::tests::full_mirror_skips_eviction
+[x] storage::tests::path_traversal_rejected
+[x] storage::tests::path_within_base_accepted
+[x] p2p::tests::secret_key_round_trips
+[x] integration::tests::two_nodes_transfer_blob  (feature-gated)
 ```
 
 **Completion criteria:**
