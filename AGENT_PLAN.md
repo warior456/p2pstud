@@ -46,8 +46,8 @@ At the end of every session (or when interrupted), update the `## Progress Track
 ## Progress Tracker
 
 > **Last session:** 2026-11-07
-> **Last completed task:** Step 55 completed: Resolved all 13 architecture and specification drift findings via `egm-resolve`. Updated `docs/KULEUVEN_AUTH_SPEC.md` to enshrine the permanent zero-domain and light-server VPS execution model, documented self-sovereign Ed25519 anchor verification, staged token-bucket rate limiting in `anchor.rs` with Linux `tc` guidance in `README.md`, updated all Phase 2 requirements (R14 through R24) to completed status (`✅`), synchronized the R7 dependency matrix with `Cargo.toml`, and bumped version to 0.1.26 across `package.json`, `src-tauri/Cargo.toml`, and `src-tauri/tauri.conf.json`. All 49 workspace tests and 37 Vitest tests passing cleanly.
-> **Next action:** Production release testing and distribution.
+> **Last completed task:** Step 58 completed: Standardized zero-domain light VPS defaults across docker and systemd; clarified anchor node connection and bootstrap peer persistence in NetworkSettings; compiled and packaged release NSIS installer bundle `p2pstud_0.1.28_x64-setup.exe` (13.82 MiB) with 37/37 Vitest tests and cargo check passing cleanly.
+> **Next action:** Production deployment on light VPS and end-to-end swarm verification.
 
 | # | Step | Status | Notes |
 |---|---|---|---|
@@ -108,6 +108,7 @@ At the end of every session (or when interrupted), update the `## Progress Track
 | 55 | Specification & Architecture Drift Resolution (`egm-resolve`) | ✅ | Resolved all 13 drift findings from 2026-11-07 audit report; enshrined zero-domain, light-server VPS auth spec in `KULEUVEN_AUTH_SPEC.md`; staged rate limiter docs; synchronized R14-R24 & R7 dependency matrix; bumped version to 0.1.26. |
 | 56 | Anchor Connection Discoverability & Desktop NSIS Installer Package | ✅ | Clarified remote peer / anchor node connection form and bootstrap peer persistence guidance in `NetworkSettings.tsx`; successfully built release NSIS desktop installer bundle (`p2pstud_0.1.26_x64-setup.exe`, 13.82 MiB); bumped version to 0.1.27. |
 | 57 | Zero-Domain Light VPS Anchor Defaults & Deployment Documentation | ✅ | Standardized `docker/Dockerfile`, `docker-compose.yml`, `docker/.env.example`, and `docker/p2pstud-anchor.service` to default to zero-domain `--no-relay` storage mode with public EU relay fallback; documented light VPS setup in `README.md`; bumped version to 0.1.28. |
+| 58 | Windows Release NSIS Installer Packaging (v0.1.28) | ✅ | Successfully compiled release binary and packaged NSIS desktop installer bundle (`p2pstud_0.1.28_x64-setup.exe`, 13.82 MiB) with all 37 Vitest tests passing. |
 
 ---
 
