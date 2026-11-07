@@ -65,6 +65,7 @@ pub fn run() {
             let engine: Arc<RwLock<Option<IrohEngine>>> = Arc::new(RwLock::new(None));
             let store: Arc<RwLock<Option<iroh_blobs::store::fs::FsStore>>> = Arc::new(RwLock::new(None));
             let bandwidth = Arc::new(BandwidthTracker::new());
+            crate::p2p::bandwidth::set_global_bandwidth(bandwidth.clone());
 
             let blob_dir = match db.get_setting("custom_blob_dir") {
                 Ok(Some(custom)) if !custom.trim().is_empty() => std::path::PathBuf::from(custom.trim()),

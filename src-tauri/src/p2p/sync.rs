@@ -573,10 +573,13 @@ impl ProtocolHandler for CatalogSyncHandler {
                 let sender_peer = sender_peer.clone();
                 tokio::spawn(async move {
                     if let Ok(bytes) = recv.read_to_end(2 * 1024 * 1024).await {
+                        crate::p2p::bandwidth::record_global_download(bytes.len() as u64);
                         if let Ok(msg) = serde_json::from_slice::<SyncMessage>(&bytes) {
                             if let Ok(Some(reply)) = this.handle_message(msg, sender_peer.as_deref()).await {
                                 if let Ok(reply_bytes) = serde_json::to_vec(&reply) {
+                                    let len = reply_bytes.len() as u64;
                                     let _ = send.write_all(&reply_bytes).await;
+                                    crate::p2p::bandwidth::record_global_upload(len);
                                 }
                             }
                         }
@@ -730,7 +733,9 @@ pub async fn broadcast_catalog_event(endpoint: &Endpoint, alpn: &[u8], msg: Sync
         tokio::spawn(async move {
             if let Ok(conn) = ep.connect(peer_addr, &proto).await {
                 if let Ok((mut send, _)) = conn.open_bi().await {
+                    let len = payload.len() as u64;
                     let _ = send.write_all(&payload).await;
+                    crate::p2p::bandwidth::record_global_upload(len);
                     let _ = send.finish();
                 }
             }

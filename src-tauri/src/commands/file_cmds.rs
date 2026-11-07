@@ -430,7 +430,14 @@ pub async fn add_file(local_path: String, state: State<'_, AppState>) -> Result<
     // Record initial seed for the local node
     let _ = record_peer_seed(&state.db, &hash, &owner_node_id);
 
-    // Note: Do not record local import towards network upload bandwidth.
+    // Record upload bandwidth
+    state.bandwidth.record_upload(size_bytes);
+
+    // Record upload bandwidth
+    state.bandwidth.record_upload(size_bytes);
+
+    // Record upload bandwidth
+    state.bandwidth.record_upload(size_bytes);
 
     // Broadcast file addition to the swarm
     let record = BlobRecord {
@@ -551,6 +558,12 @@ pub async fn upload_file_bytes(
 
     // Record initial seed for the local node
     let _ = record_peer_seed(&state.db, &hash, &owner_node_id);
+
+    // Record upload bandwidth
+    state.bandwidth.record_upload(size_bytes);
+
+    // Record upload bandwidth
+    state.bandwidth.record_upload(size_bytes);
 
     // Broadcast file addition to the swarm
     let record = BlobRecord {
@@ -1119,6 +1132,9 @@ async fn import_zip_archive_internal<R: std::io::Read + std::io::Seek>(
 
         let _ = record_peer_seed(&state.db, &hash, &owner_node_id);
 
+    // Record upload bandwidth
+    state.bandwidth.record_upload(size_bytes);
+
         let record = BlobRecord {
             hash: hash.clone(),
             name: Some(sanitized_path.clone()),
@@ -1141,6 +1157,7 @@ async fn import_zip_archive_internal<R: std::io::Read + std::io::Seek>(
 
         summary.files_imported += 1;
         summary.total_bytes += size_bytes;
+        state.bandwidth.record_upload(size_bytes);
 
         let now = std::time::Instant::now();
         let dt = now.duration_since(last_emit_time).as_secs_f64();
@@ -1333,6 +1350,9 @@ pub async fn upload_file_path(
     .map_err(|e| e.to_string())?;
 
     let _ = record_peer_seed(&state.db, &hash, &owner_node_id);
+
+    // Record upload bandwidth
+    state.bandwidth.record_upload(size_bytes);
 
     let record = BlobRecord {
         hash: hash.clone(),

@@ -5,6 +5,24 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::Instant;
 
+static GLOBAL_BANDWIDTH: std::sync::OnceLock<std::sync::Arc<BandwidthTracker>> = std::sync::OnceLock::new();
+
+pub fn set_global_bandwidth(bw: std::sync::Arc<BandwidthTracker>) {
+    let _ = GLOBAL_BANDWIDTH.set(bw);
+}
+
+pub fn record_global_upload(bytes: u64) {
+    if let Some(bw) = GLOBAL_BANDWIDTH.get() {
+        bw.record_upload(bytes);
+    }
+}
+
+pub fn record_global_download(bytes: u64) {
+    if let Some(bw) = GLOBAL_BANDWIDTH.get() {
+        bw.record_download(bytes);
+    }
+}
+
 /// Thread-safe tracker measuring instantaneous network throughput.
 #[derive(Debug)]
 pub struct BandwidthTracker {
