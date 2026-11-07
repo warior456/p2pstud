@@ -8,10 +8,12 @@ import {
   RefreshCw, 
   Sparkles, 
   FolderSearch,
-  AlertTriangle 
+  AlertTriangle,
+  Play
 } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
-import { UpdateInfo } from '../../types';
+import { listen } from '@tauri-apps/api/event';
+import { UpdateInfo, UpdateDownloadProgress } from '../../types';
 
 export function BackupSettings() {
   // Export states
@@ -31,6 +33,7 @@ export function BackupSettings() {
   const [swarmMedian, setSwarmMedian] = useState<string | null>(null);
   const [isCheckingUpdate, setIsCheckingUpdate] = useState<boolean>(false);
   const [isDownloadingUpdate, setIsDownloadingUpdate] = useState<boolean>(false);
+  const [downloadProgress, setDownloadProgress] = useState<UpdateDownloadProgress | null>(null);
   const [updateActionMsg, setUpdateActionMsg] = useState<string | null>(null);
 
   const fetchUpdateStatus = async () => {
@@ -50,6 +53,17 @@ export function BackupSettings() {
 
   useEffect(() => {
     fetchUpdateStatus();
+
+    let unlisten: (() => void) | undefined;
+    listen<UpdateDownloadProgress>('update-download-progress', (e) => {
+      setDownloadProgress(e.payload);
+    }).then((un) => {
+      unlisten = un;
+    });
+
+    return () => {
+      if (unlisten) unlisten();
+    };
   }, []);
 
   const handleBrowseExportPath = async () => {
@@ -144,6 +158,7 @@ export function BackupSettings() {
 
   const handleInstallAndRestart = async () => {
     try {
+      setUpdateActionMsg('Launching setup installer in the foreground...');
       await invoke('install_app_update');
     } catch (err) {
       alert(`Install and restart failed: ${err}`);
@@ -219,6 +234,39 @@ export function BackupSettings() {
                 </button>
               )}
             </div>
+          </div>
+        )}
+
+        {isDownloadingUpdate && downloadProgress && (
+          <div className="p-3 bg-indigo-50 border border-indigo-200 rounded-lg space-y-1.5">
+            <div className="flex justify-between text-xs text-indigo-950 font-semibold">
+              <span>Downloading installer package...</span>
+              <span>{downloadProgress.percentage.toFixed(0)}%</span>
+            </div>
+            <div className="w-full bg-indigo-200/60 rounded-full h-2 overflow-hidden">
+              <div
+                className="bg-indigo-600 h-2 rounded-full transition-all duration-150"
+                style={{ width: `${downloadProgress.percentage}%` }}
+              />
+            </div>
+            <div className="text-[11px] text-indigo-700 font-mono">
+              {(downloadProgress.downloaded_bytes / (1024 * 1024)).toFixed(1)} MB / {(downloadProgress.total_bytes / (1024 * 1024)).toFixed(1)} MB
+            </div>
+          </div>
+        )}
+
+        {updateInfo?.has_staged_installer && (
+          <div className="flex items-center justify-between bg-slate-50 border border-slate-200 rounded-lg p-3">
+            <div className="text-xs text-slate-700">
+              <span className="font-semibold text-slate-900">Staged Installer Ready:</span> Setup binary is verified on disk.
+            </div>
+            <button
+              onClick={handleInstallAndRestart}
+              className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-semibold transition cursor-pointer flex items-center gap-1.5"
+            >
+              <Play className="w-3.5 h-3.5" />
+              <span>Launch Installer (Foreground)</span>
+            </button>
           </div>
         )}
 

@@ -29,6 +29,14 @@ pub struct UpdateInfo {
     pub download_size_bytes: u64,
     pub is_pending: bool,
     pub update_available: bool,
+    pub has_staged_installer: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdateDownloadProgress {
+    pub downloaded_bytes: u64,
+    pub total_bytes: u64,
+    pub percentage: f64,
 }
 
 /// Prompt native save dialog for exporting workspace backup archive.
@@ -410,6 +418,12 @@ struct GitHubAsset {
 pub async fn check_and_stage_app_update(db: &Database) -> Result<UpdateInfo, String> {
     let current_version = env!("CARGO_PKG_VERSION").to_string();
 
+    let staged_path = db.get_setting("update_installer_path").unwrap_or_default();
+    let has_staged_installer = staged_path
+        .as_deref()
+        .map(|p| Path::new(p.trim_start_matches(r"\\?\")).exists())
+        .unwrap_or(false);
+
     // Check if an update is already pending installation on restart
     let pending = db
         .get_setting("update_pending")
@@ -434,6 +448,7 @@ pub async fn check_and_stage_app_update(db: &Database) -> Result<UpdateInfo, Str
                 .unwrap_or(0),
             is_pending: true,
             update_available: true,
+            has_staged_installer,
         });
     }
 
@@ -470,6 +485,7 @@ pub async fn check_and_stage_app_update(db: &Database) -> Result<UpdateInfo, Str
                 download_size_bytes: 0,
                 is_pending: false,
                 update_available: false,
+                has_staged_installer,
             });
         }
     };
@@ -567,12 +583,15 @@ pub async fn check_and_stage_app_update(db: &Database) -> Result<UpdateInfo, Str
         _ => remote_ver_str != current_version,
     };
 
-    if let (true, false, Some(asset)) = (is_newer, dismissed, &matched_asset) {
+    if let Some(asset) = &matched_asset {
         let _ = db.set_setting("update_target_version", &remote_ver_str);
         let _ = db.set_setting("update_download_url", &asset.browser_download_url);
         let _ = db.set_setting("update_asset_name", &asset.name);
         let _ = db.set_setting("update_asset_size", &asset.size.to_string());
+    }
 
+    if is_newer && !dismissed && matched_asset.is_some() {
+        let asset = matched_asset.unwrap();
         Ok(UpdateInfo {
             current_version,
             version: remote_ver_str,
@@ -580,8 +599,10 @@ pub async fn check_and_stage_app_update(db: &Database) -> Result<UpdateInfo, Str
             download_size_bytes: asset.size,
             is_pending: false,
             update_available: true,
+            has_staged_installer,
         })
     } else {
+        let dl_size = matched_asset.as_ref().map(|a| a.size).unwrap_or(0);
         Ok(UpdateInfo {
             current_version: current_version.clone(),
             version: remote_ver_str,
@@ -590,9 +611,10 @@ pub async fn check_and_stage_app_update(db: &Database) -> Result<UpdateInfo, Str
             } else {
                 notes_str
             },
-            download_size_bytes: 0,
+            download_size_bytes: dl_size,
             is_pending: false,
             update_available: false,
+            has_staged_installer,
         })
     }
 }
@@ -602,7 +624,7 @@ pub async fn check_app_update(_app: AppHandle, state: State<'_, AppState>) -> Re
     check_and_stage_app_update(&state.db).await
 }
 
-/// Download application update installer from GitHub releases to disk.
+/// Download application update installer from GitHub releases to disk with real-time progress.
 #[tauri::command]
 pub async fn download_app_update(app: AppHandle, state: State<'_, AppState>) -> Result<String, String> {
     let download_url = state
@@ -636,7 +658,7 @@ pub async fn download_app_update(app: AppHandle, state: State<'_, AppState>) -> 
 
     tracing::info!(url = %download_url, dest = %dest_path.display(), "Downloading application update installer");
 
-    let resp = client
+    let mut resp = client
         .get(&download_url)
         .header("User-Agent", "p2pstud")
         .send()
@@ -647,16 +669,65 @@ pub async fn download_app_update(app: AppHandle, state: State<'_, AppState>) -> 
         return Err(format!("Download failed with HTTP status: {}", resp.status()));
     }
 
-    let bytes = resp
-        .bytes()
-        .await
-        .map_err(|e| format!("Failed reading update data: {e}"))?;
+    let total_size = resp.content_length().unwrap_or(0);
+    let mut downloaded: u64 = 0;
 
+    use tokio::io::AsyncWriteExt;
+    let mut dest_file = tokio::fs::File::create(&dest_path)
+        .await
+        .map_err(|e| format!("Failed to create update file: {e}"))?;
+
+    let mut last_progress_pct = 0.0;
+
+    let _ = app.emit(
+        "update-download-progress",
+        UpdateDownloadProgress {
+            downloaded_bytes: 0,
+            total_bytes: total_size,
+            percentage: 0.0,
+        },
+    );
+
+    while let Some(chunk) = resp
+        .chunk()
+        .await
+        .map_err(|e| format!("Error downloading update chunk: {e}"))?
+    {
+        dest_file
+            .write_all(&chunk)
+            .await
+            .map_err(|e| format!("Failed writing chunk to disk: {e}"))?;
+        downloaded += chunk.len() as u64;
+
+        let pct = if total_size > 0 {
+            (downloaded as f64 / total_size as f64) * 100.0
+        } else {
+            0.0
+        };
+
+        if pct - last_progress_pct >= 1.0 || downloaded == total_size {
+            last_progress_pct = pct;
+            let _ = app.emit(
+                "update-download-progress",
+                UpdateDownloadProgress {
+                    downloaded_bytes: downloaded,
+                    total_bytes: total_size,
+                    percentage: pct,
+                },
+            );
+        }
+    }
+
+    dest_file
+        .flush()
+        .await
+        .map_err(|e| format!("Failed to flush update file: {e}"))?;
+    drop(dest_file);
+
+    let bytes = tokio::fs::read(&dest_path)
+        .await
+        .map_err(|e| format!("Failed reading downloaded installer: {e}"))?;
     let hash = iroh_blobs::Hash::new(&bytes).to_hex().to_string();
-
-    tokio::fs::write(&dest_path, &bytes)
-        .await
-        .map_err(|e| format!("Failed writing update installer to disk: {e}"))?;
 
     let _ = state.db.set_setting("update_installer_path", &dest_path.to_string_lossy());
     let _ = state.db.set_setting("update_installer_hash", &hash);
@@ -664,7 +735,7 @@ pub async fn download_app_update(app: AppHandle, state: State<'_, AppState>) -> 
     let _ = app.emit("update-downloaded", ());
 
     tracing::info!(dest = %dest_path.display(), hash = %hash, "Application update successfully downloaded and staged");
-    Ok("Update downloaded successfully. It will install automatically on next app restart.".to_string())
+    Ok("Update downloaded and verified. Ready to apply.".to_string())
 }
 
 /// Apply the pending update by spawning the installer and exiting the app.
@@ -720,8 +791,7 @@ pub async fn install_app_update(_app: AppHandle, state: State<'_, AppState>) -> 
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x08000000;
-        const DETACHED_PROCESS: u32 = 0x00000008;
+        const CREATE_NEW_CONSOLE: u32 = 0x00000010;
 
         let pid = std::process::id();
         let current_exe = std::env::current_exe()
@@ -729,53 +799,85 @@ pub async fn install_app_update(_app: AppHandle, state: State<'_, AppState>) -> 
             .to_string_lossy()
             .replace('\'', "''");
 
-        let escaped_installer = installer_path
+        let clean_installer_str = canonical_installer
             .to_string_lossy()
+            .trim_start_matches(r"\\?\")
             .replace('\'', "''");
 
-        // Use detached PowerShell script that:
-        // 1. Force terminates the running p2pstud process to guarantee file lock release
-        // 2. Executes NSIS silently with /S (does in-place upgrade, no uninstall prompt)
-        // 3. Relaunches the updated executable
         let script = if installer_path_str.ends_with(".msi") {
             format!(
-                "try {{ Stop-Process -Id {pid} -Force -ErrorAction SilentlyContinue }} catch {{}}; \
+                "$Host.UI.RawUI.WindowTitle = 'P2P Campus Workspace Updater'; \
+                 Clear-Host; \
+                 Write-Host '===================================================' -ForegroundColor Cyan; \
+                 Write-Host '   P2P Campus Workspace Updater (Foreground)' -ForegroundColor Cyan; \
+                 Write-Host '===================================================' -ForegroundColor Cyan; \
+                 Write-Host ''; \
+                 Write-Host 'Closing running P2PStud process...' -ForegroundColor Yellow; \
+                 try {{ Stop-Process -Id {pid} -Force -ErrorAction SilentlyContinue }} catch {{}}; \
                  Start-Sleep -Milliseconds 600; \
-                 Start-Process -FilePath 'msiexec.exe' -ArgumentList '/i', '\"{}\"', '/passive', '/norestart' -Wait; \
+                 Write-Host 'Launching MSI Installer in foreground...' -ForegroundColor Green; \
+                 $proc = Start-Process -FilePath 'msiexec.exe' -ArgumentList '/i', '\"{}\"', '/passive', '/norestart' -Wait -PassThru; \
+                 Write-Host \"Installer finished with exit code $($proc.ExitCode).\" -ForegroundColor Cyan; \
                  Start-Sleep -Milliseconds 800; \
-                 $target = '{current_exe}'; \
                  $f1 = [System.Environment]::GetFolderPath('LocalApplicationData') + '\\p2pstud\\p2pstud.exe'; \
                  $f2 = [System.Environment]::GetFolderPath('LocalApplicationData') + '\\Programs\\p2pstud\\p2pstud.exe'; \
-                 if (-not (Test-Path $target)) {{ if (Test-Path $f1) {{ $target = $f1 }} elseif (Test-Path $f2) {{ $target = $f2 }} }}; \
-                 if (Test-Path $target) {{ Start-Process -FilePath $target }}",
-                escaped_installer
+                 $target = '{current_exe}'; \
+                 if (Test-Path $f1) {{ $target = $f1 }} elseif (Test-Path $f2) {{ $target = $f2 }}; \
+                 if (Test-Path $target) {{ Write-Host \"Relaunching $target...\" -ForegroundColor Green; Start-Process -FilePath $target }}",
+                clean_installer_str
             )
         } else {
             format!(
-                "try {{ Stop-Process -Id {pid} -Force -ErrorAction SilentlyContinue }} catch {{}}; \
+                "$Host.UI.RawUI.WindowTitle = 'P2P Campus Workspace Updater'; \
+                 Clear-Host; \
+                 Write-Host '===================================================' -ForegroundColor Cyan; \
+                 Write-Host '   P2P Campus Workspace Updater (Foreground)' -ForegroundColor Cyan; \
+                 Write-Host '===================================================' -ForegroundColor Cyan; \
+                 Write-Host ''; \
+                 Write-Host 'Closing running P2PStud process...' -ForegroundColor Yellow; \
+                 try {{ Stop-Process -Id {pid} -Force -ErrorAction SilentlyContinue }} catch {{}}; \
                  Start-Sleep -Milliseconds 800; \
                  Get-Process -Name 'p2pstud' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue; \
                  Start-Sleep -Milliseconds 600; \
-                 Start-Process -FilePath '{escaped_installer}' -ArgumentList '/S' -Wait; \
-                 Start-Sleep -Milliseconds 1200; \
-                 $target = '{current_exe}'; \
+                 Write-Host 'Launching Setup Installer in the foreground...' -ForegroundColor Green; \
+                 $proc = Start-Process -FilePath '{clean_installer_str}' -Wait -PassThru; \
+                 Write-Host \"Setup process completed (Exit code: $($proc.ExitCode)).\" -ForegroundColor Cyan; \
+                 if ($proc.ExitCode -ne 0) {{ \
+                     Write-Host \"Installer returned non-zero exit code: $($proc.ExitCode).\" -ForegroundColor Red; \
+                     Start-Sleep -Seconds 3; \
+                 }} \
+                 Start-Sleep -Milliseconds 800; \
                  $f1 = [System.Environment]::GetFolderPath('LocalApplicationData') + '\\p2pstud\\p2pstud.exe'; \
                  $f2 = [System.Environment]::GetFolderPath('LocalApplicationData') + '\\Programs\\p2pstud\\p2pstud.exe'; \
-                 if (-not (Test-Path $target)) {{ if (Test-Path $f1) {{ $target = $f1 }} elseif (Test-Path $f2) {{ $target = $f2 }} }}; \
-                 if (Test-Path $target) {{ Start-Process -FilePath $target }}",
+                 $target = '{current_exe}'; \
+                 if (Test-Path $f1) {{ $target = $f1 }} elseif (Test-Path $f2) {{ $target = $f2 }}; \
+                 if (Test-Path $target) {{ \
+                     Write-Host \"Relaunching updated application ($target)...\" -ForegroundColor Green; \
+                     Start-Process -FilePath $target; \
+                 }} else {{ \
+                     Write-Host 'Application updated. Please launch P2PStud from the Start Menu.' -ForegroundColor Yellow; \
+                     Start-Sleep -Seconds 4; \
+                 }}",
             )
         };
 
-        let _ = std::process::Command::new("powershell.exe")
+        let spawn_res = std::process::Command::new("powershell.exe")
             .arg("-NoProfile")
-            .arg("-WindowStyle")
-            .arg("Hidden")
             .arg("-Command")
             .arg(&script)
-            .creation_flags(CREATE_NO_WINDOW | DETACHED_PROCESS)
+            .creation_flags(CREATE_NEW_CONSOLE)
             .spawn();
 
-        std::process::exit(0);
+        match spawn_res {
+            Ok(_) => {
+                tracing::info!("Foreground updater console spawned successfully, exiting host process");
+                std::process::exit(0);
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "Failed to spawn foreground updater process");
+                return Err(format!("Failed to launch updater: {e}"));
+            }
+        }
     }
 
     #[cfg(target_os = "macos")]

@@ -1,14 +1,8 @@
 version: 2
 updates:
-  # Root Cargo workspace lockfile & manifests
+  # Root Cargo workspace lockfile & manifests (covers root Cargo.toml, Cargo.lock, and src-tauri workspace member)
   - package-ecosystem: "cargo"
     directory: "/"
-    schedule:
-      interval: "weekly"
-
-  # Tauri workspace crate
-  - package-ecosystem: "cargo"
-    directory: "/src-tauri"
     schedule:
       interval: "weekly"
 

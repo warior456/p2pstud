@@ -222,9 +222,9 @@ pub fn run() {
         })
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                // Minimize to system tray like before
+                // Prevent hard close and trigger graceful quit / update confirmation flow
                 api.prevent_close();
-                let _ = window.hide();
+                let _ = window.emit("app-quit-requested", ());
             }
         })
         .invoke_handler(tauri::generate_handler![

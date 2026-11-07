@@ -23,6 +23,7 @@ import {
   NetworkProfileInfo, 
   ImportProgress,
   UpdateInfo,
+  UpdateDownloadProgress,
   ExportPreflightInfo
 } from './types';
 import { useStorageStats } from './hooks/useStorageStats';
@@ -95,6 +96,7 @@ export default function App() {
 
   // Auto-updater, network classification, and quit modal states
   const [availableUpdate, setAvailableUpdate] = useState<UpdateInfo | null>(null);
+  const [downloadProgress, setDownloadProgress] = useState<UpdateDownloadProgress | null>(null);
   const [isUpdatePending, setIsUpdatePending] = useState<boolean>(false);
   const [isUpdatingNow, setIsUpdatingNow] = useState<boolean>(false);
   const [dismissedNetworkPrompt, setDismissedNetworkPrompt] = useState<boolean>(false);
@@ -224,6 +226,7 @@ export default function App() {
 
     let unlistenUpdate: (() => void) | undefined;
     let unlistenUpdateDownloaded: (() => void) | undefined;
+    let unlistenDownloadProgress: (() => void) | undefined;
     let unlistenQuitRequested: (() => void) | undefined;
     let unlistenDbSwitched: (() => void) | undefined;
 
@@ -244,8 +247,15 @@ export default function App() {
       unlistenUpdate = un;
     });
 
+    listen<UpdateDownloadProgress>('update-download-progress', (e) => {
+      setDownloadProgress(e.payload);
+    }).then((un) => {
+      unlistenDownloadProgress = un;
+    });
+
     listen('update-downloaded', () => {
       setIsUpdatePending(true);
+      setDownloadProgress(null);
     }).then((un) => {
       unlistenUpdateDownloaded = un;
     });
@@ -281,6 +291,7 @@ export default function App() {
       if (unlistenFolderDeleted) unlistenFolderDeleted();
       if (unlistenUpdate) unlistenUpdate();
       if (unlistenUpdateDownloaded) unlistenUpdateDownloaded();
+      if (unlistenDownloadProgress) unlistenDownloadProgress();
       if (unlistenQuitRequested) unlistenQuitRequested();
       if (unlistenDbSwitched) unlistenDbSwitched();
     };
@@ -696,12 +707,14 @@ export default function App() {
 
   const handleApplyUpdateOnRestart = async () => {
     try {
-      setToastMessage('Downloading update package in background...');
+      setToastMessage('Downloading update package...');
       await invoke('download_app_update');
       setIsUpdatePending(true);
       setAvailableUpdate(null);
-      setToastMessage('Update downloaded. It will install silently when you next close or restart P2PStud.');
+      setDownloadProgress(null);
+      setToastMessage('Update downloaded! It will install when you restart or update.');
     } catch (err) {
+      setDownloadProgress(null);
       alert(`Failed to stage update: ${err}`);
     }
   };
@@ -709,13 +722,15 @@ export default function App() {
   const handleUpdateAndRestartNow = async () => {
     try {
       setIsUpdatingNow(true);
-      setToastMessage('Downloading update (15 MB)... please wait a moment.');
+      setToastMessage('Downloading update package...');
       await invoke('download_app_update');
-      setToastMessage('Download complete! Applying update and restarting...');
+      setToastMessage('Download verified! Launching updater in foreground...');
       setIsUpdatePending(true);
+      setDownloadProgress(null);
       await invoke('confirm_app_exit', { installUpdate: true });
     } catch (err) {
       setIsUpdatingNow(false);
+      setDownloadProgress(null);
       alert(`Failed to apply update: ${err}`);
     }
   };
@@ -1691,6 +1706,20 @@ export default function App() {
             <div className="flex-1 min-w-0">
               <div className="font-semibold text-xs text-white">Update Available: v{availableUpdate.version}</div>
               <p className="text-[11px] text-slate-300 mt-1 line-clamp-2">{availableUpdate.notes}</p>
+              {downloadProgress && (
+                <div className="mt-2.5 p-2 bg-slate-800/80 rounded-lg space-y-1">
+                  <div className="flex justify-between text-[10px] text-blue-300 font-mono">
+                    <span>Downloading: {(downloadProgress.downloaded_bytes / (1024 * 1024)).toFixed(1)} / {(downloadProgress.total_bytes / (1024 * 1024)).toFixed(1)} MB</span>
+                    <span>{downloadProgress.percentage.toFixed(0)}%</span>
+                  </div>
+                  <div className="w-full bg-slate-700 rounded-full h-1.5 overflow-hidden">
+                    <div
+                      className="bg-blue-400 h-1.5 rounded-full transition-all duration-150"
+                      style={{ width: `${downloadProgress.percentage}%` }}
+                    />
+                  </div>
+                </div>
+              )}
               <div className="flex flex-wrap items-center gap-2 mt-3">
                 <button
                   onClick={handleUpdateAndRestartNow}

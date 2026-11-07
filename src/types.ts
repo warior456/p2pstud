@@ -129,6 +129,13 @@ export interface UpdateInfo {
   download_size_bytes: number;
   is_pending: boolean;
   update_available: boolean;
+  has_staged_installer?: boolean;
+}
+
+export interface UpdateDownloadProgress {
+  downloaded_bytes: number;
+  total_bytes: number;
+  percentage: number;
 }
 
 export interface DoctorTestResult {

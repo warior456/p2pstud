@@ -339,6 +339,33 @@
   - `README.md` & `docker/.env.example`: Documented zero-domain light VPS setup vs. optional custom domain relay mode.
   - Incremented version to `0.1.28`.
 
+---
+
+## Issues & Resolutions (Version 0.1.29)
+
+### 1. Foreground Updater Execution & Download Progress Feedback
+- **Issue:** Software updater failed to execute or appeared completely inactive when triggered from the application ("Restart & Install Now" or "Update & Restart Now"). When triggered, the application would close without displaying the installer or any visual progress, leaving users unsure if the update was failing or hung.
+- **Root Causes:**
+  1. **Mutually Exclusive Win32 Process Creation Flags:** `install_app_update` spawned `powershell.exe` combining `CREATE_NO_WINDOW (0x08000000)` and `DETACHED_PROCESS (0x00000008)`. Under Win32 `CreateProcessW`, combining these two flags is explicitly documented as invalid (`ERROR_INVALID_PARAMETER`), causing `spawn()` to fail silently while `std::process::exit(0)` terminated the host application before the installer was launched.
+  2. **Silent Flag (`/S`) Suppressed Setup GUI:** The PowerShell script invoked NSIS with `/S` (silent), completely suppressing the setup window and extraction progress dialog. Any elevation request, SmartScreen check, or locked file error occurred silently without user visibility.
+  3. **Monolithic Download Without Progress:** `download_app_update` fetched the 15+ MB package in memory using `resp.bytes().await` without chunk streaming, giving no feedback to the user and leaving the toast/button static.
+  4. **Window Close-to-Tray Swallowing Updates:** `lib.rs` intercepted `WindowEvent::CloseRequested` and hid the window (`window.hide()`), preventing the exit confirmation modal from ever showing when users chose "Install on Next Exit" and closed the window.
+- **Fix:**
+  - `src-tauri/src/commands/backup_cmds.rs`:
+    - Replaced `CREATE_NO_WINDOW | DETACHED_PROCESS` with `CREATE_NEW_CONSOLE (0x00000010)` and removed `-WindowStyle Hidden`, launching an interactive, visible PowerShell console titled `"P2P Campus Workspace Updater"`.
+    - Removed the silent `/S` flag so the native Tauri NSIS Setup dialog runs interactively in the foreground with a real-time file extraction progress bar.
+    - Updated script to print clear colored progress banners (`Closing process...`, `Launching Setup Installer in foreground...`, `Setup completed with exit code...`, `Relaunching updated application...`) and wait before exiting so errors are readable.
+    - Streamed installer downloads in `download_app_update` using `resp.chunk().await` and emitted `update-download-progress` events with downloaded bytes, total bytes, and percentage.
+    - Added `has_staged_installer` check to `UpdateInfo` so staged packages can be launched directly in the foreground.
+  - `src-tauri/src/lib.rs`:
+    - Updated `WindowEvent::CloseRequested` to emit `app-quit-requested` to the frontend, opening the safe shutdown & update modal if an update is pending.
+  - `src/App.tsx` & `src/components/Settings/BackupSettings.tsx`:
+    - Added real-time download progress bar and percentage display in both the update toast and Settings software update card.
+    - Added a "Launch Installer (Foreground)" action in Settings when a staged installer package is verified on disk.
+  - Upgraded `zip` crate to `9.4.1` in `src-tauri/Cargo.toml` and removed duplicate `/src-tauri` from `.github/dependabot.yml`.
+  - Incremented version to `0.1.29` across `package.json`, `src-tauri/Cargo.toml`, and `src-tauri/tauri.conf.json`.
+
+
 
 
 
