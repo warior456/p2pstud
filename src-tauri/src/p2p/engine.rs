@@ -166,7 +166,8 @@ impl IrohEngine {
             }
         });
 
-        // 5. Start automated HTTPS Swarm Rendezvous discovery
+        // 5. Start automated discovery (Local LAN UDP broadcast + HTTPS Swarm Rendezvous)
+        crate::p2p::lan_discovery::start_lan_discovery(endpoint.clone(), secret_key.clone(), db.clone(), store.clone());
         crate::p2p::rendezvous::start_swarm_rendezvous(endpoint.clone(), secret_key.clone(), db.clone(), store.clone());
 
         Ok(IrohEngine {

@@ -181,6 +181,12 @@ pub fn start_swarm_rendezvous(
     });
 }
 
+pub const DEFAULT_RENDEZVOUS_SERVERS: &[&str] = &[
+    "https://ntfy.tedomum.fr",
+    "https://ntfy.adminforge.de",
+    "https://ntfy.sh",
+];
+
 /// Execute a single rendezvous cycle: publish presence and dial discovered peers.
 pub async fn run_rendezvous_cycle(
     client: &reqwest::Client,
@@ -189,15 +195,12 @@ pub async fn run_rendezvous_cycle(
     db: &Arc<Database>,
     store: &iroh_blobs::store::fs::FsStore,
 ) -> Result<()> {
-    // 1. Determine active rendezvous server URL (default: https://ntfy.sh)
-    let rendezvous_base = db
-        .get_setting("rendezvous_url")
-        .unwrap_or_default()
-        .unwrap_or_else(|| "https://ntfy.sh".to_string());
-    let base_url = rendezvous_base.trim().trim_end_matches('/');
-    if base_url.is_empty() {
-        return Ok(());
-    }
+    // 1. Determine candidate rendezvous server URLs
+    let custom_server = db.get_setting("rendezvous_url").unwrap_or_default();
+    let servers: Vec<&str> = match custom_server.as_deref().map(str::trim) {
+        Some(s) if !s.is_empty() => vec![s],
+        _ => DEFAULT_RENDEZVOUS_SERVERS.to_vec(),
+    };
 
     // 2. Derive topic name from current swarm secret
     let secret = db
@@ -222,60 +225,80 @@ pub async fn run_rendezvous_cycle(
         .as_secs();
 
     let announcement = RendezvousAnnouncement::sign(our_node_id.clone(), masked_ticket, now, secret_key);
-
     let payload = serde_json::to_string(&announcement)?;
 
-    // 4. Publish our presence to the topic
-    let publish_url = format!("{base_url}/{topic}");
-    let _ = client
-        .post(&publish_url)
-        .header("Title", "p2pstud-peer")
-        .body(payload)
-        .send()
-        .await;
-
-    // 5. Poll for other active peers on the topic (within last 3 minutes)
-    let poll_url = format!("{base_url}/{topic}/json?since=3m&poll=1");
-    let resp = match client.get(&poll_url).send().await {
-        Ok(r) if r.status().is_success() => r,
-        _ => return Ok(()),
-    };
-
-    let text = resp.text().await.unwrap_or_default();
     let mut dials_attempted = 0usize;
     const MAX_DIALS_PER_CYCLE: usize = 6; // Rate limiter prevents dial storms (VULN-04)
 
-    for line in text.lines() {
-        if dials_attempted >= MAX_DIALS_PER_CYCLE {
-            break;
-        }
-        let line = line.trim();
-        if line.is_empty() {
+    for base in servers {
+        let base_url = base.trim().trim_end_matches('/');
+        if base_url.is_empty() {
             continue;
         }
 
-        // Each line from ntfy is a JSON object with { event, message, time, ... }
-        if let Ok(val) = serde_json::from_str::<serde_json::Value>(line) {
-            if val.get("event").and_then(|v| v.as_str()) != Some("message") {
-                continue;
-            }
-            if let Some(msg_str) = val.get("message").and_then(|v| v.as_str()) {
-                if let Ok(peer) = serde_json::from_str::<RendezvousAnnouncement>(msg_str) {
-                    if peer.node_id != our_node_id && peer.timestamp + 300 >= now {
-                        // VULN-04: Cryptographic verification of announcement signature
-                        if !peer.verify() {
-                            tracing::warn!(peer = %peer.node_id, "Rejected rendezvous announcement with invalid signature");
-                            continue;
+        // 4. Publish our presence to the topic
+        let publish_url = format!("{base_url}/{topic}");
+        let pub_res = client
+            .post(&publish_url)
+            .header("Title", "p2pstud-peer")
+            .body(payload.clone())
+            .send()
+            .await;
+
+        match pub_res {
+            Ok(resp) if resp.status().is_success() => {
+                // 5. Poll for other active peers on the topic (within last 3 minutes)
+                let poll_url = format!("{base_url}/{topic}/json?since=3m&poll=1");
+                if let Ok(poll_resp) = client.get(&poll_url).send().await {
+                    if poll_resp.status().is_success() {
+                        let text = poll_resp.text().await.unwrap_or_default();
+                        for line in text.lines() {
+                            if dials_attempted >= MAX_DIALS_PER_CYCLE {
+                                break;
+                            }
+                            let line = line.trim();
+                            if line.is_empty() {
+                                continue;
+                            }
+
+                            // Each line from ntfy is a JSON object with { event, message, time, ... }
+                            if let Ok(val) = serde_json::from_str::<serde_json::Value>(line) {
+                                if val.get("event").and_then(|v| v.as_str()) != Some("message") {
+                                    continue;
+                                }
+                                if let Some(msg_str) = val.get("message").and_then(|v| v.as_str()) {
+                                    if let Ok(peer) = serde_json::from_str::<RendezvousAnnouncement>(msg_str) {
+                                        if peer.node_id != our_node_id && peer.timestamp + 300 >= now {
+                                            // VULN-04: Cryptographic verification of announcement signature
+                                            if !peer.verify() {
+                                                tracing::warn!(peer = %peer.node_id, "Rejected rendezvous announcement with invalid signature");
+                                                continue;
+                                            }
+
+                                            // VULN-09: Deobfuscate ticket using network secret
+                                            let ticket_str = deobfuscate_ticket(&peer.ticket, &secret)
+                                                .unwrap_or(peer.ticket);
+
+                                            connect_and_sync_discovered_peer(endpoint, db, store, &ticket_str, &peer.node_id).await;
+                                            dials_attempted += 1;
+                                        }
+                                    }
+                                }
+                            }
                         }
-
-                        // VULN-09: Deobfuscate ticket using network secret
-                        let ticket_str = deobfuscate_ticket(&peer.ticket, &secret)
-                            .unwrap_or(peer.ticket);
-
-                        connect_and_sync_discovered_peer(endpoint, db, store, &ticket_str, &peer.node_id).await;
-                        dials_attempted += 1;
                     }
                 }
+
+                // If we already found connected peers, one working server is sufficient for this cycle
+                if get_active_peer_count(db, &our_node_id) > 0 {
+                    break;
+                }
+            }
+            Ok(resp) => {
+                tracing::debug!("Rendezvous server {} returned HTTP status {}, trying fallback...", base_url, resp.status());
+            }
+            Err(e) => {
+                tracing::debug!("Rendezvous server {} request failed ({}), trying fallback...", base_url, e);
             }
         }
     }
@@ -284,7 +307,7 @@ pub async fn run_rendezvous_cycle(
 }
 
 /// Connect to a discovered peer by Ticket or NodeId and synchronize workspace catalog.
-async fn connect_and_sync_discovered_peer(
+pub(crate) async fn connect_and_sync_discovered_peer(
     endpoint: &Endpoint,
     db: &Arc<Database>,
     store: &iroh_blobs::store::fs::FsStore,
@@ -330,6 +353,7 @@ mod tests {
     fn test_derive_rendezvous_topic_open_swarm() {
         let topic1 = derive_rendezvous_topic("");
         let topic2 = derive_rendezvous_topic("   ");
+        println!("Topic: {}", topic1);
         assert_eq!(topic1, topic2);
         assert!(topic1.starts_with("p2pstud-"));
         assert_eq!(topic1.len(), 32);

@@ -3,6 +3,7 @@ pub mod anchor_voucher;
 pub mod bandwidth;
 pub mod engine;
 pub mod identity;
+pub mod lan_discovery;
 pub mod network_profile;
 pub mod relay;
 pub mod rendezvous;
