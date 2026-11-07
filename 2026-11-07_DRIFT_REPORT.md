@@ -1,5 +1,8 @@
 # Architecture & Specification Drift Report
 
+> **Status:** resolved (Version 0.1.26)  
+> **Resolved Date:** 2026-11-07  
+
 **Generated:** 2026-11-07  
 **Analysis Scope:** All Markdown specifications and design documents across root and `docs/` directories.
 
