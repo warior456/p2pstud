@@ -242,6 +242,41 @@
   - The web redirect (`302 Found -> /releases/tag/v...`) has zero API rate limits and immediately resolves the latest release tag (e.g. `v0.1.19`), constructing the direct setup package download URL without being blocked.
   - Bumped version to `0.1.20` across `package.json`, `src-tauri/Cargo.toml`, and `src-tauri/tauri.conf.json`.
 
+---
+
+## Issues & Resolutions (Version 0.1.21 - 0.1.24)
+
+### 1. Campus Security / BitTorrent Alert & Stealth Invariants (v0.1.21)
+- **Issue:** KU Leuven ICTS security team detected unusual network traffic classified as BitTorrent distribution and connections to malware IPs from student device IP `10.45.219.240`.
+- **Root Cause:**
+  1. `diagnostic_cmds.rs` was testing TCP reachability against port `12345` (historically known as the NetBus malware/trojan port). Network IDS alerts classify SYN packets on port 12345 as malware traffic.
+  2. The Iroh node builder had UPnP / NAT-PMP portmapper active by default. On university Wi-Fi, UPnP port mapping requests attempting to bind external UDP ports for peer-to-peer traffic are flagged as BitTorrent distribution.
+- **Fix:**
+  - `diagnostic_cmds.rs`: Changed TCP diagnostic check port to port 53 (standard DNS).
+  - `p2p/engine.rs`: Explicitly configured `.portmapper_config(iroh::endpoint::PortmapperConfig::Disabled)` across all endpoint builder paths.
+  - Added university SSID regex patterns (`kuleuven`, `campus`, `student`) to automatically engage Campus Stealth Mode.
+
+### 2. Adaptive Rendezvous & Background Swarm Polling (v0.1.22)
+- **Issue:** Discovery interval was fixed at 20s and discovery buttons returned immediate engine-not-ready errors if clicked right after startup.
+- **Fix:** Made rendezvous polling adaptive: fast (15s) when searching for peers, and relaxed (60s) once peers are connected. Added retry-wait loops to `trigger_swarm_discovery`.
+
+### 3. Redb Database Lock Conflict & "Iroh engine not yet started" on Laptop (v0.1.23 - v0.1.24)
+- **Issue:** On the laptop, Node ID was displayed in the UI but Swarm Discovery reported `"Discovery trigger failed: Iroh engine not yet started"` or `"P2P network engine is still starting up"`, and ticket generation hung on `"Generating ticket..."`.
+- **Root Cause:**
+  1. In `src-tauri/src/lib.rs`, a background task was spawned on boot to preload `BlobStore::load(&blob_dir)` into `state.store` for offline reading.
+  2. Concurrently, a second background task called `IrohEngine::start(&data_dir, db)`.
+  3. Inside `IrohEngine::start`, it ALSO called `BlobStore::load(&blob_dir)`.
+  4. Redb enforces strict database exclusivity on `blobs.db`. When two tasks called `BlobStore::load` on the exact same directory, the second call failed with `redb::DatabaseError::DatabaseAlreadyOpen`.
+  5. `IrohEngine::start` failed repeatedly and retried in an infinite loop, keeping `state.engine` as `None`.
+  6. `get_node_id` succeeded because it loaded the secret key from disk (`iroh_secret`), giving the impression that the node was alive, while `state.engine` was completely uninitialized.
+- **Fix:**
+  - Unified `BlobStore` initialization: `src-tauri/src/p2p/engine.rs` now provides `IrohEngine::load_store(&blob_dir)` which safely loads/migrates the store once.
+  - `IrohEngine::start` accepts the preloaded `BlobStore` instance (`store: BlobStore`), ensuring both `state.store` and `IrohEngine` share the identical underlying store with zero redb lock contention.
+  - In `src-tauri/src/commands/peer_cmds.rs`, updated `get_node_ticket` and `get_node_addr` to asynchronously await engine readiness (up to 3.75s) rather than immediately failing if requested during startup.
+  - In `src/components/Settings/NetworkSettings.tsx`, subscribed to the `iroh-node-ready` event to instantly refresh ticket and rendezvous information the millisecond the engine is ready.
+  - Incremented version to `0.1.24` across `package.json`, `src-tauri/Cargo.toml`, and `src-tauri/tauri.conf.json`.
+
+
 
 
 

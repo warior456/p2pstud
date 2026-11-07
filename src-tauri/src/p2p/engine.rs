@@ -31,9 +31,31 @@ pub struct IrohEngine {
 }
 
 impl IrohEngine {
-    /// Start an Iroh node. Loads or creates a persistent identity, opens the blob
-    /// store, and begins listening for incoming QUIC connections.
-    pub async fn start(data_dir: &Path, db: Arc<Database>) -> Result<Self> {
+    /// Load or rebuild the local redb BlobStore safely once.
+    pub async fn load_store(blob_dir: &Path) -> Result<BlobStore> {
+        std::fs::create_dir_all(blob_dir)?;
+        match BlobStore::load(blob_dir).await {
+            Ok(s) => Ok(s),
+            Err(e) => {
+                let err_str = e.to_string();
+                if err_str.contains("redb v2") || err_str.contains("migration") || err_str.contains("Database error") {
+                    tracing::warn!("Incompatible legacy blob store index detected ({err_str}). Backing up legacy index and rebuilding redb store...");
+                    let old_db = blob_dir.join("blobs.db");
+                    if old_db.exists() {
+                        let backup = blob_dir.join("blobs.db.v2.bak");
+                        let _ = std::fs::rename(&old_db, &backup);
+                    }
+                    Ok(BlobStore::load(blob_dir).await?)
+                } else {
+                    Err(e.into())
+                }
+            }
+        }
+    }
+
+    /// Start an Iroh node using a preloaded BlobStore.
+    /// Loads or creates a persistent identity and begins listening for incoming QUIC connections.
+    pub async fn start(data_dir: &Path, db: Arc<Database>, store: BlobStore) -> Result<Self> {
         // 1. Load persistent Ed25519 identity.
         let secret_key: SecretKey = load_or_create_secret_key(data_dir)?;
         let node_id = secret_key.public();
@@ -48,31 +70,7 @@ impl IrohEngine {
 
         tracing::info!(%node_id, relay = %relay_display, "Starting Iroh node");
 
-        // 3. Open local blob store (respects custom_blob_dir setting if configured).
-        let blob_dir = match db.get_setting("custom_blob_dir") {
-            Ok(Some(custom)) if !custom.trim().is_empty() => std::path::PathBuf::from(custom.trim()),
-            _ => data_dir.join("blobs"),
-        };
-        std::fs::create_dir_all(&blob_dir)?;
-        let store = match BlobStore::load(&blob_dir).await {
-            Ok(s) => s,
-            Err(e) => {
-                let err_str = e.to_string();
-                if err_str.contains("redb v2") || err_str.contains("migration") || err_str.contains("Database error") {
-                    tracing::warn!("Incompatible or obsolete blob store index detected ({err_str}). Backing up legacy index and rebuilding redb store...");
-                    let old_db = blob_dir.join("blobs.db");
-                    if old_db.exists() {
-                        let backup = blob_dir.join("blobs.db.v2.bak");
-                        let _ = std::fs::rename(&old_db, &backup);
-                    }
-                    BlobStore::load(&blob_dir).await?
-                } else {
-                    return Err(e.into());
-                }
-            }
-        };
-
-        // 4. Build QUIC endpoint with relay fallback and presets.
+        // 3. Build QUIC endpoint with relay fallback and presets.
         // Disable portmapper (UPnP / NAT-PMP) by default to prevent triggering campus IDS/firewall
         // alerts (such as unauthorized UPnP port forwards classified as BitTorrent distribution).
         let endpoint = match Endpoint::builder(presets::N0)
@@ -114,7 +112,7 @@ impl IrohEngine {
             .accept(sync_alpn.clone(), sync_handler);
         let running_router = router.spawn();
 
-        // 5. Spawn background swarm maintenance loop
+        // 4. Spawn background swarm maintenance loop
         // Periodically connects to discovered nodes and synchronizes workspace catalogs.
         let bg_endpoint = endpoint.clone();
         let bg_db = db.clone();
@@ -142,7 +140,7 @@ impl IrohEngine {
             }
         });
 
-        // 6. Start automated HTTPS Swarm Rendezvous discovery
+        // 5. Start automated HTTPS Swarm Rendezvous discovery
         crate::p2p::rendezvous::start_swarm_rendezvous(endpoint.clone(), db.clone(), store.clone());
 
         Ok(IrohEngine {

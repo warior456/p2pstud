@@ -103,6 +103,7 @@ At the end of every session (or when interrupted), update the `## Progress Track
 | 50 | Seamless In-Place NSIS Auto-Updating (No Uninstall/Reinstall Prompts) | ✅ | Configured NSIS `installMode: "currentUser"` & `allowDowngrades: true`; removed `msi` from bundle targets; prioritized `-setup.exe` in asset matching; detached windowless updater runner waits for process exit, runs silent `/S` in-place upgrade, and relaunches the upgraded application. Version bumped to 0.1.17. |
 | 51 | Automated HTTPS Swarm Rendezvous (Zero-Config Peer Discovery) | ✅ | Implemented `p2p/rendezvous.rs` topic-based discovery over HTTPS port 443; enables zero-config peer pairing on client-isolated Wi-Fi and firewalled campus networks without DHT or manual ticket exchange; added manual discovery trigger and UI status in Network Settings. Version bumped to 0.1.19. |
 | 52 | GitHub Updater Rate-Limit Resilience | ✅ | Added HTML redirect fallback on `releases/latest` to resolve latest release and assets when `api.github.com` unauthenticated IP rate limit (HTTP 403) is exhausted on shared campus networks. Version bumped to 0.1.20. |
+| 53 | Single-Store Architecture, Concurrent Redb Lock Fix & Ready-Polling Discovery | ✅ | Unified BlobStore initialization to prevent concurrent redb open conflicts between preload and IrohEngine; added graceful readiness polling to `get_node_ticket`, `get_node_addr`, and `trigger_swarm_discovery`; hooked `iroh-node-ready` in Network Settings; bumped version to 0.1.24. |
 
 ---
 

@@ -76,22 +76,38 @@ pub async fn get_node_id(state: State<'_, AppState>) -> Result<String, String> {
 }
 
 /// Return this node's full NodeTicket (string starting with "node") for easy sharing.
+/// Waits briefly if the engine is currently completing its startup sequence.
 #[tauri::command]
 pub async fn get_node_ticket(state: State<'_, AppState>) -> Result<String, String> {
-    let guard = state.engine.read().await;
-    let engine = guard.as_ref().ok_or("Iroh engine not yet started")?;
-    let addr = engine.endpoint.addr();
-    let ticket = iroh_tickets::endpoint::EndpointTicket::new(addr);
-    Ok(ticket.to_string())
+    for _ in 0..15 {
+        {
+            let guard = state.engine.read().await;
+            if let Some(engine) = guard.as_ref() {
+                let addr = engine.endpoint.addr();
+                let ticket = iroh_tickets::endpoint::EndpointTicket::new(addr);
+                return Ok(ticket.to_string());
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    }
+    Err("Iroh engine not yet started".to_string())
 }
 
 /// Return this node's complete NodeAddr (direct socket addresses + relay URL) as a JSON string.
+/// Waits briefly if the engine is currently completing its startup sequence.
 #[tauri::command]
 pub async fn get_node_addr(state: State<'_, AppState>) -> Result<String, String> {
-    let guard = state.engine.read().await;
-    let engine = guard.as_ref().ok_or("Iroh engine not yet started")?;
-    let addr = engine.endpoint.addr();
-    serde_json::to_string(&addr).map_err(|e| e.to_string())
+    for _ in 0..15 {
+        {
+            let guard = state.engine.read().await;
+            if let Some(engine) = guard.as_ref() {
+                let addr = engine.endpoint.addr();
+                return serde_json::to_string(&addr).map_err(|e| e.to_string());
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    }
+    Err("Iroh engine not yet started".to_string())
 }
 
 /// Parse any user-provided peer address representation into an `iroh::EndpointAddr`.

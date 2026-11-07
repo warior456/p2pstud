@@ -72,21 +72,6 @@ pub fn run() {
             };
             let _ = std::fs::create_dir_all(&blob_dir);
 
-            // Preload local BlobStore immediately (100% offline-ready, no network required)
-            let store_loader = store.clone();
-            let blob_dir_for_loader = blob_dir.clone();
-            tauri::async_runtime::spawn(async move {
-                match iroh_blobs::store::fs::FsStore::load(&blob_dir_for_loader).await {
-                    Ok(s) => {
-                        *store_loader.write().await = Some(s);
-                        tracing::info!("Preloaded local BlobStore from {}", blob_dir_for_loader.display());
-                    }
-                    Err(e) => {
-                        tracing::warn!("Failed to preload local BlobStore: {:#}", e);
-                    }
-                }
-            });
-
             let state = AppState {
                 engine: engine.clone(),
                 store: store.clone(),
@@ -177,13 +162,28 @@ pub fn run() {
             let data_dir_clone = data_dir.clone();
             let db_clone = db.clone();
             let engine_clone = engine.clone();
+            let store_clone = store.clone();
             let bw_clone = bandwidth.clone();
             let app_handle_for_workers = app.handle().clone();
 
             tauri::async_runtime::spawn(async move {
+                // 1. Load the BlobStore first so offline file reading works immediately.
+                let loaded_store = match p2p::engine::IrohEngine::load_store(&blob_dir).await {
+                    Ok(s) => {
+                        *store_clone.write().await = Some(s.clone());
+                        tracing::info!("Preloaded local BlobStore from {}", blob_dir.display());
+                        s
+                    }
+                    Err(e) => {
+                        tracing::error!("Failed to load local BlobStore: {:#}", e);
+                        return;
+                    }
+                };
+
+                // 2. Start the Iroh node with the loaded store (shared store, no file lock conflict).
                 let mut retry_delay = std::time::Duration::from_secs(3);
                 loop {
-                    match p2p::engine::IrohEngine::start(&data_dir_clone, db_clone.clone()).await {
+                    match p2p::engine::IrohEngine::start(&data_dir_clone, db_clone.clone(), loaded_store.clone()).await {
                         Ok(e) => {
                             tracing::info!("Iroh node started: {}", e.node_id());
                             *engine_clone.write().await = Some(e);

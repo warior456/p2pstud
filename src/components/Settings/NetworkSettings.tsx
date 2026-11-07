@@ -23,6 +23,7 @@ import {
   CheckCircle2
 } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import { NetworkProfileInfo, SsidRule, PeerInfo, NetworkDatabaseInfo, TransferSummary } from '../../types';
 import { ConnectionDoctor } from '../Onboarding/ConnectionDoctor';
 
@@ -147,7 +148,18 @@ export function NetworkSettings() {
     fetchDatabases();
     loadNetworkInfo();
     const interval = setInterval(loadNetworkInfo, 3000);
-    return () => clearInterval(interval);
+
+    let unlistenReady: (() => void) | undefined;
+    listen('iroh-node-ready', () => {
+      loadNetworkInfo();
+    }).then((unlisten) => {
+      unlistenReady = unlisten;
+    }).catch(() => {});
+
+    return () => {
+      clearInterval(interval);
+      if (unlistenReady) unlistenReady();
+    };
   }, []);
 
   const handleSetOverride = async (mode: string) => {
