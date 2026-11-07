@@ -1,6 +1,6 @@
 [Unit]
 Description=P2P Campus Workspace Anchor Node
-Documentation=https://github.com/yourorg/p2pstud
+Documentation=https://github.com/warior456/p2pstud
 After=network-online.target
 Wants=network-online.target
 
@@ -10,13 +10,9 @@ User=p2pstud
 Group=p2pstud
 WorkingDirectory=/var/lib/p2pstud
 
-ExecStart=/usr/local/bin/anchor \
-    --data-dir /var/lib/p2pstud \
-    --relay-port 443 \
-    --cert-dir /etc/letsencrypt/live/relay.yourcampus.org \
-    --workspace-id YOUR_WORKSPACE_ID_HERE \
-    --max-session-bps 153600 \
-    --max-aggregate-bps 2097152
+# Default to lightweight zero-domain storage anchor (no relay / certs needed).
+# To run an embedded TLS relay if you own a domain, add: --relay-port 443 --cert-dir /etc/letsencrypt/live/<domain>
+ExecStart=/usr/local/bin/anchor --data-dir /var/lib/p2pstud --no-relay
 
 Restart=on-failure
 RestartSec=5s
@@ -28,9 +24,8 @@ PrivateTmp=true
 ProtectHome=true
 ProtectSystem=strict
 ReadWritePaths=/var/lib/p2pstud
-ReadOnlyPaths=/etc/letsencrypt
 
-# Allow binding privileged ports (needed for port 443).
+# Allow binding privileged ports (if running custom relay on 443).
 AmbientCapabilities=CAP_NET_BIND_SERVICE
 CapabilityBoundingSet=CAP_NET_BIND_SERVICE
 

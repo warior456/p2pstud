@@ -37,5 +37,5 @@ HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
     CMD ["/usr/local/bin/anchor", "--health-check"]
 
 ENTRYPOINT ["/usr/local/bin/anchor"]
-CMD ["--data-dir", "/var/lib/p2pstud", "--relay-port", "443"]
+CMD ["--data-dir", "/var/lib/p2pstud", "--no-relay"]
 

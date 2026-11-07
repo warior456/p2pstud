@@ -92,31 +92,53 @@ npm run test
 
 ## ⚓ Headless Anchor Node Deployment (Linux VPS)
 
-The anchor node persists 100% of workspace files and hosts the TLS 443 relay for NAT traversal.
+The anchor node persists 100% of workspace files with zero LRU eviction and maintains always-on availability for offline peers.
 
-> **Bandwidth Throttling on Light VPS Instances:**
-> While `anchor.rs` includes a staged userspace `SessionLimiter` module, VPS operators requiring hard kernel-level egress throttling can easily enforce traffic shaping using Linux `tc` / `wondershaper`:
-> ```bash
-> # Cap outbound bandwidth to 2 MB/s (16 Mbit/s) on interface eth0
-> sudo wondershaper eth0 102400 16384
-> # Or clear limits: sudo wondershaper clear eth0
-> ```
+### 🌐 Zero-Domain / Lightweight Mode (Recommended for $3–5 VPS)
+No custom domain, DNS setup, or Let's Encrypt certificates are required. The node runs in storage mode and connects via the public Iroh Western Europe relay cluster:
 
-### Option A: Native Binary with systemd
+#### Option A: Native Binary (systemd)
 ```bash
+# 1. Build and install anchor binary
 cargo build --release --bin anchor
 sudo cp target/release/anchor /usr/local/bin/
+
+# 2. Install and launch systemd service
+sudo useradd -r -s /bin/false p2pstud || true
+sudo mkdir -p /var/lib/p2pstud && sudo chown p2pstud:p2pstud /var/lib/p2pstud
 sudo cp docker/p2pstud-anchor.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now p2pstud-anchor
+
+# 3. View your anchor's public Node ID:
+journalctl -u p2pstud-anchor | grep "Node identity loaded"
 ```
 
-### Option B: Single-Container Docker Deploy
+#### Option B: Docker Compose
 ```bash
 cd docker
-cp .env.example .env
-# Edit .env: RELAY_DOMAIN and optional WORKSPACE_ID (omitted by default for shared swarm)
 docker compose up -d
+
+# View your anchor's public Node ID:
+docker compose logs | grep "Node identity loaded"
+```
+
+---
+
+### 🛡️ Bandwidth Throttling on Light VPS Instances
+While `anchor.rs` includes a staged userspace `SessionLimiter` module, VPS operators requiring hard kernel-level egress throttling can easily enforce traffic shaping using Linux `tc` / `wondershaper`:
+```bash
+# Cap outbound bandwidth to 2 MB/s (16 Mbit/s) on interface eth0
+sudo wondershaper eth0 102400 16384
+# Or clear limits: sudo wondershaper clear eth0
+```
+
+---
+
+### 🔐 Private Relay on Port 443 (Optional — requires domain name)
+If you own a custom domain and wish to self-host your own TLS relay on port 443:
+```bash
+anchor --data-dir /var/lib/p2pstud --relay-port 443 --cert-dir /etc/letsencrypt/live/relay.yourdomain.org
 ```
 
 ---

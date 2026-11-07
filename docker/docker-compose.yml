@@ -1,15 +1,13 @@
 # docker-compose.yml — Single-container deployment for p2pstud anchor node.
 #
-# This runs the relay server AND blob storage in one container.
-# For small deployments ($3-5/month VPS) this is all you need.
+# Defaults to a lightweight storage-only anchor (no domain or TLS certs needed).
+# Uses the public Iroh EU relay for seamless NAT traversal on any cheap VPS.
 #
 # Usage:
-#   cp .env.example .env
-#   # Edit .env with your domain and workspace ID
 #   docker compose up -d
 #
-# To run WITHOUT the relay (storage-only node):
-#   docker compose run --rm p2pstud --no-relay --data-dir /var/lib/p2pstud
+# To view your anchor's public Node ID:
+#   docker compose logs | grep "Node identity loaded"
 
 version: "3.9"
 
@@ -23,28 +21,19 @@ services:
     restart: unless-stopped
 
     # host networking gives best QUIC/UDP performance and avoids double NAT.
-    # Remove this and add `ports:` below if your VPS provider doesn't support host networking.
     network_mode: host
-
-    # Uncomment if NOT using host networking:
-    # ports:
-    #   - "443:443/tcp"
-    #   - "443:443/udp"
-    #   - "80:80/tcp"
 
     volumes:
       - p2pstud_data:/var/lib/p2pstud
-      - /etc/letsencrypt:/etc/letsencrypt:ro
+      # Uncomment if running a custom TLS relay with a domain name:
+      # - /etc/letsencrypt:/etc/letsencrypt:ro
 
-    env_file: .env
+    env_file:
+      - path: .env
+        required: false
 
-    command: >
-      --data-dir /var/lib/p2pstud
-      --relay-port ${RELAY_PORT:-443}
-      --cert-dir /etc/letsencrypt/live/${RELAY_DOMAIN}
-      --workspace-id ${WORKSPACE_ID}
-      --max-session-bps ${MAX_SESSION_BPS:-153600}
-      --max-aggregate-bps ${MAX_AGGREGATE_BPS:-2097152}
+    # Default command: zero-domain, lightweight anchor with public relay fallback.
+    command: ${ANCHOR_ARGS:---data-dir /var/lib/p2pstud --no-relay}
 
 volumes:
   p2pstud_data:

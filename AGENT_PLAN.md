@@ -107,6 +107,7 @@ At the end of every session (or when interrupted), update the `## Progress Track
 | 54 | Security Audit Remediations & Clippy Cleanup (VULN-01 to VULN-14) | ✅ | Remediated all 14 security vulnerabilities from `SECURITY_AUDIT_REPORT.md`, resolved 14 clippy compiler warnings with `-D warnings`, eliminated eviction deadlock, enforced updater cryptographic verification & path confinement, and bumped version to 0.1.25. |
 | 55 | Specification & Architecture Drift Resolution (`egm-resolve`) | ✅ | Resolved all 13 drift findings from 2026-11-07 audit report; enshrined zero-domain, light-server VPS auth spec in `KULEUVEN_AUTH_SPEC.md`; staged rate limiter docs; synchronized R14-R24 & R7 dependency matrix; bumped version to 0.1.26. |
 | 56 | Anchor Connection Discoverability & Desktop NSIS Installer Package | ✅ | Clarified remote peer / anchor node connection form and bootstrap peer persistence guidance in `NetworkSettings.tsx`; successfully built release NSIS desktop installer bundle (`p2pstud_0.1.26_x64-setup.exe`, 13.82 MiB); bumped version to 0.1.27. |
+| 57 | Zero-Domain Light VPS Anchor Defaults & Deployment Documentation | ✅ | Standardized `docker/Dockerfile`, `docker-compose.yml`, `docker/.env.example`, and `docker/p2pstud-anchor.service` to default to zero-domain `--no-relay` storage mode with public EU relay fallback; documented light VPS setup in `README.md`; bumped version to 0.1.28. |
 
 ---
 
