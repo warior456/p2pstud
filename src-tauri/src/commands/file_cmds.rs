@@ -5,7 +5,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::p2p::sync::{broadcast_catalog_event, SyncMessage};
 use crate::storage::blob_tracker::{
-    cast_delete_vote, cast_keep_vote, delete_blob, get_blob, get_seed_count, list_all_blobs,
+    cast_delete_vote, cast_keep_vote, get_blob, get_seed_count, list_all_blobs,
     record_peer_seed, remove_delete_vote, remove_keep_vote, rename_blob, set_pinned, touch_blob,
     upsert_blob, BlobRecord,
 };
@@ -416,7 +416,12 @@ pub async fn add_file(local_path: String, state: State<'_, AppState>) -> Result<
         )
         .await;
 
+    // If this hash previously had a deletion tombstone, clear it since the owner is intentionally re-uploading
+    let _ = crate::storage::blob_tracker::remove_deletion_tombstone(&state.db, &hash);
+
     // Record in SQLite with filename and owner node ID.
+    let _ = crate::storage::blob_tracker::remove_deletion_tombstone(&state.db, &hash);
+
     upsert_blob(
         &state.db,
         &hash,
@@ -545,7 +550,12 @@ pub async fn upload_file_bytes(
         )
         .await;
 
+    // If this hash previously had a deletion tombstone, clear it since the owner is intentionally re-uploading
+    let _ = crate::storage::blob_tracker::remove_deletion_tombstone(&state.db, &hash);
+
     // Record in SQLite with filename and owner node ID.
+    let _ = crate::storage::blob_tracker::remove_deletion_tombstone(&state.db, &hash);
+
     upsert_blob(
         &state.db,
         &hash,
@@ -640,28 +650,31 @@ pub async fn delete_file(
         );
     }
 
-    // Delete record from SQLite
-    delete_blob(&state.db, &hash).map_err(|e| e.to_string())?;
+    // 1. Create a cryptographically signed DeletionTombstone proving the owner authorized deletion
+    let now = crate::storage::blob_tracker::now_unix();
+    let tombstone = crate::storage::blob_tracker::DeletionTombstone::create_signed(
+        hash.clone(),
+        my_node_id.clone(),
+        now,
+        &engine.secret_key,
+    );
 
-    // Delete blob data tags from local Iroh store
+    // 2. Record tombstone in SQLite (which removes local_blobs and purges physical disk files)
+    crate::storage::blob_tracker::record_deletion_tombstone(&state.db, &tombstone)
+        .map_err(|e| e.to_string())?;
+
+    // 3. Delete blob data tags from local Iroh store
     let _ = engine.store.tags().delete(hash.as_bytes()).await;
 
-    // Physically delete blob files (.data, .obao4, etc.) from disk
-    let blob_dir = state.db.resolve_blob_dir();
-    crate::storage::path_utils::delete_blob_files_from_disk(&blob_dir, &hash);
-
-    // Broadcast deletion event to the swarm
+    // 4. Broadcast cryptographically signed tombstone deletion event to the entire swarm
     broadcast_catalog_event(
         &engine.endpoint,
         &engine.sync_alpn,
-        SyncMessage::FileDeleted {
-            hash: hash.clone(),
-            deleter_node_id: my_node_id,
-        },
+        SyncMessage::FileDeletedTombstone(tombstone),
     )
     .await;
 
-    tracing::info!(hash = %hash, "Deleted file from workspace (owner request)");
+    tracing::info!(hash = %hash, "Deleted file from workspace (owner signed tombstone)");
     Ok(())
 }
 
@@ -1122,6 +1135,8 @@ async fn import_zip_archive_internal<R: std::io::Read + std::io::Seek>(
             .set(sanitized_path.as_bytes(), tag_info)
             .await;
 
+        let _ = crate::storage::blob_tracker::remove_deletion_tombstone(&state.db, &hash);
+
         if let Err(e) = upsert_blob(
             &state.db,
             &hash,
@@ -1343,6 +1358,8 @@ pub async fn upload_file_path(
         let _ = crate::storage::blob_tracker::create_virtual_folder(&state.db, parent);
     }
 
+    let _ = crate::storage::blob_tracker::remove_deletion_tombstone(&state.db, &hash);
+
     upsert_blob(
         &state.db,
         &hash,
@@ -1426,15 +1443,19 @@ pub async fn batch_delete_files(
         };
 
         if is_owner {
-            if delete_blob(&state.db, &hash).is_ok() {
+            let now = crate::storage::blob_tracker::now_unix();
+            let tombstone = crate::storage::blob_tracker::DeletionTombstone::create_signed(
+                hash.clone(),
+                my_id.clone(),
+                now,
+                &engine.secret_key,
+            );
+            if crate::storage::blob_tracker::record_deletion_tombstone(&state.db, &tombstone).is_ok() {
                 let _ = engine.store.tags().delete(hash.as_bytes()).await;
                 broadcast_catalog_event(
                     &engine.endpoint,
                     &engine.sync_alpn,
-                    SyncMessage::FileDeleted {
-                        hash: hash.clone(),
-                        deleter_node_id: my_id.clone(),
-                    },
+                    SyncMessage::FileDeletedTombstone(tombstone),
                 )
                 .await;
                 deleted.push(hash);

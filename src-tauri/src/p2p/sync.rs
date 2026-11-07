@@ -54,6 +54,10 @@ pub enum SyncMessage {
         hash: String,
         deleter_node_id: String,
     },
+    /// Authoritative cryptographically signed deletion tombstone from the file's verified owner.
+    FileDeletedTombstone(crate::storage::blob_tracker::DeletionTombstone),
+    /// Batch of deletion tombstones exchanged during synchronization.
+    TombstoneDump(Vec<crate::storage::blob_tracker::DeletionTombstone>),
     /// A peer voted to mark a file for deletion.
     FileVoteDelete {
         hash: String,
@@ -192,6 +196,9 @@ impl CatalogSyncHandler {
                     if !is_valid_blob_hash(&r.hash) {
                         continue;
                     }
+                    if crate::storage::blob_tracker::is_blob_tombstoned(&self.db, &r.hash).unwrap_or(false) {
+                        continue;
+                    }
                     let clean_name = sanitize_incoming_name(r.name.as_deref());
                     let _ = upsert_blob(
                         &self.db,
@@ -237,6 +244,9 @@ impl CatalogSyncHandler {
             }
             SyncMessage::FileAdded(r) => {
                 if !is_valid_blob_hash(&r.hash) {
+                    return Ok(None);
+                }
+                if crate::storage::blob_tracker::is_blob_tombstoned(&self.db, &r.hash).unwrap_or(false) {
                     return Ok(None);
                 }
                 let clean_name = sanitize_incoming_name(r.name.as_deref());
@@ -356,6 +366,27 @@ impl CatalogSyncHandler {
                     }
                 }
                 Ok(None)
+            }
+            SyncMessage::FileDeletedTombstone(tombstone) => {
+                let hash_clone = tombstone.hash.clone();
+                if crate::storage::blob_tracker::record_deletion_tombstone(&self.db, &tombstone).unwrap_or(false) {
+                    if let Some(ref s) = self.store {
+                        let _ = s.tags().delete(hash_clone.as_bytes()).await;
+                    }
+                }
+                Ok(None)
+            }
+            SyncMessage::TombstoneDump(remote_tombstones) => {
+                for t in remote_tombstones {
+                    let hash_clone = t.hash.clone();
+                    if crate::storage::blob_tracker::record_deletion_tombstone(&self.db, &t).unwrap_or(false) {
+                        if let Some(ref s) = self.store {
+                            let _ = s.tags().delete(hash_clone.as_bytes()).await;
+                        }
+                    }
+                }
+                let my_tombstones = crate::storage::blob_tracker::list_all_tombstones(&self.db).unwrap_or_default();
+                Ok(Some(SyncMessage::TombstoneDump(my_tombstones)))
             }
             SyncMessage::FileVoteDelete {
                 hash,
@@ -659,6 +690,31 @@ pub async fn sync_catalog_with_peer(
         let _ = crate::storage::blob_tracker::record_peer_version(db, &peer_id_str, "0.1.0");
     }
 
+    // 1. Synchronize cryptographically signed deletion tombstones first
+    // so any files deleted by their legitimate owners are purged locally and remotely before catalog exchange
+    let my_tombstones = crate::storage::blob_tracker::list_all_tombstones(db).unwrap_or_default();
+    if let Ok((mut t_send, mut t_recv)) = connection.open_bi().await {
+        let t_msg = SyncMessage::TombstoneDump(my_tombstones);
+        if let Ok(t_bytes) = serde_json::to_vec(&t_msg) {
+            let _ = t_send.write_all(&t_bytes).await;
+            let _ = t_send.finish();
+            if let Ok(t_reply_bytes) = t_recv.read_to_end(1024 * 1024).await {
+                if let Ok(SyncMessage::TombstoneDump(remote_tombstones)) =
+                    serde_json::from_slice::<SyncMessage>(&t_reply_bytes)
+                {
+                    for t in remote_tombstones {
+                        let hash_clone = t.hash.clone();
+                        if crate::storage::blob_tracker::record_deletion_tombstone(db, &t).unwrap_or(false) {
+                            if let Some(s) = store {
+                                let _ = s.tags().delete(hash_clone.as_bytes()).await;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     let (mut send, mut recv) = connection.open_bi().await?;
 
     let mut my_records = list_all_blobs(db)?;
@@ -685,6 +741,9 @@ pub async fn sync_catalog_with_peer(
             let peer_id_str = peer_addr.id.to_string();
             for r in remote_records {
                 if !is_valid_blob_hash(&r.hash) {
+                    continue;
+                }
+                if crate::storage::blob_tracker::is_blob_tombstoned(db, &r.hash).unwrap_or(false) {
                     continue;
                 }
                 let clean_name = sanitize_incoming_name(r.name.as_deref());

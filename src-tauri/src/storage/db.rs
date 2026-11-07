@@ -207,6 +207,16 @@ const MIGRATIONS: &[&str] = &[
     UPDATE settings SET value = 'https://euc1-1.relay.n0.iroh.link/'
     WHERE key = 'relay_url' AND (value LIKE '%iroh.network%' OR value LIKE '%euw1-1%' OR value = '' OR value = 'default' OR value = 'global');
     "#,
+    // Migration 0017 — Cryptographically signed deletion tombstones for authoritative owner deletions
+    r#"
+    CREATE TABLE IF NOT EXISTS deleted_blobs (
+        hash          TEXT PRIMARY KEY,
+        owner_node_id TEXT NOT NULL,
+        deleted_at    INTEGER NOT NULL,
+        signature     TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_deleted_blobs_owner ON deleted_blobs(owner_node_id);
+    "#,
 ];
 
 fn apply_migrations_to_conn(conn: &Connection) -> Result<()> {
@@ -791,7 +801,8 @@ impl Database {
              DELETE FROM file_ratings;
              DELETE FROM file_stars;
              DELETE FROM quarantine_reports;
-             DELETE FROM transfer_resume_queue;",
+             DELETE FROM transfer_resume_queue;
+             DELETE FROM deleted_blobs;",
         )?;
         drop(conn);
 

@@ -26,6 +26,153 @@ pub enum DeletionScheduleStatus {
     ExpiredAndDeleted,
 }
 
+/// A cryptographically signed deletion tombstone proving that the genuine owner authorized file deletion.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DeletionTombstone {
+    pub hash: String,
+    pub owner_node_id: String,
+    pub deleted_at: i64,
+    pub signature: String,
+}
+
+impl DeletionTombstone {
+    /// Create and cryptographically sign a deletion tombstone using the owner's SecretKey.
+    pub fn create_signed(
+        hash: String,
+        owner_node_id: String,
+        deleted_at: i64,
+        secret_key: &iroh::SecretKey,
+    ) -> Self {
+        let payload = format!("DELETE:{}:{}", hash, deleted_at);
+        let sig = secret_key.sign(payload.as_bytes());
+        let signature = hex::encode(sig.to_bytes());
+        Self {
+            hash,
+            owner_node_id,
+            deleted_at,
+            signature,
+        }
+    }
+
+    /// Verify that the tombstone signature is cryptographically valid and signed by owner_node_id.
+    pub fn verify(&self) -> bool {
+        let Ok(pk) = self.owner_node_id.parse::<iroh::PublicKey>() else {
+            return false;
+        };
+        let payload = format!("DELETE:{}:{}", self.hash, self.deleted_at);
+        let Ok(sig_bytes) = hex::decode(&self.signature) else {
+            return false;
+        };
+        if sig_bytes.len() != 64 {
+            return false;
+        }
+        let mut arr = [0u8; 64];
+        arr.copy_from_slice(&sig_bytes);
+        let sig = iroh::Signature::from_bytes(&arr);
+        pk.verify(payload.as_bytes(), &sig).is_ok()
+    }
+}
+
+/// Check if a blob has an active deletion tombstone.
+pub fn is_blob_tombstoned(db: &Database, hash: &str) -> Result<bool> {
+    let conn = db.lock();
+    let exists: bool = conn
+        .query_row(
+            "SELECT 1 FROM deleted_blobs WHERE hash = ?1 LIMIT 1",
+            params![hash],
+            |_| Ok(true),
+        )
+        .optional()?
+        .unwrap_or(false);
+    Ok(exists)
+}
+
+/// Retrieve all recorded deletion tombstones.
+pub fn list_all_tombstones(db: &Database) -> Result<Vec<DeletionTombstone>> {
+    let conn = db.lock();
+    let mut stmt = conn.prepare(
+        "SELECT hash, owner_node_id, deleted_at, signature FROM deleted_blobs ORDER BY deleted_at DESC",
+    )?;
+    let rows = stmt.query_map([], |r| {
+        Ok(DeletionTombstone {
+            hash: r.get(0)?,
+            owner_node_id: r.get(1)?,
+            deleted_at: r.get(2)?,
+            signature: r.get(3)?,
+        })
+    })?;
+    let mut tombstones = Vec::new();
+    for row in rows {
+        tombstones.push(row?);
+    }
+    Ok(tombstones)
+}
+
+/// Remove a tombstone (e.g. if the owner deliberately re-uploads the file).
+pub fn remove_deletion_tombstone(db: &Database, hash: &str) -> Result<()> {
+    let conn = db.lock();
+    conn.execute("DELETE FROM deleted_blobs WHERE hash = ?1", params![hash])?;
+    Ok(())
+}
+
+/// Validate and apply an incoming deletion tombstone.
+/// Ensures the cryptographic signature verifies and that the signer matches the known owner.
+pub fn record_deletion_tombstone(db: &Database, tombstone: &DeletionTombstone) -> Result<bool> {
+    // 1. Verify cryptographic Ed25519 signature
+    if !tombstone.verify() {
+        tracing::warn!(
+            hash = %tombstone.hash,
+            owner = %tombstone.owner_node_id,
+            "Rejected deletion tombstone with invalid cryptographic signature"
+        );
+        return Ok(false);
+    }
+
+    // 2. If the file is known locally, verify that the tombstone owner matches the known owner
+    if let Ok(Some(existing)) = get_blob(db, &tombstone.hash) {
+        if let Some(ref known_owner) = existing.owner_node_id {
+            if !crate::storage::db::is_matching_node_id(known_owner, &tombstone.owner_node_id) {
+                tracing::warn!(
+                    hash = %tombstone.hash,
+                    known_owner = %known_owner,
+                    signer = %tombstone.owner_node_id,
+                    "Rejected deletion tombstone: signer is not the registered owner of this file"
+                );
+                return Ok(false);
+            }
+        }
+    }
+
+    // 3. Persist verified tombstone in SQLite
+    {
+        let conn = db.lock();
+        conn.execute(
+            "INSERT INTO deleted_blobs(hash, owner_node_id, deleted_at, signature)
+             VALUES(?1, ?2, ?3, ?4)
+             ON CONFLICT(hash) DO UPDATE SET
+                 owner_node_id = excluded.owner_node_id,
+                 deleted_at    = MAX(deleted_blobs.deleted_at, excluded.deleted_at),
+                 signature     = excluded.signature",
+            params![
+                tombstone.hash,
+                tombstone.owner_node_id,
+                tombstone.deleted_at,
+                tombstone.signature,
+            ],
+        )?;
+    }
+
+    // 4. Remove blob metadata from local_blobs tracker
+    delete_blob(db, &tombstone.hash)?;
+
+    // 5. Physically delete cached files from disk
+    let blob_dir = db.resolve_blob_dir();
+    crate::storage::path_utils::delete_blob_files_from_disk(&blob_dir, &tombstone.hash);
+
+    tracing::info!(hash = %tombstone.hash, owner = %tombstone.owner_node_id, "Applied verified deletion tombstone");
+    Ok(true)
+}
+
 /// A row from the local_blobs table with associated community delete votes, keep votes, seed count, ratings, and quarantine status.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BlobRecord {
@@ -361,6 +508,12 @@ pub fn upsert_blob(
     is_pinned: bool,
     owner_node_id: Option<&str>,
 ) -> Result<()> {
+    // If this file has an active deletion tombstone, reject upsert so deleted files are never resurrected
+    if is_blob_tombstoned(db, hash)? {
+        tracing::debug!(hash = %hash, "Skipping upsert for tombstoned (deleted) blob");
+        return Ok(());
+    }
+
     let now = now_unix();
     let conn = db.lock();
 
@@ -388,7 +541,7 @@ pub fn upsert_blob(
              name             = COALESCE(excluded.name, local_blobs.name),
              size_bytes       = excluded.size_bytes,
              last_accessed_at = excluded.last_accessed_at,
-             owner_node_id    = COALESCE(excluded.owner_node_id, local_blobs.owner_node_id)",
+             owner_node_id    = COALESCE(local_blobs.owner_node_id, excluded.owner_node_id)",
         params![
             hash,
             name,
@@ -1472,5 +1625,62 @@ mod tests {
         let info = calculate_swarm_median_version(&db, "0.1.11");
         assert_eq!(info.median_version, "0.1.12");
         assert_eq!(info.peer_count, 3);
+    }
+
+    #[test]
+    fn test_deletion_tombstone_prevents_resurrection_and_rejects_spoofed_owner() {
+        let (_dir, db) = make_db();
+
+        let owner_sk = iroh::SecretKey::generate();
+        let owner_id = owner_sk.public().to_string();
+
+        let attacker_sk = iroh::SecretKey::generate();
+        let attacker_id = attacker_sk.public().to_string();
+
+        let hash = "deadbeef000102030405060708090a0b0c0d0e0f101112131415161718191a1b";
+
+        // 1. Owner adds file
+        upsert_blob(&db, hash, Some("important_lecture.pdf"), 4096, false, Some(&owner_id)).unwrap();
+        assert!(get_blob(&db, hash).unwrap().is_some());
+
+        // 2. Attacker Alice attempts to spoof deletion with attacker's key under owner's ID
+        let mut forged_tombstone = DeletionTombstone::create_signed(
+            hash.to_string(),
+            attacker_id.clone(),
+            now_unix(),
+            &attacker_sk,
+        );
+        // Attacker claims the tombstone belongs to owner
+        forged_tombstone.owner_node_id = owner_id.clone();
+        assert!(!forged_tombstone.verify(), "Forged signature under another node_id must fail verification");
+        assert!(!record_deletion_tombstone(&db, &forged_tombstone).unwrap(), "Database must reject forged tombstone");
+        assert!(get_blob(&db, hash).unwrap().is_some(), "File must still be present");
+
+        // 3. Attacker signs with attacker's key under attacker's own ID and tries to delete Bob's file
+        let unauthorized_tombstone = DeletionTombstone::create_signed(
+            hash.to_string(),
+            attacker_id.clone(),
+            now_unix(),
+            &attacker_sk,
+        );
+        assert!(unauthorized_tombstone.verify(), "Valid signature for attacker");
+        assert!(!record_deletion_tombstone(&db, &unauthorized_tombstone).unwrap(), "Database must reject non-owner deletion");
+        assert!(get_blob(&db, hash).unwrap().is_some(), "File must still be present");
+
+        // 4. Genuine owner signs deletion tombstone
+        let genuine_tombstone = DeletionTombstone::create_signed(
+            hash.to_string(),
+            owner_id.clone(),
+            now_unix(),
+            &owner_sk,
+        );
+        assert!(genuine_tombstone.verify());
+        assert!(record_deletion_tombstone(&db, &genuine_tombstone).unwrap(), "Owner tombstone must be accepted");
+        assert!(get_blob(&db, hash).unwrap().is_none(), "File must be deleted from tracker");
+        assert!(is_blob_tombstoned(&db, hash).unwrap(), "Hash must be marked tombstoned");
+
+        // 5. Another peer sends a CatalogDump or FileAdded containing the deleted file
+        upsert_blob(&db, hash, Some("important_lecture.pdf"), 4096, false, Some(&owner_id)).unwrap();
+        assert!(get_blob(&db, hash).unwrap().is_none(), "Tombstone must strictly prevent resurrection");
     }
 }
