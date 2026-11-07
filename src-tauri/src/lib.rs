@@ -246,9 +246,9 @@ pub fn run() {
         })
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                // Prevent hard close and trigger graceful quit / update confirmation flow
+                // Minimize to system tray so P2P syncing continues in background
                 api.prevent_close();
-                let _ = window.emit("app-quit-requested", ());
+                let _ = window.hide();
             }
         })
         .invoke_handler(tauri::generate_handler![
