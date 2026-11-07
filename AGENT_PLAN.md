@@ -46,7 +46,7 @@ At the end of every session (or when interrupted), update the `## Progress Track
 ## Progress Tracker
 
 > **Last session:** 2026-11-07
-> **Last completed task:** Step 54 completed: Addressed all 14 security and architectural findings from `SECURITY_AUDIT_REPORT.md` (VULN-01 to VULN-14). Resolved all 14 compiler/clippy errors, eliminated eviction deadlock, enforced updater cryptographic verification & path confinement, authenticated consensus delete/keep votes in CatalogDump, added anti-sybil defenses to emergency quarantine, hardened HTTPS rendezvous with Ed25519 signatures and ticket masking, upgraded KU Leuven auth specification to Argon2id, added zip-bomb protections, fixed UDP diagnostic probe, synchronized ALPN on passphrase change, secured SecretKey file creation permissions, prevented SQLite active connection overwrite on backup restore, and restricted Markdown preview against remote image exfiltration. Synchronized version bump to 0.1.25 across `package.json`, `src-tauri/Cargo.toml`, and `src-tauri/tauri.conf.json`.
+> **Last completed task:** Step 55 completed: Resolved all 13 architecture and specification drift findings via `egm-resolve`. Updated `docs/KULEUVEN_AUTH_SPEC.md` to enshrine the permanent zero-domain and light-server VPS execution model, documented self-sovereign Ed25519 anchor verification, staged token-bucket rate limiting in `anchor.rs` with Linux `tc` guidance in `README.md`, updated all Phase 2 requirements (R14 through R24) to completed status (`✅`), synchronized the R7 dependency matrix with `Cargo.toml`, and bumped version to 0.1.26 across `package.json`, `src-tauri/Cargo.toml`, and `src-tauri/tauri.conf.json`. All 49 workspace tests and 37 Vitest tests passing cleanly.
 > **Next action:** Production release testing and distribution.
 
 | # | Step | Status | Notes |
@@ -105,6 +105,7 @@ At the end of every session (or when interrupted), update the `## Progress Track
 | 52 | GitHub Updater Rate-Limit Resilience | ✅ | Added HTML redirect fallback on `releases/latest` to resolve latest release and assets when `api.github.com` unauthenticated IP rate limit (HTTP 403) is exhausted on shared campus networks. Version bumped to 0.1.20. |
 | 53 | Single-Store Architecture, Concurrent Redb Lock Fix & Ready-Polling Discovery | ✅ | Unified BlobStore initialization to prevent concurrent redb open conflicts between preload and IrohEngine; added graceful readiness polling to `get_node_ticket`, `get_node_addr`, and `trigger_swarm_discovery`; hooked `iroh-node-ready` in Network Settings; bumped version to 0.1.24. |
 | 54 | Security Audit Remediations & Clippy Cleanup (VULN-01 to VULN-14) | ✅ | Remediated all 14 security vulnerabilities from `SECURITY_AUDIT_REPORT.md`, resolved 14 clippy compiler warnings with `-D warnings`, eliminated eviction deadlock, enforced updater cryptographic verification & path confinement, and bumped version to 0.1.25. |
+| 55 | Specification & Architecture Drift Resolution (`egm-resolve`) | ✅ | Resolved all 13 drift findings from 2026-11-07 audit report; enshrined zero-domain, light-server VPS auth spec in `KULEUVEN_AUTH_SPEC.md`; staged rate limiter docs; synchronized R14-R24 & R7 dependency matrix; bumped version to 0.1.26. |
 
 ---
 
