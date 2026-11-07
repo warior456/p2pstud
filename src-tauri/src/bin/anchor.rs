@@ -44,7 +44,7 @@ struct Args {
     #[arg(long, default_value = "/etc/letsencrypt/live/relay.yourcampus.org")]
     cert_dir: PathBuf,
 
-    /// Workspace namespace ID to mirror (required unless --no-relay is set without mirroring).
+    /// Optional workspace namespace ID to mirror (defaults to the default shared campus swarm).
     #[arg(long)]
     workspace_id: Option<String>,
 
