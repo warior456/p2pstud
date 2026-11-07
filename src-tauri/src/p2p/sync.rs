@@ -624,6 +624,11 @@ pub async fn sync_catalog_with_peer(
     store: Option<&iroh_blobs::store::fs::FsStore>,
     peer_addr: EndpointAddr,
 ) -> Result<()> {
+    let peer_addr = crate::p2p::network_profile::sanitize_endpoint_addr(
+        db,
+        peer_addr,
+        endpoint.addr().relay_urls().cloned(),
+    );
     register_active_peer(peer_addr.id);
     let peer_id_str = peer_addr.id.to_string();
     let alpn = get_sync_alpn(db);

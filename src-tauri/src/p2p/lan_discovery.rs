@@ -10,6 +10,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use iroh::{Endpoint, SecretKey};
 use socket2::{Domain, Protocol, Socket, Type};
 
+use crate::p2p::network_profile::{
+    get_cached_or_detect_ssid, get_sanitized_our_addr, resolve_network_profile, NetworkProfile,
+};
 use crate::p2p::rendezvous::{
     connect_and_sync_discovered_peer, deobfuscate_ticket, get_active_peer_count,
     obfuscate_ticket, RendezvousAnnouncement,
@@ -67,8 +70,13 @@ pub fn start_lan_discovery(
         let loopback_addr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, LAN_DISCOVERY_PORT));
 
         loop {
+            let (profile, _) = resolve_network_profile(&db_send, get_cached_or_detect_ssid().as_deref());
+            let is_campus = profile == NetworkProfile::Campus;
+
             let peer_count = get_active_peer_count(&db_send, &node_id_broadcast);
-            let next_delay = if peer_count == 0 {
+            let next_delay = if is_campus {
+                Duration::from_secs(15)
+            } else if peer_count == 0 {
                 Duration::from_secs(3)
             } else {
                 Duration::from_secs(12)
@@ -79,13 +87,7 @@ pub fn start_lan_discovery(
                 .unwrap_or_default()
                 .unwrap_or_default();
 
-            let mut our_addr = ep_send.addr();
-            if our_addr.relay_urls().next().is_none() {
-                if let Ok(relay) = crate::p2p::relay::EU_RELAY_URL.parse::<iroh::RelayUrl>() {
-                    our_addr = our_addr.with_relay_url(relay);
-                }
-            }
-
+            let our_addr = get_sanitized_our_addr(&ep_send, &db_send);
             let our_ticket = iroh_tickets::endpoint::EndpointTicket::new(our_addr).to_string();
             let masked_ticket = obfuscate_ticket(&our_ticket, &secret);
             let now = SystemTime::now()
@@ -101,7 +103,12 @@ pub fn start_lan_discovery(
             );
 
             if let Ok(payload) = serde_json::to_vec(&announcement) {
-                let _ = send_socket.send_to(&payload, broadcast_addr).await;
+                // If on Campus/Eduroam, NEVER broadcast to 255.255.255.255!
+                // Sending subnet-wide broadcast on port 27888 triggers campus WIDS/WIPS IDS alerts.
+                // Only send to 127.0.0.1 on loopback for multi-instance testing on the same host.
+                if !is_campus {
+                    let _ = send_socket.send_to(&payload, broadcast_addr).await;
+                }
                 let _ = send_socket.send_to(&payload, loopback_addr).await;
             }
 
@@ -118,7 +125,13 @@ pub fn start_lan_discovery(
         let mut buf = [0u8; 4096];
         loop {
             match recv_socket.recv_from(&mut buf).await {
-                Ok((len, _from_addr)) => {
+                Ok((len, from_addr)) => {
+                    let (profile, _) = resolve_network_profile(&db_recv, get_cached_or_detect_ssid().as_deref());
+                    // On campus networks, ignore non-loopback broadcast packets to avoid suspicious peer mesh dialing
+                    if profile == NetworkProfile::Campus && !from_addr.ip().is_loopback() {
+                        continue;
+                    }
+
                     if let Ok(peer) = serde_json::from_slice::<RendezvousAnnouncement>(&buf[..len]) {
                         let now = SystemTime::now()
                             .duration_since(UNIX_EPOCH)

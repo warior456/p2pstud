@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use chrono::{Datelike, Local, Timelike, Weekday};
+use iroh::{Endpoint, EndpointAddr, RelayUrl};
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
@@ -368,6 +369,95 @@ pub fn list_all_ssid_rules(db: &Database) -> Result<Vec<SsidRule>> {
     Ok(rules)
 }
 
+/// Dynamically reconfigure the running Iroh endpoint's address filter based on the active profile.
+/// On Campus networks, switches to `AddrFilter::relay_only()` so only the HTTPS port 443 relay is
+/// published and used for peer connectivity.
+pub fn apply_network_profile_to_endpoint(endpoint: &Endpoint, profile: NetworkProfile) {
+    if let Ok(lookup) = endpoint.address_lookup() {
+        let filter = match profile {
+            NetworkProfile::Campus => iroh::endpoint_info::AddrFilter::relay_only(),
+            NetworkProfile::Trusted => iroh::endpoint_info::AddrFilter::unfiltered(),
+        };
+        lookup.set_addr_filter(filter);
+        tracing::info!(profile = profile.as_str(), "Updated Iroh endpoint address filter");
+    }
+}
+
+/// Sanitize an `EndpointAddr` for the current network profile.
+/// When in `Campus` (Eduroam) stealth mode, strips all direct socket IP addresses so the node
+/// does not spray high-port UDP packets to external machines (which triggers campus IDS/firewall alerts).
+/// All traffic is strictly forced through port 443 HTTPS relay (`EU_RELAY_URL`).
+pub fn sanitize_endpoint_addr(
+    db: &Database,
+    addr: EndpointAddr,
+    fallback_relays: impl IntoIterator<Item = RelayUrl>,
+) -> EndpointAddr {
+    let ssid = get_cached_or_detect_ssid();
+    let (profile, _) = resolve_network_profile(db, ssid.as_deref());
+
+    if profile == NetworkProfile::Campus {
+        let mut clean = EndpointAddr::from(addr.id);
+        for relay in addr.relay_urls() {
+            clean = clean.with_relay_url(relay.clone());
+        }
+        for relay in fallback_relays {
+            clean = clean.with_relay_url(relay);
+        }
+        if clean.relay_urls().next().is_none() {
+            if let Ok(relay) = crate::p2p::relay::EU_RELAY_URL.parse::<RelayUrl>() {
+                clean = clean.with_relay_url(relay);
+            }
+        }
+        clean
+    } else {
+        let mut with_relays = addr;
+        if with_relays.relay_urls().next().is_none() {
+            for relay in fallback_relays {
+                with_relays = with_relays.with_relay_url(relay);
+            }
+            if with_relays.relay_urls().next().is_none() {
+                if let Ok(relay) = crate::p2p::relay::EU_RELAY_URL.parse::<RelayUrl>() {
+                    with_relays = with_relays.with_relay_url(relay);
+                }
+            }
+        }
+        with_relays
+    }
+}
+
+/// Build our own node's `EndpointAddr` for announcements/tickets.
+/// When in `Campus` mode, strips our local Wi-Fi/private IP addresses from the ticket/announcement
+/// so peers only contact us via the port 443 relay, preventing direct inbound high-port UDP attacks
+/// or port scanning of our campus device.
+pub fn get_sanitized_our_addr(
+    endpoint: &Endpoint,
+    db: &Database,
+) -> EndpointAddr {
+    let ssid = get_cached_or_detect_ssid();
+    let (profile, _) = resolve_network_profile(db, ssid.as_deref());
+
+    if profile == NetworkProfile::Campus {
+        let mut a = EndpointAddr::from(endpoint.id());
+        for relay in endpoint.addr().relay_urls() {
+            a = a.with_relay_url(relay.clone());
+        }
+        if a.relay_urls().next().is_none() {
+            if let Ok(relay) = crate::p2p::relay::EU_RELAY_URL.parse::<RelayUrl>() {
+                a = a.with_relay_url(relay);
+            }
+        }
+        a
+    } else {
+        let mut a = endpoint.addr();
+        if a.relay_urls().next().is_none() {
+            if let Ok(relay) = crate::p2p::relay::EU_RELAY_URL.parse::<RelayUrl>() {
+                a = a.with_relay_url(relay);
+            }
+        }
+        a
+    }
+}
+
 /// Delete an SSID rule.
 pub fn delete_ssid_rule_db(db: &Database, ssid: &str) -> Result<()> {
     let conn = db.lock();
@@ -377,7 +467,11 @@ pub fn delete_ssid_rule_db(db: &Database, ssid: &str) -> Result<()> {
 
 /// Background monitor task that subscribes to native OS network change events (Windows & Linux)
 /// and emits 'network-new-ssid' and 'network-profile-changed' events to the frontend.
-pub fn spawn_network_profile_monitor(db: Arc<Database>, app: AppHandle) {
+pub fn spawn_network_profile_monitor(
+    db: Arc<Database>,
+    app: AppHandle,
+    engine_lock: Option<Arc<tokio::sync::RwLock<Option<crate::p2p::engine::IrohEngine>>>>,
+) {
     std::thread::spawn(move || {
         let mut last_detected_ssid = get_cached_or_detect_ssid();
 
@@ -396,6 +490,17 @@ pub fn spawn_network_profile_monitor(db: Arc<Database>, app: AppHandle) {
                 tracing::info!(old = ?last_detected_ssid, new = ?current_ssid, "OS network change detected");
                 last_detected_ssid = current_ssid.clone();
 
+                let (profile, override_active) = resolve_network_profile(&db, current_ssid.as_deref());
+
+                // Immediately update Iroh endpoint address filter to reflect new network environment
+                if let Some(ref lock) = engine_lock {
+                    if let Ok(guard) = lock.try_read() {
+                        if let Some(ref eng) = *guard {
+                            apply_network_profile_to_endpoint(&eng.endpoint, profile);
+                        }
+                    }
+                }
+
                 if let Some(ref ssid) = current_ssid {
                     // Check if unrecognized
                     if let Ok(None) = get_rule_for_ssid(&db, ssid) {
@@ -408,7 +513,6 @@ pub fn spawn_network_profile_monitor(db: Arc<Database>, app: AppHandle) {
                 }
 
                 // Broadcast updated profile info so frontend UI updates reactively without polling
-                let (profile, override_active) = resolve_network_profile(&db, current_ssid.as_deref());
                 let is_lecture = is_current_lecture_hours();
                 let cap = match profile {
                     NetworkProfile::Campus => {
@@ -524,5 +628,45 @@ mod tests {
         db.set_setting("lecture_bandwidth_cap_bps", "65536").unwrap();
         let cap_custom = get_background_bandwidth_limit_at(&db, NetworkProfile::Campus, true);
         assert_eq!(cap_custom, Some(65536));
+    }
+
+    #[test]
+    fn test_sanitize_endpoint_addr_campus_strips_ip_addrs() {
+        let (_dir, db) = make_test_db();
+        db.set_setting("network_profile_override", "campus").unwrap();
+
+        let secret = iroh::SecretKey::generate();
+        let direct_ip: std::net::SocketAddr = "192.168.1.100:54321".parse().unwrap();
+        let relay_url: RelayUrl = crate::p2p::relay::EU_RELAY_URL.parse().unwrap();
+
+        let raw_addr = EndpointAddr::from(secret.public())
+            .with_ip_addr(direct_ip)
+            .with_relay_url(relay_url.clone());
+
+        assert_eq!(raw_addr.ip_addrs().count(), 1);
+
+        let sanitized = sanitize_endpoint_addr(&db, raw_addr, None);
+        // On Campus: IP addresses must be stripped to prevent high-port UDP alerts
+        assert_eq!(sanitized.ip_addrs().count(), 0);
+        assert!(sanitized.relay_urls().any(|r| r == &relay_url));
+    }
+
+    #[test]
+    fn test_sanitize_endpoint_addr_trusted_retains_ip_addrs() {
+        let (_dir, db) = make_test_db();
+        db.set_setting("network_profile_override", "trusted").unwrap();
+
+        let secret = iroh::SecretKey::generate();
+        let direct_ip: std::net::SocketAddr = "192.168.1.100:54321".parse().unwrap();
+        let relay_url: RelayUrl = crate::p2p::relay::EU_RELAY_URL.parse().unwrap();
+
+        let raw_addr = EndpointAddr::from(secret.public())
+            .with_ip_addr(direct_ip)
+            .with_relay_url(relay_url.clone());
+
+        let sanitized = sanitize_endpoint_addr(&db, raw_addr, None);
+        // On Trusted: Direct IP is retained for fast local/direct P2P transfer
+        assert_eq!(sanitized.ip_addrs().count(), 1);
+        assert!(sanitized.relay_urls().any(|r| r == &relay_url));
     }
 }

@@ -211,12 +211,7 @@ pub async fn run_rendezvous_cycle(
 
     // 3. Prepare our signed & ticket-obfuscated announcement (VULN-04 & VULN-09)
     let our_node_id = endpoint.id().to_string();
-    let mut our_addr = endpoint.addr();
-    if our_addr.relay_urls().next().is_none() {
-        if let Ok(relay) = crate::p2p::relay::EU_RELAY_URL.parse::<iroh::RelayUrl>() {
-            our_addr = our_addr.with_relay_url(relay);
-        }
-    }
+    let our_addr = crate::p2p::network_profile::get_sanitized_our_addr(endpoint, db);
     let our_ticket = iroh_tickets::endpoint::EndpointTicket::new(our_addr).to_string();
     let masked_ticket = obfuscate_ticket(&our_ticket, &secret);
     let now = SystemTime::now()
@@ -314,7 +309,7 @@ pub(crate) async fn connect_and_sync_discovered_peer(
     ticket_str: &str,
     node_id_str: &str,
 ) {
-    let mut addr = if let Ok(ticket) = ticket_str.parse::<iroh_tickets::endpoint::EndpointTicket>() {
+    let raw_addr = if let Ok(ticket) = ticket_str.parse::<iroh_tickets::endpoint::EndpointTicket>() {
         EndpointAddr::from(ticket)
     } else if let Ok(id) = node_id_str.parse::<EndpointId>() {
         EndpointAddr::from(id)
@@ -322,17 +317,11 @@ pub(crate) async fn connect_and_sync_discovered_peer(
         return;
     };
 
-    // If addr has no relay URLs, augment with local endpoint's relay URLs or standard EU relay
-    if addr.relay_urls().next().is_none() {
-        for relay in endpoint.addr().relay_urls() {
-            addr = addr.with_relay_url(relay.clone());
-        }
-        if addr.relay_urls().next().is_none() {
-            if let Ok(relay) = crate::p2p::relay::EU_RELAY_URL.parse::<iroh::RelayUrl>() {
-                addr = addr.with_relay_url(relay);
-            }
-        }
-    }
+    let addr = crate::p2p::network_profile::sanitize_endpoint_addr(
+        db,
+        raw_addr,
+        endpoint.addr().relay_urls().cloned(),
+    );
 
     // Connect using swarm sync ALPN directly
     if let Ok(()) = sync_catalog_with_peer(endpoint, db, Some(store), addr.clone()).await {

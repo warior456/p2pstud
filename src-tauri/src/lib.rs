@@ -229,7 +229,7 @@ pub fn run() {
                             storage::hosting_worker::spawn_hosting_worker(db_clone.clone(), engine_clone.clone(), bw_clone.clone());
                             storage::scarcity::spawn_scarcity_worker(db_clone.clone(), engine_clone.clone(), bw_clone, app_handle_for_workers.clone());
                             storage::pruning::spawn_lifecycle_pruning_worker(db_clone.clone(), engine_clone.clone());
-                            p2p::network_profile::spawn_network_profile_monitor(db_clone.clone(), app_handle_for_workers.clone());
+                            p2p::network_profile::spawn_network_profile_monitor(db_clone.clone(), app_handle_for_workers.clone(), Some(engine_clone.clone()));
                             break;
                         }
                         Err(err) => {

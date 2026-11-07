@@ -84,12 +84,27 @@ impl IrohEngine {
         // 3. Build QUIC endpoint with relay fallback and presets.
         // Disable portmapper (UPnP / NAT-PMP) by default to prevent triggering campus IDS/firewall
         // alerts (such as unauthorized UPnP port forwards classified as BitTorrent distribution).
-        // Configure AddrFilter::unfiltered() so both local socket addrs and relay addresses are
-        // published to DNS/pkarr, enabling immediate zero-configuration discovery on LAN and WAN.
+        // Check current network profile: on Campus networks, use AddrFilter::relay_only() so all
+        // peer traffic strictly tunnels through port 443 HTTPS relay, avoiding suspicious high-port UDP probes.
+        let (initial_profile, _) = crate::p2p::network_profile::resolve_network_profile(
+            &db,
+            crate::p2p::network_profile::get_cached_or_detect_ssid().as_deref(),
+        );
+
+        let initial_addr_filter = match initial_profile {
+            crate::p2p::network_profile::NetworkProfile::Campus => {
+                tracing::info!("Campus network profile active at startup: using AddrFilter::relay_only() for stealth port 443 tunneling");
+                iroh::endpoint_info::AddrFilter::relay_only()
+            }
+            crate::p2p::network_profile::NetworkProfile::Trusted => {
+                iroh::endpoint_info::AddrFilter::unfiltered()
+            }
+        };
+
         let endpoint = match Endpoint::builder(presets::N0)
             .secret_key(secret_key.clone())
             .relay_mode(relay_mode)
-            .addr_filter(iroh::endpoint_info::AddrFilter::unfiltered())
+            .addr_filter(initial_addr_filter.clone())
             .portmapper_config(iroh::endpoint::PortmapperConfig::Disabled)
             .bind()
             .await
@@ -100,7 +115,7 @@ impl IrohEngine {
                 match Endpoint::builder(presets::N0)
                     .secret_key(secret_key.clone())
                     .relay_mode(iroh::RelayMode::Default)
-                    .addr_filter(iroh::endpoint_info::AddrFilter::unfiltered())
+                    .addr_filter(initial_addr_filter.clone())
                     .portmapper_config(iroh::endpoint::PortmapperConfig::Disabled)
                     .bind()
                     .await
@@ -111,7 +126,7 @@ impl IrohEngine {
                         Endpoint::builder(presets::N0)
                             .secret_key(secret_key.clone())
                             .relay_mode(iroh::RelayMode::Disabled)
-                            .addr_filter(iroh::endpoint_info::AddrFilter::unfiltered())
+                            .addr_filter(initial_addr_filter)
                             .portmapper_config(iroh::endpoint::PortmapperConfig::Disabled)
                             .bind()
                             .await?
@@ -142,13 +157,13 @@ impl IrohEngine {
                 if let Ok(Some(bootstrap)) = bg_db.get_setting("bootstrap_peer") {
                     let trimmed = bootstrap.trim();
                     if !trimmed.is_empty() {
-                        if let Ok(mut addr) = crate::commands::peer_cmds::parse_peer_address(trimmed, None) {
-                            if addr.relay_urls().next().is_none() {
-                                for relay in bg_endpoint.addr().relay_urls() {
-                                    addr = addr.with_relay_url(relay.clone());
-                                }
-                            }
-                            let _ = sync_catalog_with_peer(&bg_endpoint, &bg_db, Some(&bg_store), addr).await;
+                        if let Ok(addr) = crate::commands::peer_cmds::parse_peer_address(trimmed, None) {
+                            let sanitized = crate::p2p::network_profile::sanitize_endpoint_addr(
+                                &bg_db,
+                                addr,
+                                bg_endpoint.addr().relay_urls().cloned(),
+                            );
+                            let _ = sync_catalog_with_peer(&bg_endpoint, &bg_db, Some(&bg_store), sanitized).await;
                         }
                     }
                 }
@@ -156,11 +171,13 @@ impl IrohEngine {
                 // Also maintain periodic catalog synchronization with all active peers
                 for peer_id in crate::p2p::sync::get_active_peer_ids() {
                     if peer_id != bg_endpoint.id() {
-                        let mut addr = EndpointAddr::from(peer_id);
-                        for relay in bg_endpoint.addr().relay_urls() {
-                            addr = addr.with_relay_url(relay.clone());
-                        }
-                        let _ = sync_catalog_with_peer(&bg_endpoint, &bg_db, Some(&bg_store), addr).await;
+                        let addr = EndpointAddr::from(peer_id);
+                        let sanitized = crate::p2p::network_profile::sanitize_endpoint_addr(
+                            &bg_db,
+                            addr,
+                            bg_endpoint.addr().relay_urls().cloned(),
+                        );
+                        let _ = sync_catalog_with_peer(&bg_endpoint, &bg_db, Some(&bg_store), sanitized).await;
                     }
                 }
             }

@@ -102,12 +102,7 @@ pub async fn get_node_ticket(state: State<'_, AppState>) -> Result<String, Strin
                 if engine.endpoint.addr().relay_urls().next().is_none() {
                     let _ = tokio::time::timeout(std::time::Duration::from_millis(500), engine.endpoint.online()).await;
                 }
-                let mut addr = engine.endpoint.addr();
-                if addr.relay_urls().next().is_none() {
-                    if let Ok(relay) = crate::p2p::relay::EU_RELAY_URL.parse::<iroh::RelayUrl>() {
-                        addr = addr.with_relay_url(relay);
-                    }
-                }
+                let addr = crate::p2p::network_profile::get_sanitized_our_addr(&engine.endpoint, &state.db);
                 let ticket = iroh_tickets::endpoint::EndpointTicket::new(addr);
                 return Ok(ticket.to_string());
             }
@@ -128,12 +123,7 @@ pub async fn get_node_addr(state: State<'_, AppState>) -> Result<String, String>
                 if engine.endpoint.addr().relay_urls().next().is_none() {
                     let _ = tokio::time::timeout(std::time::Duration::from_millis(500), engine.endpoint.online()).await;
                 }
-                let mut addr = engine.endpoint.addr();
-                if addr.relay_urls().next().is_none() {
-                    if let Ok(relay) = crate::p2p::relay::EU_RELAY_URL.parse::<iroh::RelayUrl>() {
-                        addr = addr.with_relay_url(relay);
-                    }
-                }
+                let addr = crate::p2p::network_profile::get_sanitized_our_addr(&engine.endpoint, &state.db);
                 return serde_json::to_string(&addr).map_err(|e| e.to_string());
             }
         }
@@ -212,23 +202,16 @@ pub async fn connect_peer(
         .or(node_id)
         .ok_or_else(|| "Peer address or ticket cannot be empty".to_string())?;
 
-    let mut addr = parse_peer_address(&raw_input, relay_url)?;
+    let raw_addr = parse_peer_address(&raw_input, relay_url)?;
 
     let guard = state.engine.read().await;
     let engine = guard.as_ref().ok_or("Iroh engine not yet started")?;
 
-    // If addr has no relay URLs, augment with local active relays or standard EU relay
-    // so peers can discover and connect to each other even with only a bare NodeId.
-    if addr.relay_urls().next().is_none() {
-        for relay in engine.endpoint.addr().relay_urls() {
-            addr = addr.with_relay_url(relay.clone());
-        }
-        if addr.relay_urls().next().is_none() {
-            if let Ok(relay) = crate::p2p::relay::EU_RELAY_URL.parse::<iroh::RelayUrl>() {
-                addr = addr.with_relay_url(relay);
-            }
-        }
-    }
+    let addr = crate::p2p::network_profile::sanitize_endpoint_addr(
+        &state.db,
+        raw_addr,
+        engine.endpoint.addr().relay_urls().cloned(),
+    );
 
     // Synchronize workspace catalog immediately using swarm sync ALPN
     sync_catalog_with_peer(&engine.endpoint, &state.db, Some(&engine.store), addr.clone())
@@ -302,6 +285,14 @@ pub async fn set_network_profile_override(
         .set_setting("network_profile_override", &p)
         .map_err(|e| e.to_string())?;
     crate::p2p::network_profile::invalidate_ssid_cache();
+
+    if let Some(engine) = state.engine.read().await.as_ref() {
+        let (prof, _) = crate::p2p::network_profile::resolve_network_profile(
+            &state.db,
+            crate::p2p::network_profile::get_cached_or_detect_ssid().as_deref(),
+        );
+        crate::p2p::network_profile::apply_network_profile_to_endpoint(&engine.endpoint, prof);
+    }
     Ok(())
 }
 
@@ -314,6 +305,14 @@ pub async fn add_ssid_rule(
 ) -> Result<(), String> {
     crate::p2p::network_profile::save_ssid_rule(&state.db, &ssid, &profile).map_err(|e| e.to_string())?;
     crate::p2p::network_profile::invalidate_ssid_cache();
+
+    if let Some(engine) = state.engine.read().await.as_ref() {
+        let (prof, _) = crate::p2p::network_profile::resolve_network_profile(
+            &state.db,
+            crate::p2p::network_profile::get_cached_or_detect_ssid().as_deref(),
+        );
+        crate::p2p::network_profile::apply_network_profile_to_endpoint(&engine.endpoint, prof);
+    }
     Ok(())
 }
 
@@ -330,6 +329,14 @@ pub async fn list_ssid_rules(
 pub async fn delete_ssid_rule(ssid: String, state: State<'_, AppState>) -> Result<(), String> {
     crate::p2p::network_profile::delete_ssid_rule_db(&state.db, &ssid).map_err(|e| e.to_string())?;
     crate::p2p::network_profile::invalidate_ssid_cache();
+
+    if let Some(engine) = state.engine.read().await.as_ref() {
+        let (prof, _) = crate::p2p::network_profile::resolve_network_profile(
+            &state.db,
+            crate::p2p::network_profile::get_cached_or_detect_ssid().as_deref(),
+        );
+        crate::p2p::network_profile::apply_network_profile_to_endpoint(&engine.endpoint, prof);
+    }
     Ok(())
 }
 
