@@ -479,22 +479,22 @@ export function NetworkSettings() {
         </div>
       </div>
 
-      {/* Manual Peer Link Form */}
+      {/* Manual Peer / Anchor Link Form */}
       <div className="bg-white p-6 rounded-xl border border-gray-200 shadow-xs space-y-4">
         <div className="flex items-center gap-2.5 border-b border-gray-100 pb-3">
           <UserPlus className="w-5 h-5 text-blue-600" />
           <div>
-            <h3 className="text-sm font-bold text-gray-900">Connect to Remote Peer</h3>
-            <p className="text-xs text-gray-500">Paste a peer's Node Ticket or raw Node ID to manually establish a sync link.</p>
+            <h3 className="text-sm font-bold text-gray-900">Connect Remote Peer / Anchor Node</h3>
+            <p className="text-xs text-gray-500">Paste an anchor's or peer's Node Ticket or Node ID. Connected anchors are saved as your persistent bootstrap peer.</p>
           </div>
         </div>
 
         <form onSubmit={handleConnectPeer} className="space-y-3">
           <div>
-            <label className="text-xs font-semibold text-gray-700">Peer Ticket or Node ID</label>
+            <label className="text-xs font-semibold text-gray-700">Peer / Anchor Ticket or Node ID</label>
             <input
               type="text"
-              placeholder="node... or 64-char hex Node ID"
+              placeholder="node... or 64-char hex Node ID (e.g. node_id@ip:port)"
               value={peerInput}
               onChange={(e) => setPeerInput(e.target.value)}
               className="w-full mt-1 text-xs font-mono bg-gray-50 border border-gray-200 rounded-lg px-3 py-2 focus:bg-white focus:border-blue-500 focus:outline-none transition-all"
@@ -524,7 +524,7 @@ export function NetworkSettings() {
             className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-semibold shadow-xs transition-colors disabled:opacity-50 flex items-center gap-1.5"
           >
             <Plus className="w-3.5 h-3.5" />
-            {connecting ? 'Connecting...' : 'Add Peer to Swarm'}
+            {connecting ? 'Connecting...' : 'Add Peer / Anchor to Swarm'}
           </button>
         </form>
       </div>
