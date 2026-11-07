@@ -46,7 +46,7 @@ At the end of every session (or when interrupted), update the `## Progress Track
 ## Progress Tracker
 
 > **Last session:** 2026-11-07
-> **Last completed task:** Step 67 completed: Cache Size Physical Disk Synchronization & Orphaned Blob Pruning (v0.1.37).
+> **Last completed task:** Step 68 completed: Live Online Seed Verification On App Close & Swarm Catalog Refresh (v0.1.38).
 > **Next action:** Production release distribution and testing.
 
 | # | Step | Status | Notes |
@@ -118,6 +118,7 @@ At the end of every session (or when interrupted), update the `## Progress Track
 | 65 | Active Upload Bandwidth Measurement Integration (v0.1.35) | ✅ | Hooked `BandwidthTracker::record_upload` across `upload_file_path`, `upload_file_bytes`, `add_file`, `import_zip_archive_internal`, and QUIC catalog sync streams in `p2p/sync.rs`; added global bandwidth accessors so live upload throughput `↑ X.X MB/s` reflects real upload activity in the telemetry bar. |
 | 66 | Local LAN UDP Broadcast Discovery & Multi-Provider Rendezvous Fallback (v0.1.36) | ✅ | Implemented zero-configuration local LAN and loopback peer discovery via UDP broadcast socket on port 27888 with Ed25519 signature verification; added multi-provider HTTPS rendezvous fallback (`ntfy.tedomum.fr`, `ntfy.adminforge.de`, `ntfy.sh`) resolving public `ntfy.sh` 429 quota exhaustion; auto-connects peers immediately even with clean/reset databases. |
 | 67 | Cache Size Physical Disk Synchronization & Orphaned Blob Pruning (v0.1.37) | ✅ | Reconciled cache size discrepancy between UI and Windows Explorer by measuring physical blob store directory usage (`calculate_dir_size`); implemented physical disk file deletion (`delete_blob_files_from_disk`) across file deletions, cache purges, LRU eviction, and lifecycle pruning; added automatic orphaned disk blob pruning (`cleanup_orphaned_disk_blobs`) on startup, DB clear, and cache purge. |
+| 68 | Live Online Seed Verification On App Close & Swarm Catalog Refresh (v0.1.38) | ✅ | Implemented live concurrent QUIC ping verification (`verify_candidate_remote_seeds`) before exiting from power button or tray icon, ensuring offline peers have their seed records expired immediately so sole-seed protection triggers properly; added `refresh_swarm_catalog` IPC command and wired Refresh button to perform live peer verification, rendezvous polling, and catalog synchronization with spin animation. |
 
 ---
 

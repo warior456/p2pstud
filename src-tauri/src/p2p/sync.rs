@@ -602,6 +602,12 @@ pub fn register_active_peer(peer_id: iroh::EndpointId) {
     }
 }
 
+pub fn unregister_active_peer(peer_id: iroh::EndpointId) {
+    if let Ok(mut lock) = ACTIVE_SWARM_PEERS.write() {
+        lock.retain(|id| *id != peer_id);
+    }
+}
+
 /// Retrieve all currently registered active peer endpoint IDs.
 pub fn get_active_peer_ids() -> Vec<iroh::EndpointId> {
     if let Ok(lock) = ACTIVE_SWARM_PEERS.read() {

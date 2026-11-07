@@ -110,10 +110,16 @@ pub fn run() {
                             let engine = state.engine.clone();
                             let app_handle_clone = app_handle.clone();
                             tauri::async_runtime::spawn(async move {
-                                let our_node_id = {
+                                let (our_node_id, endpoint_opt) = {
                                     let guard = engine.read().await;
-                                    guard.as_ref().map(|e| e.node_id().to_string()).unwrap_or_default()
+                                    (
+                                        guard.as_ref().map(|e| e.node_id().to_string()).unwrap_or_default(),
+                                        guard.as_ref().map(|e| e.endpoint.clone()),
+                                    )
                                 };
+                                if let Some(endpoint) = endpoint_opt {
+                                    crate::commands::peer_cmds::verify_candidate_remote_seeds(&endpoint, &db, &our_node_id).await;
+                                }
                                 let sole_seeds = crate::storage::blob_tracker::get_sole_seed_files(&db, &our_node_id).unwrap_or_default();
                                 if sole_seeds.is_empty() {
                                     // Direct shutdown when not the sole active seed for any files
@@ -320,6 +326,7 @@ pub fn run() {
             commands::peer_cmds::list_ssid_rules,
             commands::peer_cmds::delete_ssid_rule,
             commands::peer_cmds::get_sole_seed_files,
+            commands::peer_cmds::refresh_swarm_catalog,
             commands::peer_cmds::get_swarm_version_info,
             commands::peer_cmds::reconnect_swarm,
             commands::peer_cmds::trigger_swarm_discovery,

@@ -104,6 +104,8 @@ export default function App() {
   const [dismissedNetworkPrompt, setDismissedNetworkPrompt] = useState<boolean>(false);
   const [showQuitModal, setShowQuitModal] = useState<boolean>(false);
   const [soleSeedsOnQuit, setSoleSeedsOnQuit] = useState<any[]>([]);
+  const [isRefreshing, setIsRefreshing] = useState<boolean>(false);
+  const [isVerifyingQuit, setIsVerifyingQuit] = useState<boolean>(false);
 
   const { stats, refetch: refetchStats } = useStorageStats();
   const { nodeId } = usePeerStatus();
@@ -777,9 +779,11 @@ export default function App() {
 
   const handleRequestQuit = async () => {
     try {
+      setIsVerifyingQuit(true);
       const soleSeeds = await invoke<any[]>('get_sole_seed_files');
       const pending = await invoke<string | null>('get_setting', { key: 'update_pending' });
       const isPending = pending === 'true';
+      setIsVerifyingQuit(false);
 
       if ((!soleSeeds || soleSeeds.length === 0) && !isPending) {
         // Not sole seeder: cleanly exit immediately
@@ -791,6 +795,7 @@ export default function App() {
         setShowQuitModal(true);
       }
     } catch (_) {
+      setIsVerifyingQuit(false);
       await invoke('confirm_app_exit', { installUpdate: false });
     }
   };
@@ -1378,19 +1383,27 @@ export default function App() {
             Upload File
           </button>
           <button
-            onClick={() => {
-              loadWorkspaceFiles();
-              refetchStats();
-              refreshNetworkProfile();
+            onClick={async () => {
+              if (isRefreshing) return;
+              setIsRefreshing(true);
+              try {
+                await invoke('refresh_swarm_catalog');
+              } catch (err) {
+                console.warn('Failed to refresh swarm catalog:', err);
+              }
+              await loadWorkspaceFiles();
+              await refetchStats();
+              await refreshNetworkProfile();
+              setIsRefreshing(false);
             }}
-            className="p-1.5 hover:bg-gray-100 rounded-lg text-gray-500 hover:text-gray-700 transition-colors"
-            title="Refresh Swarm Catalog"
+            className="p-1.5 hover:bg-gray-100 rounded-lg text-gray-500 hover:text-gray-700 transition-colors cursor-pointer"
+            title="Refresh Swarm Catalog & Verify Online Seeds"
           >
-            <RefreshCw className="w-4 h-4" />
+            <RefreshCw className={`w-4 h-4 ${isRefreshing ? 'animate-spin text-blue-600' : ''}`} />
           </button>
           <button
             onClick={() => setCurrentView('settings')}
-            className={`p-1.5 rounded-lg transition-colors ${
+            className={`p-1.5 rounded-lg transition-colors cursor-pointer ${
               currentView === 'settings'
                 ? 'bg-blue-100 text-blue-700'
                 : 'hover:bg-gray-100 text-gray-500 hover:text-gray-700'
@@ -1401,10 +1414,13 @@ export default function App() {
           </button>
           <button
             onClick={handleRequestQuit}
-            className="p-1.5 hover:bg-rose-50 text-gray-500 hover:text-rose-600 rounded-lg transition-colors cursor-pointer"
+            disabled={isVerifyingQuit}
+            className={`p-1.5 hover:bg-rose-50 text-gray-500 hover:text-rose-600 rounded-lg transition-colors cursor-pointer ${
+              isVerifyingQuit ? 'opacity-50 cursor-wait' : ''
+            }`}
             title="Quit or Minimize P2P Workspace"
           >
-            <Power className="w-4 h-4" />
+            <Power className={`w-4 h-4 ${isVerifyingQuit ? 'animate-pulse text-amber-500' : ''}`} />
           </button>
         </div>
       </header>

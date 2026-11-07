@@ -2,6 +2,7 @@
 // Tauri IPC commands exposing peer connectivity and swarm management.
 
 use std::str::FromStr;
+use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State};
 
@@ -332,18 +333,189 @@ pub async fn delete_ssid_rule(ssid: String, state: State<'_, AppState>) -> Resul
     Ok(())
 }
 
+/// Verify whether a remote peer is currently reachable and responding over QUIC.
+pub async fn verify_single_peer_online(
+    endpoint: &iroh::Endpoint,
+    db: &crate::storage::db::Database,
+    peer_id_str: &str,
+) -> bool {
+    let Ok(peer_id) = peer_id_str.parse::<iroh::EndpointId>() else {
+        return false;
+    };
+
+    let mut addr = iroh::EndpointAddr::from(peer_id);
+    for relay in endpoint.addr().relay_urls() {
+        addr = addr.with_relay_url(relay.clone());
+    }
+    if addr.relay_urls().next().is_none() {
+        if let Ok(relay) = crate::p2p::relay::EU_RELAY_URL.parse::<iroh::RelayUrl>() {
+            addr = addr.with_relay_url(relay);
+        }
+    }
+
+    let alpn = crate::p2p::sync::get_sync_alpn(db);
+    let connect_res = tokio::time::timeout(
+        std::time::Duration::from_millis(1500),
+        endpoint.connect(addr, &alpn),
+    )
+    .await;
+
+    match connect_res {
+        Ok(Ok(connection)) => {
+            let my_node_id = endpoint.id().to_string();
+            let my_version = env!("CARGO_PKG_VERSION").to_string();
+            if let Ok(Ok((mut send, _recv))) = tokio::time::timeout(
+                std::time::Duration::from_millis(800),
+                connection.open_bi(),
+            )
+            .await
+            {
+                let msg = crate::p2p::sync::SyncMessage::NodeAnnounce {
+                    node_id: my_node_id,
+                    app_version: my_version,
+                };
+                if let Ok(b) = serde_json::to_vec(&msg) {
+                    let _ = send.write_all(&b).await;
+                    let _ = send.finish();
+                }
+            }
+
+            crate::p2p::sync::register_active_peer(peer_id);
+            let now = crate::storage::blob_tracker::now_unix();
+            let conn = db.lock();
+            let _ = conn.execute(
+                "UPDATE file_seeds SET last_seen_at = ?1 WHERE peer_node_id = ?2",
+                rusqlite::params![now, peer_id_str],
+            );
+            true
+        }
+        _ => {
+            let conn = db.lock();
+            let _ = conn.execute(
+                "UPDATE file_seeds SET last_seen_at = 0 WHERE peer_node_id = ?1",
+                rusqlite::params![peer_id_str],
+            );
+            crate::p2p::sync::unregister_active_peer(peer_id);
+            tracing::info!(peer = %peer_id_str, "Peer verified offline (unreachable)");
+            false
+        }
+    }
+}
+
+/// Verify all remote candidate peers that are recorded as seeding our local files.
+pub async fn verify_candidate_remote_seeds(
+    endpoint: &iroh::Endpoint,
+    db: &Arc<crate::storage::db::Database>,
+    our_node_id: &str,
+) {
+    let now = crate::storage::blob_tracker::now_unix();
+    let threshold = now - 600; // peers seen within last 10 minutes
+
+    let candidate_peers: Vec<String> = {
+        let conn = db.lock();
+        let mut stmt = match conn.prepare(
+            "SELECT DISTINCT s.peer_node_id FROM file_seeds s
+             WHERE s.last_seen_at > ?1 AND s.peer_node_id != ?2",
+        ) {
+            Ok(s) => s,
+            Err(_) => return,
+        };
+        let rows = stmt.query_map(rusqlite::params![threshold, our_node_id], |r| {
+            r.get::<_, String>(0)
+        });
+        match rows {
+            Ok(mapped) => mapped.flatten().collect(),
+            Err(_) => return,
+        }
+    };
+
+    if candidate_peers.is_empty() {
+        return;
+    }
+
+    let mut set = tokio::task::JoinSet::new();
+    for peer_id_str in candidate_peers {
+        let ep = endpoint.clone();
+        let db_clone = db.clone();
+        set.spawn(async move {
+            verify_single_peer_online(&ep, &db_clone, &peer_id_str).await;
+        });
+    }
+
+    while let Some(_) = set.join_next().await {}
+}
+
 /// Return all files for which this node is the sole known seed in the swarm.
+/// Performs live ping verification to verify if remote candidate seeds are actually online.
 #[tauri::command]
 pub async fn get_sole_seed_files(
     state: State<'_, AppState>,
 ) -> Result<Vec<crate::storage::blob_tracker::SoleSeedFile>, String> {
-    let guard = state.engine.read().await;
-    let our_node_id = match guard.as_ref() {
-        Some(e) => e.node_id().to_string(),
-        None => return Ok(vec![]),
+    let (our_node_id, endpoint_opt) = {
+        let guard = state.engine.read().await;
+        (
+            guard.as_ref().map(|e| e.node_id().to_string()).unwrap_or_default(),
+            guard.as_ref().map(|e| e.endpoint.clone()),
+        )
     };
+
+    if let Some(endpoint) = endpoint_opt {
+        verify_candidate_remote_seeds(&endpoint, &state.db, &our_node_id).await;
+    }
+
     crate::storage::blob_tracker::get_sole_seed_files(&state.db, &our_node_id)
         .map_err(|e| e.to_string())
+}
+
+/// Forcibly probe and sync the swarm catalog, verifying live peers and expiring offline peers.
+#[tauri::command]
+pub async fn refresh_swarm_catalog(state: State<'_, AppState>) -> Result<(), String> {
+    crate::p2p::network_profile::invalidate_ssid_cache();
+
+    let guard = state.engine.read().await;
+    let Some(engine) = guard.as_ref() else {
+        return Err("Iroh engine not started".to_string());
+    };
+    let endpoint = engine.endpoint.clone();
+    let our_node_id = engine.node_id().to_string();
+    let secret_key = engine.secret_key.clone();
+    let store = engine.store.clone();
+    let db = state.db.clone();
+    drop(guard);
+
+    // 1. Trigger local LAN broadcast and HTTPS swarm discovery cycle in parallel
+    let ep1 = endpoint.clone();
+    let sk1 = secret_key.clone();
+    let db1 = db.clone();
+    let st1 = store.clone();
+    tokio::spawn(async move {
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(6))
+            .build()
+            .unwrap_or_default();
+        let _ = crate::p2p::rendezvous::run_rendezvous_cycle(&client, &ep1, &sk1, &db1, &st1).await;
+    });
+
+    // 2. Perform live verification of all known candidate peers
+    verify_candidate_remote_seeds(&endpoint, &db, &our_node_id).await;
+
+    // 3. For all verified active peers, sync catalog
+    for peer_id in crate::p2p::sync::get_active_peer_ids() {
+        if peer_id.to_string() != our_node_id {
+            let mut addr = iroh::EndpointAddr::from(peer_id);
+            for relay in endpoint.addr().relay_urls() {
+                addr = addr.with_relay_url(relay.clone());
+            }
+            if addr.relay_urls().next().is_none() {
+                if let Ok(relay) = crate::p2p::relay::EU_RELAY_URL.parse::<iroh::RelayUrl>() {
+                    addr = addr.with_relay_url(relay);
+                }
+            }
+            let _ = crate::p2p::sync::sync_catalog_with_peer(&endpoint, &db, Some(&store), addr).await;
+        }
+    }
+
+    Ok(())
 }
 
 /// Forcibly trigger an immediate swarm reconnection cycle.

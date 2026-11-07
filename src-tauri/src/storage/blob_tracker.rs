@@ -131,7 +131,7 @@ fn default_seed_count() -> usize {
     1
 }
 
-fn now_unix() -> i64 {
+pub fn now_unix() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("system clock before UNIX_EPOCH")
