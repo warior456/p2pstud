@@ -201,10 +201,16 @@ impl CatalogSyncHandler {
                         r.owner_node_id.as_deref(),
                     );
                     for voter in r.delete_votes {
-                        let _ = cast_delete_vote(&self.db, &r.hash, &voter);
+                        // SECURITY (VULN-02): Only accept votes from authenticated peer connection
+                        if sender_peer_id == Some(voter.as_str()) {
+                            let _ = cast_delete_vote(&self.db, &r.hash, &voter);
+                        }
                     }
                     for voter in r.keep_votes {
-                        let _ = cast_keep_vote(&self.db, &r.hash, &voter);
+                        // SECURITY (VULN-02): Only accept votes from authenticated peer connection
+                        if sender_peer_id == Some(voter.as_str()) {
+                            let _ = cast_keep_vote(&self.db, &r.hash, &voter);
+                        }
                     }
                     if r.is_cached {
                         if let Some(peer_id) = sender_peer_id {
@@ -309,10 +315,16 @@ impl CatalogSyncHandler {
                 }
 
                 for voter in r.delete_votes {
-                    let _ = cast_delete_vote(&self.db, &r.hash, &voter);
+                    // SECURITY (VULN-02): Only accept votes from authenticated peer connection
+                    if sender_peer_id == Some(voter.as_str()) {
+                        let _ = cast_delete_vote(&self.db, &r.hash, &voter);
+                    }
                 }
                 for voter in r.keep_votes {
-                    let _ = cast_keep_vote(&self.db, &r.hash, &voter);
+                    // SECURITY (VULN-02): Only accept votes from authenticated peer connection
+                    if sender_peer_id == Some(voter.as_str()) {
+                        let _ = cast_keep_vote(&self.db, &r.hash, &voter);
+                    }
                 }
                 if let Some(peer_id) = sender_peer_id {
                     let _ = record_peer_seed(&self.db, &r.hash, peer_id);
@@ -560,13 +572,13 @@ impl ProtocolHandler for CatalogSyncHandler {
             let bytes = recv
                 .read_to_end(2 * 1024 * 1024)
                 .await
-                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+                .map_err(|e| std::io::Error::other(e.to_string()))?;
             if let Ok(msg) = serde_json::from_slice::<SyncMessage>(&bytes) {
                 if let Ok(Some(reply)) = this.handle_message(msg, sender_peer.as_deref()).await {
                     if let Ok(reply_bytes) = serde_json::to_vec(&reply) {
                         send.write_all(&reply_bytes)
                             .await
-                            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+                            .map_err(|e| std::io::Error::other(e.to_string()))?;
                     }
                 }
             }
@@ -654,10 +666,16 @@ pub async fn sync_catalog_with_peer(
                     r.owner_node_id.as_deref(),
                 );
                 for voter in r.delete_votes {
-                    let _ = cast_delete_vote(db, &r.hash, &voter);
+                    // SECURITY (VULN-02): Only accept votes from authenticated peer connection
+                    if voter == peer_id_str {
+                        let _ = cast_delete_vote(db, &r.hash, &voter);
+                    }
                 }
                 for voter in r.keep_votes {
-                    let _ = cast_keep_vote(db, &r.hash, &voter);
+                    // SECURITY (VULN-02): Only accept votes from authenticated peer connection
+                    if voter == peer_id_str {
+                        let _ = cast_keep_vote(db, &r.hash, &voter);
+                    }
                 }
                 if r.is_cached {
                     let _ = record_peer_seed(db, &r.hash, &peer_id_str);

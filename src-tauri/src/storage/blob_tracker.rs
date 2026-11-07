@@ -166,6 +166,7 @@ pub fn get_keep_votes(db: &Database, hash: &str) -> Result<Vec<String>> {
 /// If Delete Quorum >= 3 AND Delete / (Delete + Keep) >= 86%:
 ///   - Schedules deletion grace period (24 hours) if not yet scheduled.
 ///   - If grace period has elapsed, purges the blob and returns `ExpiredAndDeleted`.
+///
 /// If votes drop below 86% or quorum:
 ///   - Clears any scheduled deletion (cancels grace period) and returns `Safe`.
 pub fn evaluate_deletion_schedule(db: &Database, hash: &str) -> Result<DeletionScheduleStatus> {
@@ -831,7 +832,7 @@ pub fn is_starred(db: &Database, hash: &str) -> Result<bool> {
     Ok(exists)
 }
 
-/// Report a file as dangerous. Triggers emergency quarantine if >= 5 reports in 1 hour.
+/// Report a file as dangerous. Triggers emergency quarantine if quorum of reports arrives in 1 hour.
 pub fn report_dangerous(db: &Database, hash: &str, reporter_node_id: &str) -> Result<QuarantineStatus> {
     let now = now_unix();
     let conn = db.lock();
@@ -840,14 +841,26 @@ pub fn report_dangerous(db: &Database, hash: &str, reporter_node_id: &str) -> Re
         params![hash, reporter_node_id, now],
     )?;
 
-    // Check 5-report threshold in the last 1 hour (3600 seconds)
+    // Check distinct reports within the last 1 hour (3600 seconds)
     let count: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM quarantine_reports WHERE hash = ?1 AND reported_at > (?2 - 3600)",
+        "SELECT COUNT(DISTINCT reporter_node_id) FROM quarantine_reports WHERE hash = ?1 AND reported_at > (?2 - 3600)",
         params![hash, now],
         |r| r.get(0),
     )?;
 
-    let is_quarantined = if count >= 5 {
+    // Anti-Sybil Defense (VULN-03): Check existing community keep votes or stars
+    let keep_votes: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM file_keep_votes WHERE hash = ?1",
+            params![hash],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+
+    // If community nodes actively voted to keep the file, require higher quorum to prevent censorship
+    let required_threshold = 5 + keep_votes;
+
+    let is_quarantined = if count >= required_threshold {
         let expires_at = now + 604800; // 7 days
         conn.execute(
             "UPDATE local_blobs SET is_quarantined = 1, quarantine_expires_at = ?1 WHERE hash = ?2",
@@ -916,10 +929,8 @@ pub fn list_virtual_folders(db: &Database) -> Result<Vec<String>> {
     let mut stmt = conn.prepare("SELECT path FROM virtual_folders ORDER BY path ASC")?;
     let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
     let mut folders = Vec::new();
-    for r in rows {
-        if let Ok(f) = r {
-            folders.push(f);
-        }
+    for f in rows.flatten() {
+        folders.push(f);
     }
     Ok(folders)
 }
@@ -1142,10 +1153,8 @@ pub fn get_active_peer_versions(db: &Database) -> Result<Vec<String>> {
     )?;
     let rows = stmt.query_map(params![threshold], |r| r.get(0))?;
     let mut versions = Vec::new();
-    for row in rows {
-        if let Ok(v) = row {
-            versions.push(v);
-        }
+    for v in rows.flatten() {
+        versions.push(v);
     }
     Ok(versions)
 }

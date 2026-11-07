@@ -1,6 +1,6 @@
 [package]
 name = "p2pstud-tauri"
-version = "0.1.24"
+version = "0.1.25"
 edition = "2021"
 rust-version = "1.77"
 default-run = "p2pstud"
@@ -40,7 +40,8 @@ iroh-tickets   = "1.0"
 tokio          = { version = "1", features = ["full"] }
 
 # Local storage
-rusqlite       = { version = "0.31", features = ["bundled"] }
+rusqlite       = { version = "0.31", features = ["bundled", "backup"] }
+hex            = "0.4"
 
 # Serialisation
 serde          = { version = "1", features = ["derive"] }

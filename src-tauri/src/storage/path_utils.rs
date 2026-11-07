@@ -220,7 +220,7 @@ pub fn normalize_virtual_path(input: &str, folder_sibling_names: &[&str]) -> Res
     // 7. Case-insensitive uniqueness check against siblings
     let target_name = normalized_components.last().unwrap().as_str();
     for sibling in folder_sibling_names {
-        let sibling_name = sibling.split('/').last().unwrap_or(sibling).trim();
+        let sibling_name = sibling.split('/').next_back().unwrap_or(sibling).trim();
         if sibling_name.eq_ignore_ascii_case(target_name) {
             return Err(format!("Case collision detected with existing file '{sibling}'"));
         }

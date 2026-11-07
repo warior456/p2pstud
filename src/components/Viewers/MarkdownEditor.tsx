@@ -62,7 +62,15 @@ export const MarkdownEditor: React.FC<MarkdownEditorProps> = ({
   const getHtml = () => {
     try {
       const raw = marked.parse(content, { async: false }) as string;
-      return DOMPurify.sanitize(raw);
+      return DOMPurify.sanitize(raw, {
+        ALLOWED_TAGS: [
+          'b', 'i', 'em', 'strong', 'a', 'p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
+          'ul', 'ol', 'li', 'code', 'pre', 'blockquote', 'hr', 'table', 'thead', 'tbody', 'tr', 'th', 'td', 'span', 'del'
+        ],
+        ALLOWED_ATTR: ['href', 'title', 'class'],
+        ALLOWED_URI_REGEXP: /^(?:(?:https?|mailto):|[^a-z]|[a-z+.\-]+(?:[^a-z+.\-:]|$))/i,
+        FORBID_TAGS: ['img', 'iframe', 'object', 'embed', 'form', 'script', 'style', 'input'],
+      });
     } catch {
       return '<p>Error rendering markdown</p>';
     }

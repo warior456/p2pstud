@@ -21,7 +21,7 @@ This document specifies an individual, cryptographically bound authentication mo
 |---|---|---|
 | **Non-Transferability** | Student Alice copies her key and sends it to Bob on Discord. | Ticket is cryptographically bound to Alice's `NodeId`. Bob cannot use it because he does not possess Alice's private key (`iroh_secret.key`). |
 | **Institutional Proof** | Strangers or bots joining the Groep T swarm. | Only users capable of receiving a verification code at `rXXXXXXX@student.kuleuven.be` (guarded by KU Leuven Central Login + 2FA) are issued tickets. |
-| **Privacy & Pseudonymity** | Classmates scraping a directory of students' real names/emails. | Peers only see a salted one-way hash: `BLAKE3(salt + student_email)`. Plaintext email is never broadcast across the P2P swarm. |
+| **Privacy & Pseudonymity** | Classmates scraping a directory of students' real names/emails. | Memory-Hard Key Derivation (Argon2id, m=64MB, t=3, p=4 with campus pepper) or Blind Credential Issuance. Plaintext emails and low-entropy BLAKE3 hashes are strictly forbidden. |
 | **Time-Bound Validity** | Departed students or lost devices retaining access indefinitely. | Tickets carry an expiration timestamp (e.g. 30 days or semester end). |
 | **Abuse & Sybil Resistance** | A student uploading spam or malware. | The Anchor Authority can revoke tickets or block the offending `email_hash` from receiving future passes. |
 
@@ -55,7 +55,7 @@ This document specifies an individual, cryptographically bound authentication mo
                                ┌──────────────────────────────────────────────┐
                                │          Signed Membership Ticket            │
                                │  • node_id:   <Student's Public Key>         │
-                               │  • id_hash:   BLAKE3(salt + email)           │
+                               │  • id_hash:   Argon2id(pepper, email, salt)  │
                                │  • network:   "groept"                       │
                                │  • expires:   1773000000                     │
                                │  • signature: Ed25519_Sign(TicketBytes)      │
@@ -74,8 +74,8 @@ pub struct GroepTMemberTicket {
     /// The public Ed25519 NodeId of the student's local Iroh node.
     pub node_id: String,
 
-    /// Salted cryptographic digest of the student's r-number/email.
-    /// Provides privacy while maintaining sybil accountability.
+    /// Memory-hard Argon2id digest of the student's r-number/email with campus pepper.
+    /// Defends against sub-second precomputation rainbow attacks on the 10^7 KU Leuven r-number space.
     pub email_hash: String,
 
     /// Identifier of the target swarm network.

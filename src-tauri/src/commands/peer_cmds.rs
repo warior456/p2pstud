@@ -370,13 +370,14 @@ pub async fn trigger_swarm_discovery(state: State<'_, AppState>) -> Result<Strin
     let db = state.db.clone();
     let store = engine.store.clone();
     let endpoint = engine.endpoint.clone();
+    let secret_key = engine.secret_key.clone();
 
     tokio::spawn(async move {
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(8))
             .build()
             .unwrap_or_default();
-        let _ = crate::p2p::rendezvous::run_rendezvous_cycle(&client, &endpoint, &db, &store).await;
+        let _ = crate::p2p::rendezvous::run_rendezvous_cycle(&client, &endpoint, &secret_key, &db, &store).await;
     });
 
     Ok("Swarm rendezvous discovery initiated".to_string())

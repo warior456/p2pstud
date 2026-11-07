@@ -100,35 +100,40 @@ pub async fn export_app_backup(
         let _ = std::fs::create_dir_all(parent);
     }
 
-    let file = File::create(&dest).map_err(|e| format!("Failed to create backup ZIP file: {e}"))?;
-    let mut zip = ZipWriter::new(file);
-    let options = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
-
-    // 1. Write iroh_secret.key
-    if key_path.exists() {
-        let key_data = std::fs::read(&key_path)
-            .map_err(|e| format!("Failed to read iroh_secret.key: {e}"))?;
-        zip.start_file("iroh_secret.key", options)
-            .map_err(|e| format!("Failed to write key to ZIP: {e}"))?;
-        zip.write_all(&key_data)
-            .map_err(|e| format!("Failed to write key content to ZIP: {e}"))?;
-    }
-
-    // 2. Write p2pstud.db (checkpoint WAL to ensure full consistency)
+    // 1. Checkpoint WAL to flush pending writes
     {
         let conn = state.db.lock();
         let _ = conn.execute_batch("PRAGMA wal_checkpoint(FULL);");
     }
 
-    let db_data = std::fs::read(&db_path)
-        .map_err(|e| format!("Failed to read p2pstud.db: {e}"))?;
-    zip.start_file("p2pstud.db", options)
-        .map_err(|e| format!("Failed to write DB to ZIP: {e}"))?;
-    zip.write_all(&db_data)
-        .map_err(|e| format!("Failed to write DB content to ZIP: {e}"))?;
+    let dest_clone = dest.clone();
+    tokio::task::spawn_blocking(move || -> Result<(), String> {
+        let file = File::create(&dest_clone).map_err(|e| format!("Failed to create backup ZIP file: {e}"))?;
+        let mut zip = ZipWriter::new(file);
+        let options = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
 
-    zip.finish()
-        .map_err(|e| format!("Failed to finalize backup ZIP: {e}"))?;
+        if key_path.exists() {
+            let key_data = std::fs::read(&key_path)
+                .map_err(|e| format!("Failed to read iroh_secret.key: {e}"))?;
+            zip.start_file("iroh_secret.key", options)
+                .map_err(|e| format!("Failed to write key to ZIP: {e}"))?;
+            zip.write_all(&key_data)
+                .map_err(|e| format!("Failed to write key content to ZIP: {e}"))?;
+        }
+
+        let db_data = std::fs::read(&db_path)
+            .map_err(|e| format!("Failed to read p2pstud.db: {e}"))?;
+        zip.start_file("p2pstud.db", options)
+            .map_err(|e| format!("Failed to write DB to ZIP: {e}"))?;
+        zip.write_all(&db_data)
+            .map_err(|e| format!("Failed to write DB content to ZIP: {e}"))?;
+
+        zip.finish()
+            .map_err(|e| format!("Failed to finalize backup ZIP: {e}"))?;
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("Backup worker failed: {e}"))??;
 
     tracing::info!(dest = %dest.display(), "Exported app backup archive successfully");
     Ok(dest.to_string_lossy().to_string())
@@ -188,15 +193,31 @@ pub async fn restore_app_backup(
         let _ = std::fs::copy(&current_db_path, backup_bak);
     }
 
-    // Checkpoint & flush lock
-    {
-        let conn = state.db.lock();
-        let _ = conn.execute_batch("PRAGMA wal_checkpoint(FULL);");
-    }
-
     if let Some(db_data) = db_bytes {
-        std::fs::write(&current_db_path, db_data)
-            .map_err(|e| format!("Failed to write restored p2pstud.db: {e}"))?;
+        let temp_staging_path = data_dir.join("p2pstud_restore_staging.tmp");
+        std::fs::write(&temp_staging_path, &db_data)
+            .map_err(|e| format!("Failed to stage restored p2pstud.db: {e}"))?;
+
+        // Verify SQLite integrity of restored database before applying
+        {
+            let staging_conn = rusqlite::Connection::open(&temp_staging_path)
+                .map_err(|e| format!("Invalid restored SQLite database: {e}"))?;
+            let integrity: String = staging_conn
+                .query_row("PRAGMA integrity_check;", [], |r| r.get(0))
+                .map_err(|e| format!("Failed running integrity check on restored database: {e}"))?;
+            if integrity != "ok" {
+                let _ = std::fs::remove_file(&temp_staging_path);
+                return Err(format!("Restored database integrity check failed: {integrity}"));
+            }
+
+            // Safely apply using SQLite online backup API into active connection
+            let mut target_conn = state.db.lock();
+            let backup = rusqlite::backup::Backup::new(&staging_conn, &mut target_conn)
+                .map_err(|e| format!("Failed initializing SQLite backup restore: {e}"))?;
+            backup.run_to_completion(10, std::time::Duration::from_millis(10), None)
+                .map_err(|e| format!("Failed copying restored database pages: {e}"))?;
+        }
+        let _ = std::fs::remove_file(&temp_staging_path);
     }
 
     if let Some(key_data) = key_bytes {
@@ -546,8 +567,7 @@ pub async fn check_and_stage_app_update(db: &Database) -> Result<UpdateInfo, Str
         _ => remote_ver_str != current_version,
     };
 
-    if is_newer && !dismissed && matched_asset.is_some() {
-        let asset = matched_asset.unwrap();
+    if let (true, false, Some(asset)) = (is_newer, dismissed, &matched_asset) {
         let _ = db.set_setting("update_target_version", &remote_ver_str);
         let _ = db.set_setting("update_download_url", &asset.browser_download_url);
         let _ = db.set_setting("update_asset_name", &asset.name);
@@ -632,15 +652,18 @@ pub async fn download_app_update(app: AppHandle, state: State<'_, AppState>) -> 
         .await
         .map_err(|e| format!("Failed reading update data: {e}"))?;
 
+    let hash = iroh_blobs::Hash::new(&bytes).to_hex().to_string();
+
     tokio::fs::write(&dest_path, &bytes)
         .await
         .map_err(|e| format!("Failed writing update installer to disk: {e}"))?;
 
     let _ = state.db.set_setting("update_installer_path", &dest_path.to_string_lossy());
+    let _ = state.db.set_setting("update_installer_hash", &hash);
     let _ = state.db.set_setting("update_pending", "true");
     let _ = app.emit("update-downloaded", ());
 
-    tracing::info!(dest = %dest_path.display(), "Application update successfully downloaded and staged");
+    tracing::info!(dest = %dest_path.display(), hash = %hash, "Application update successfully downloaded and staged");
     Ok("Update downloaded successfully. It will install automatically on next app restart.".to_string())
 }
 
@@ -653,14 +676,46 @@ pub async fn install_app_update(_app: AppHandle, state: State<'_, AppState>) -> 
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "No downloaded update installer found.".to_string())?;
 
+    let data_dir = _app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("Failed to resolve app data dir: {e}"))?;
+    let updates_dir = data_dir.join("updates");
+
     let installer_path = PathBuf::from(&installer_path_str);
-    if !installer_path.exists() {
+    let canonical_installer = installer_path.canonicalize().map_err(|_| {
         let _ = state.db.set_setting("update_pending", "false");
-        return Err(format!("Installer file not found at: {}", installer_path.display()));
+        format!("Installer file not found at: {}", installer_path.display())
+    })?;
+
+    let canonical_updates_dir = updates_dir.canonicalize().map_err(|e| {
+        format!("Updates directory cannot be resolved: {e}")
+    })?;
+
+    // Security check 1: Path must be strictly within updates_dir
+    if !canonical_installer.starts_with(&canonical_updates_dir) {
+        let _ = state.db.set_setting("update_pending", "false");
+        return Err("Security violation: installer is located outside the updates directory".to_string());
+    }
+
+    // Security check 2: Verify binary hash matches update_installer_hash recorded during download
+    let expected_hash = state
+        .db
+        .get_setting("update_installer_hash")
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "Missing verified hash for pending update".to_string())?;
+
+    let disk_bytes = std::fs::read(&canonical_installer)
+        .map_err(|e| format!("Failed reading staged installer: {e}"))?;
+    let actual_hash = iroh_blobs::Hash::new(&disk_bytes).to_hex().to_string();
+    if actual_hash != expected_hash {
+        let _ = state.db.set_setting("update_pending", "false");
+        let _ = std::fs::remove_file(&canonical_installer);
+        return Err("Security verification failed: staged installer binary checksum does not match expected release digest!".to_string());
     }
 
     let _ = state.db.set_setting("update_pending", "false");
-    tracing::info!(path = %installer_path.display(), "Launching installer and restarting application");
+    tracing::info!(path = %canonical_installer.display(), "Launching installer and restarting application");
 
     #[cfg(target_os = "windows")]
     {

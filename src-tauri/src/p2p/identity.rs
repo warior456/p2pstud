@@ -29,19 +29,29 @@ pub fn load_or_create_secret_key(data_dir: &Path) -> Result<SecretKey> {
 
         // Write atomically via a temp file, then rename.
         let tmp = key_path.with_extension("tmp");
-        std::fs::write(&tmp, bytes)
-            .with_context(|| format!("writing secret key to {}", tmp.display()))?;
 
-        // Set owner-only permissions before the final rename.
         #[cfg(unix)]
         {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))
-                .context("setting secret key permissions to 0o600")?;
+            use std::io::Write;
+            use std::os::unix::fs::OpenOptionsExt;
+            let mut file = std::fs::OpenOptions::new()
+                .create(true)
+                .truncate(true)
+                .write(true)
+                .mode(0o600)
+                .open(&tmp)
+                .with_context(|| format!("creating secure key file at {}", tmp.display()))?;
+            file.write_all(&bytes)
+                .with_context(|| format!("writing secret key to {}", tmp.display()))?;
         }
 
-        #[cfg(windows)]
-        restrict_file_to_current_user(&tmp)?;
+        #[cfg(not(unix))]
+        {
+            std::fs::write(&tmp, bytes)
+                .with_context(|| format!("writing secret key to {}", tmp.display()))?;
+            #[cfg(windows)]
+            restrict_file_to_current_user(&tmp)?;
+        }
 
         std::fs::rename(&tmp, &key_path)
             .with_context(|| format!("renaming temp key to {}", key_path.display()))?;

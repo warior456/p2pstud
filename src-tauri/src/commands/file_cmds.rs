@@ -150,11 +150,11 @@ pub async fn read_file_bytes(
                     if owner != &my_node_id {
                         if let Ok(owner_id) = owner.parse::<iroh::EndpointId>() {
                             let downloader = engine.store.downloader(&engine.endpoint);
-                            if downloader.download(parsed_hash, vec![owner_id]).await.is_ok() {
-                                if engine.store.blobs().get_bytes(parsed_hash).await.is_ok() {
-                                    download_ok = true;
-                                    successful_seeder_id = Some(owner.clone());
-                                }
+                            if downloader.download(parsed_hash, vec![owner_id]).await.is_ok()
+                                && engine.store.blobs().get_bytes(parsed_hash).await.is_ok()
+                            {
+                                download_ok = true;
+                                successful_seeder_id = Some(owner.clone());
                             }
                         }
                     }
@@ -181,12 +181,12 @@ pub async fn read_file_bytes(
                 for seeder in seeders {
                     if let Ok(seeder_id) = seeder.parse::<iroh::EndpointId>() {
                         let downloader = engine.store.downloader(&engine.endpoint);
-                        if downloader.download(parsed_hash, vec![seeder_id]).await.is_ok() {
-                            if engine.store.blobs().get_bytes(parsed_hash).await.is_ok() {
-                                download_ok = true;
-                                successful_seeder_id = Some(seeder);
-                                break;
-                            }
+                        if downloader.download(parsed_hash, vec![seeder_id]).await.is_ok()
+                            && engine.store.blobs().get_bytes(parsed_hash).await.is_ok()
+                        {
+                            download_ok = true;
+                            successful_seeder_id = Some(seeder);
+                            break;
                         }
                     }
                 }
@@ -788,13 +788,16 @@ pub async fn export_file(
         .await
         .map_err(|e| format!("blob read failed: {e}"))?;
 
-    let path_buf = std::path::PathBuf::from(&dest_path);
-    let target = if path_buf.is_absolute() {
-        path_buf
-    } else {
-        let file_name = path_buf.file_name().ok_or("Invalid destination filename")?;
-        app.path().download_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")).join(file_name)
-    };
+    let downloads = app
+        .path()
+        .download_dir()
+        .unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let filename = std::path::Path::new(&dest_path)
+        .file_name()
+        .ok_or_else(|| "Invalid destination filename".to_string())?
+        .to_string_lossy();
+    let target = crate::storage::path_utils::safe_join_new(&downloads, &filename)
+        .map_err(|e| format!("Export destination outside authorized downloads directory: {e}"))?;
 
     if let Some(parent) = target.parent() {
         let _ = std::fs::create_dir_all(parent);
@@ -879,8 +882,6 @@ async fn import_zip_archive_internal<R: std::io::Read + std::io::Seek>(
     state: &AppState,
     app: Option<&AppHandle>,
 ) -> Result<ZipImportSummary, String> {
-    use std::io::Read;
-
     let guard = state.engine.read().await;
     let engine = guard.as_ref().ok_or("Iroh engine not yet started")?;
     let owner_node_id = engine.node_id().to_string();
@@ -903,12 +904,19 @@ async fn import_zip_archive_internal<R: std::io::Read + std::io::Seek>(
         None => None,
     };
 
+    const MAX_ZIP_ENTRY_SIZE: u64 = 500 * 1024 * 1024; // 500 MB limit per entry
+    const MAX_TOTAL_UNCOMPRESSED: u64 = 5 * 1024 * 1024 * 1024; // 5 GB total limit
+
     let total_entries = archive.len();
     let mut total_uncompressed_bytes: u64 = 0;
     for idx in 0..total_entries {
         if let Ok(entry) = archive.by_index(idx) {
             if !entry.is_dir() {
                 total_uncompressed_bytes += entry.size();
+                if entry.size() > MAX_ZIP_ENTRY_SIZE || total_uncompressed_bytes > MAX_TOTAL_UNCOMPRESSED {
+                    summary.errors.push("ZIP archive exceeds safe decompression limit (zip bomb protection)".to_string());
+                    return Ok(summary);
+                }
             }
         }
     }
@@ -999,8 +1007,10 @@ async fn import_zip_archive_internal<R: std::io::Read + std::io::Seek>(
             let _ = crate::storage::blob_tracker::create_virtual_folder(&state.db, parent);
         }
 
-        let mut file_bytes = Vec::new();
-        if let Err(e) = file.read_to_end(&mut file_bytes) {
+        // Bounded read using std::io::Read::take to defend against deceptive uncompressed headers
+        use std::io::Read;
+        let mut file_bytes = Vec::with_capacity((file.size().min(16 * 1024 * 1024)) as usize);
+        if let Err(e) = (&mut file).take(MAX_ZIP_ENTRY_SIZE).read_to_end(&mut file_bytes) {
             summary.errors.push(format!("Failed reading bytes for entry '{sanitized_path}': {e}"));
             continue;
         }
@@ -1378,7 +1388,7 @@ pub async fn batch_move_files(
     for hash in hashes {
         if let Ok(Some(blob)) = get_blob(&state.db, &hash) {
             let old_name = blob.name.unwrap_or_else(|| hash.clone());
-            let basename = old_name.split('/').last().unwrap_or(&old_name);
+            let basename = old_name.split('/').next_back().unwrap_or(&old_name);
             let new_path = if clean_target.is_empty() {
                 basename.to_string()
             } else {

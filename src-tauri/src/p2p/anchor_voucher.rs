@@ -90,11 +90,13 @@ impl AnchorVoucher {
             bail!("Invalid signature length: expected 128 hex chars");
         }
 
-        let mut sig_bytes = [0u8; 64];
-        for i in 0..64 {
-            sig_bytes[i] = u8::from_str_radix(&self.signature[i * 2..i * 2 + 2], 16)
-                .map_err(|e| anyhow::anyhow!("Invalid hex signature byte: {e}"))?;
+        let decoded = hex::decode(&self.signature)
+            .map_err(|e| anyhow::anyhow!("Invalid hex signature: {e}"))?;
+        if decoded.len() != 64 {
+            bail!("Invalid signature byte length: expected 64 bytes");
         }
+        let mut sig_bytes = [0u8; 64];
+        sig_bytes.copy_from_slice(&decoded);
 
         let signature = Signature::from_bytes(&sig_bytes);
 

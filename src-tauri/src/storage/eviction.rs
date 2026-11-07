@@ -34,14 +34,26 @@ pub fn select_eviction_candidates(
     local_node_id: Option<&str>,
     now: i64,
 ) -> Result<Vec<BlobRecord>> {
+    select_eviction_candidates_ext(db, local_node_id, now, false)
+}
+
+/// Select and sort eviction candidates with optional dwell time guard relaxation for emergency eviction.
+pub fn select_eviction_candidates_ext(
+    db: &Database,
+    local_node_id: Option<&str>,
+    now: i64,
+    relax_dwell: bool,
+) -> Result<Vec<BlobRecord>> {
     let unpinned = oldest_unpinned(db, 200)?;
     let mut eligible = Vec::new();
 
     for blob in unpinned {
         // Rule 1: Dwell time guard (24 hours = 86400 seconds)
-        let written = blob.written_at.unwrap_or(blob.last_accessed_at);
-        if now.saturating_sub(written) < 86400 {
-            continue;
+        if !relax_dwell {
+            let written = blob.written_at.unwrap_or(blob.last_accessed_at);
+            if now.saturating_sub(written) < 86400 {
+                continue;
+            }
         }
 
         // Rule 2: Sole-seed hard block (remote seeds must be >= 1)
@@ -115,14 +127,21 @@ pub async fn run_eviction_pass(db: &Arc<Database>, engine: &IrohEngine) -> Resul
         .unwrap()
         .as_secs() as i64;
     let my_node_id = engine.node_id().to_string();
+    let emergency_mark = (quota as f64 * 0.98) as u64;
 
     while used > low_mark {
-        let candidates = select_eviction_candidates(db, Some(&my_node_id), now)?;
+        let relax_dwell = used >= emergency_mark;
+        let mut candidates = select_eviction_candidates_ext(db, Some(&my_node_id), now, relax_dwell)?;
+        if candidates.is_empty() && !relax_dwell {
+            // Emergency fallback: relax dwell guard if normal candidates are exhausted
+            candidates = select_eviction_candidates_ext(db, Some(&my_node_id), now, true)?;
+        }
         if candidates.is_empty() {
             tracing::warn!("No eligible unpinned blobs left to evict (protected by dwell guard or sole-seed) but still above low watermark");
             break;
         }
 
+        let mut progress = false;
         for blob in candidates {
             if used <= low_mark {
                 break;
@@ -133,6 +152,7 @@ pub async fn run_eviction_pass(db: &Arc<Database>, engine: &IrohEngine) -> Resul
             let Ok(_hash) = hash_str.parse::<iroh_blobs::Hash>() else {
                 tracing::warn!(hash = %hash_str, "invalid hash in DB, skipping eviction of this entry");
                 delete_blob(db, hash_str)?;
+                progress = true;
                 continue;
             };
 
@@ -146,11 +166,15 @@ pub async fn run_eviction_pass(db: &Arc<Database>, engine: &IrohEngine) -> Resul
             delete_blob(db, hash_str)?;
             used = used.saturating_sub(blob.size_bytes);
             deleted += 1;
+            progress = true;
 
             tracing::debug!(hash = %hash_str, size = blob.size_bytes, "Evicted blob");
         }
-        // If we processed all candidates and couldn't evict enough, break to avoid infinite loop
-        break;
+
+        // Break if no forward progress was made in this pass to prevent infinite looping
+        if !progress {
+            break;
+        }
     }
 
     tracing::info!(deleted, remaining_bytes = used, "Eviction pass complete");

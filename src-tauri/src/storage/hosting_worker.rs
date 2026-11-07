@@ -138,11 +138,11 @@ pub async fn run_hosting_fill_pass(
         for seeder in candidate_seeders {
             if let Ok(seeder_id) = seeder.parse::<iroh::EndpointId>() {
                 let downloader = engine.store.downloader(&engine.endpoint);
-                if downloader.download(parsed_hash, vec![seeder_id]).await.is_ok() {
-                    if is_blob_cached(&engine.store, &parsed_hash).await {
-                        success = true;
-                        break;
-                    }
+                if downloader.download(parsed_hash, vec![seeder_id]).await.is_ok()
+                    && is_blob_cached(&engine.store, &parsed_hash).await
+                {
+                    success = true;
+                    break;
                 }
             }
         }

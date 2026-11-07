@@ -74,12 +74,30 @@ pub async fn run_connection_doctor(
     results.push(mdns_res);
 
     // 2. Test QUIC UDP
-    // Use standard DNS port 53 (1.1.1.1:53) to verify outbound UDP reachability.
-    // Safe and standard: avoids triggering intrusion detection systems / trojan signatures (e.g. port 12345 NetBus).
-    let quic_udp_ok = match tokio::time::timeout(Duration::from_millis(1500), tokio::net::UdpSocket::bind("0.0.0.0:0")).await {
-        Ok(Ok(sock)) => sock.connect("1.1.1.1:53").await.is_ok(),
-        _ => false,
-    };
+    // Transmit a standard minimal DNS query probe to 1.1.1.1:53 and wait for response
+    // to verify genuine outbound and inbound UDP packet transmission.
+    let quic_udp_ok = async {
+        let sock = tokio::net::UdpSocket::bind("0.0.0.0:0").await.ok()?;
+        sock.connect("1.1.1.1:53").await.ok()?;
+        let query = [
+            0x12, 0x34, // Query ID
+            0x01, 0x00, // Standard query
+            0x00, 0x01, // 1 question
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00,       // Root label "."
+            0x00, 0x01, // Type A
+            0x00, 0x01, // Class IN
+        ];
+        sock.send(&query).await.ok()?;
+        let mut buf = [0u8; 64];
+        let res = tokio::time::timeout(Duration::from_millis(1500), sock.recv(&mut buf)).await;
+        match res {
+            Ok(Ok(n)) if n > 0 => Some(true),
+            _ => None,
+        }
+    }
+    .await
+    .unwrap_or(false);
 
     let quic_res = DoctorTestResult {
         test: "quic_udp".to_string(),

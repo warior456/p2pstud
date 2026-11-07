@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::Result;
-use iroh::{Endpoint, EndpointAddr, EndpointId};
+use iroh::{Endpoint, EndpointAddr, EndpointId, SecretKey};
 use serde::{Deserialize, Serialize};
 
 use crate::p2p::sync::sync_catalog_with_peer;
@@ -20,6 +20,75 @@ pub struct RendezvousAnnouncement {
     pub node_id: String,
     pub ticket: String,
     pub timestamp: u64,
+    #[serde(default)]
+    pub signature: String,
+}
+
+impl RendezvousAnnouncement {
+    /// Create and cryptographically sign a rendezvous announcement.
+    pub fn sign(node_id: String, ticket: String, timestamp: u64, secret_key: &SecretKey) -> Self {
+        let payload = format!("{node_id}:{ticket}:{timestamp}");
+        let sig = secret_key.sign(payload.as_bytes());
+        let signature = hex::encode(sig.to_bytes());
+        Self {
+            node_id,
+            ticket,
+            timestamp,
+            signature,
+        }
+    }
+
+    /// Verify the Ed25519 signature of the announcing node (VULN-04).
+    pub fn verify(&self) -> bool {
+        let Ok(pk) = self.node_id.parse::<iroh::PublicKey>() else { return false };
+        let payload = format!("{}:{}:{}", self.node_id, self.ticket, self.timestamp);
+        let Ok(sig_bytes) = hex::decode(&self.signature) else { return false };
+        if sig_bytes.len() != 64 { return false; }
+        let mut arr = [0u8; 64];
+        arr.copy_from_slice(&sig_bytes);
+        let sig = iroh::Signature::from_bytes(&arr);
+        pk.verify(payload.as_bytes(), &sig).is_ok()
+    }
+}
+
+/// Obfuscate ticket payload using a stream derived from the network secret (VULN-09)
+pub fn obfuscate_ticket(ticket: &str, secret: &str) -> String {
+    let clean = secret.trim();
+    let key_phrase = if clean.is_empty() {
+        "p2pstud-open-ticket-v1".to_string()
+    } else {
+        format!("p2pstud-envelope-v1:{clean}")
+    };
+    let key = iroh_blobs::Hash::new(key_phrase.as_bytes());
+    let key_bytes = key.as_bytes();
+
+    let bytes = ticket.as_bytes();
+    let masked: Vec<u8> = bytes
+        .iter()
+        .enumerate()
+        .map(|(i, &b)| b ^ key_bytes[i % key_bytes.len()])
+        .collect();
+    hex::encode(masked)
+}
+
+/// Deobfuscate ticket payload
+pub fn deobfuscate_ticket(hex_str: &str, secret: &str) -> Option<String> {
+    let Ok(masked) = hex::decode(hex_str) else { return None };
+    let clean = secret.trim();
+    let key_phrase = if clean.is_empty() {
+        "p2pstud-open-ticket-v1".to_string()
+    } else {
+        format!("p2pstud-envelope-v1:{clean}")
+    };
+    let key = iroh_blobs::Hash::new(key_phrase.as_bytes());
+    let key_bytes = key.as_bytes();
+
+    let bytes: Vec<u8> = masked
+        .iter()
+        .enumerate()
+        .map(|(i, &b)| b ^ key_bytes[i % key_bytes.len()])
+        .collect();
+    String::from_utf8(bytes).ok()
 }
 
 /// Derive a deterministic, opaque rendezvous topic string from the swarm passphrase.
@@ -65,6 +134,7 @@ pub fn get_active_peer_count(db: &Database, our_node_id: &str) -> usize {
 /// and relaxed (every 60s) once other swarm nodes are discovered.
 pub fn start_swarm_rendezvous(
     endpoint: Endpoint,
+    secret_key: SecretKey,
     db: Arc<Database>,
     store: iroh_blobs::store::fs::FsStore,
 ) {
@@ -91,7 +161,7 @@ pub fn start_swarm_rendezvous(
                 Duration::from_secs(60)
             };
 
-            if let Err(e) = run_rendezvous_cycle(&client, &endpoint, &db, &store).await {
+            if let Err(e) = run_rendezvous_cycle(&client, &endpoint, &secret_key, &db, &store).await {
                 tracing::debug!("Swarm rendezvous cycle notice: {e}");
             }
 
@@ -104,6 +174,7 @@ pub fn start_swarm_rendezvous(
 pub async fn run_rendezvous_cycle(
     client: &reqwest::Client,
     endpoint: &Endpoint,
+    secret_key: &SecretKey,
     db: &Arc<Database>,
     store: &iroh_blobs::store::fs::FsStore,
 ) -> Result<()> {
@@ -124,20 +195,17 @@ pub async fn run_rendezvous_cycle(
         .unwrap_or_default();
     let topic = derive_rendezvous_topic(&secret);
 
-    // 3. Prepare our announcement
+    // 3. Prepare our signed & ticket-obfuscated announcement (VULN-04 & VULN-09)
     let our_node_id = endpoint.id().to_string();
     let our_addr = endpoint.addr();
     let our_ticket = iroh_tickets::endpoint::EndpointTicket::new(our_addr).to_string();
+    let masked_ticket = obfuscate_ticket(&our_ticket, &secret);
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
 
-    let announcement = RendezvousAnnouncement {
-        node_id: our_node_id.clone(),
-        ticket: our_ticket,
-        timestamp: now,
-    };
+    let announcement = RendezvousAnnouncement::sign(our_node_id.clone(), masked_ticket, now, secret_key);
 
     let payload = serde_json::to_string(&announcement)?;
 
@@ -158,7 +226,13 @@ pub async fn run_rendezvous_cycle(
     };
 
     let text = resp.text().await.unwrap_or_default();
+    let mut dials_attempted = 0usize;
+    const MAX_DIALS_PER_CYCLE: usize = 6; // Rate limiter prevents dial storms (VULN-04)
+
     for line in text.lines() {
+        if dials_attempted >= MAX_DIALS_PER_CYCLE {
+            break;
+        }
         let line = line.trim();
         if line.is_empty() {
             continue;
@@ -172,7 +246,18 @@ pub async fn run_rendezvous_cycle(
             if let Some(msg_str) = val.get("message").and_then(|v| v.as_str()) {
                 if let Ok(peer) = serde_json::from_str::<RendezvousAnnouncement>(msg_str) {
                     if peer.node_id != our_node_id && peer.timestamp + 300 >= now {
-                        connect_and_sync_discovered_peer(endpoint, db, store, &peer.ticket, &peer.node_id).await;
+                        // VULN-04: Cryptographic verification of announcement signature
+                        if !peer.verify() {
+                            tracing::warn!(peer = %peer.node_id, "Rejected rendezvous announcement with invalid signature");
+                            continue;
+                        }
+
+                        // VULN-09: Deobfuscate ticket using network secret
+                        let ticket_str = deobfuscate_ticket(&peer.ticket, &secret)
+                            .unwrap_or(peer.ticket);
+
+                        connect_and_sync_discovered_peer(endpoint, db, store, &ticket_str, &peer.node_id).await;
+                        dials_attempted += 1;
                     }
                 }
             }
@@ -231,14 +316,29 @@ mod tests {
 
     #[test]
     fn test_announcement_serialization() {
-        let ann = RendezvousAnnouncement {
-            node_id: "testnode123".to_string(),
-            ticket: "nodeticketxyz".to_string(),
-            timestamp: 1793929935,
-        };
+        let key = SecretKey::generate();
+        let ann = RendezvousAnnouncement::sign(
+            key.public().to_string(),
+            "nodeticketxyz".to_string(),
+            1793929935,
+            &key,
+        );
+        assert!(ann.verify());
 
         let json = serde_json::to_string(&ann).expect("must serialize");
         let parsed: RendezvousAnnouncement = serde_json::from_str(&json).expect("must deserialize");
         assert_eq!(ann, parsed);
+        assert!(parsed.verify());
+    }
+
+    #[test]
+    fn test_ticket_obfuscation_roundtrip() {
+        let secret = "my-secret-passphrase";
+        let original_ticket = "endpoint-ticket-content-12345";
+        let masked = obfuscate_ticket(original_ticket, secret);
+        assert_ne!(masked, original_ticket);
+
+        let restored = deobfuscate_ticket(&masked, secret).expect("must restore");
+        assert_eq!(restored, original_ticket);
     }
 }

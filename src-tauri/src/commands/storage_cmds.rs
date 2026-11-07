@@ -223,6 +223,15 @@ pub async fn set_network_secret(
 ) -> Result<(), String> {
     let trimmed = secret.trim();
     state.db.switch_network(trimmed).map_err(|e| e.to_string())?;
+
+    // Update running IrohEngine with newly derived ALPN and router handler
+    {
+        let mut guard = state.engine.write().await;
+        if let Some(engine) = guard.as_mut() {
+            engine.update_network_alpn(state.db.clone());
+        }
+    }
+
     let _ = app.emit("network-database-switched", trimmed);
     tracing::info!(trimmed, "Switched network secret and isolated database");
     Ok(())
@@ -453,13 +462,14 @@ pub async fn get_connection_status(state: State<'_, AppState>) -> Result<Connect
     let relay_connected = if iroh_relay_connected {
         true
     } else {
-        match tokio::time::timeout(
-            std::time::Duration::from_millis(1500),
-            tokio::net::TcpStream::connect("euw1-1.relay.iroh.network:443"),
-        ).await {
-            Ok(Ok(_)) => true,
-            _ => false,
-        }
+        matches!(
+            tokio::time::timeout(
+                std::time::Duration::from_millis(1500),
+                tokio::net::TcpStream::connect("euw1-1.relay.iroh.network:443"),
+            )
+            .await,
+            Ok(Ok(_))
+        )
     };
 
     let is_online = relay_connected || peer_count > 0;
@@ -506,6 +516,15 @@ pub async fn switch_network_database(
 ) -> Result<(), String> {
     let trimmed = secret.trim();
     state.db.switch_network(trimmed).map_err(|e| e.to_string())?;
+
+    // Update running IrohEngine with newly derived ALPN and router handler
+    {
+        let mut guard = state.engine.write().await;
+        if let Some(engine) = guard.as_mut() {
+            engine.update_network_alpn(state.db.clone());
+        }
+    }
+
     let _ = app.emit("network-database-switched", trimmed);
     tracing::info!(trimmed, "Switched network database");
     Ok(())

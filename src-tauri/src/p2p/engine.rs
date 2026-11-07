@@ -27,10 +27,21 @@ pub struct IrohEngine {
     pub blobs: Arc<BlobsProtocol>,
     pub store: BlobStore,
     pub sync_alpn: Vec<u8>,
+    pub secret_key: SecretKey,
     _router: Arc<Router>,
 }
 
 impl IrohEngine {
+    /// Update the active sync ALPN and re-spawn the protocol router when switching swarm networks.
+    pub fn update_network_alpn(&mut self, db: Arc<Database>) {
+        let new_alpn = get_sync_alpn(&db);
+        self.sync_alpn = new_alpn.clone();
+        let sync_handler = Arc::new(CatalogSyncHandler::new(db, Some(self.store.clone())));
+        let router = Router::builder(self.endpoint.clone())
+            .accept(iroh_blobs::ALPN, (*self.blobs).clone())
+            .accept(new_alpn, sync_handler);
+        self._router = Arc::new(router.spawn());
+    }
     /// Load or rebuild the local redb BlobStore safely once.
     pub async fn load_store(blob_dir: &Path) -> Result<BlobStore> {
         std::fs::create_dir_all(blob_dir)?;
@@ -94,7 +105,7 @@ impl IrohEngine {
                     Err(e2) => {
                         tracing::warn!("Failed to bind with default relay: {}. Falling back to local-only RelayMode::Disabled...", e2);
                         Endpoint::builder(presets::N0)
-                            .secret_key(secret_key)
+                            .secret_key(secret_key.clone())
                             .relay_mode(iroh::RelayMode::Disabled)
                             .portmapper_config(iroh::endpoint::PortmapperConfig::Disabled)
                             .bind()
@@ -141,13 +152,14 @@ impl IrohEngine {
         });
 
         // 5. Start automated HTTPS Swarm Rendezvous discovery
-        crate::p2p::rendezvous::start_swarm_rendezvous(endpoint.clone(), db.clone(), store.clone());
+        crate::p2p::rendezvous::start_swarm_rendezvous(endpoint.clone(), secret_key.clone(), db.clone(), store.clone());
 
         Ok(IrohEngine {
             endpoint,
             blobs,
             store,
             sync_alpn,
+            secret_key,
             _router: Arc::new(running_router),
         })
     }
