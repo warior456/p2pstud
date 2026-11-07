@@ -313,18 +313,32 @@
 
 ---
 
-## Issues & Resolutions (Version 0.1.26)
+## Issues & Resolutions (Version 0.1.27)
 
-### 1. Specification & Architectural Alignment (EGM Resolution)
-- **Issue:** Comprehensive specification drift audit identified discrepancies across documentation files:
-  - `docs/KULEUVEN_AUTH_SPEC.md` lacked documented architecture for zero-domain outbound delivery and low-spec VPS RAM constraints.
-  - `README.md` and `AGENTS.md` contained legacy references to Svelte and outdated Docker filenames.
-  - `SECURITY_AUDIT_REPORT.md` lacked clear post-remediation checklist status.
+### 1. Anchor Connection Discoverability in Network Settings
+- **Issue:** Users running a headless anchor node had no clear guidance on where to add the anchor in the UI, and were unsure whether an anchor was different from a peer.
+- **Root Cause:**
+  - `NetworkSettings.tsx` only labeled the connection form as "Connect to Remote Peer" and "Add Peer to Swarm", without mentioning anchor nodes or explaining that the connected peer is persistently stored in SQLite as `bootstrap_peer`.
 - **Fix:**
-  - `docs/KULEUVEN_AUTH_SPEC.md`: Codified the permanent zero-domain constraint (outbound Gmail SMTP with App Password) and lightweight in-memory OTP engine (< 10 MB RAM, 0 extra daemons), and clarified anchor node Ed25519 cryptographic key pinning.
-  - `AGENTS.md`: Consolidated Dockerfile build instructions to use `docker/Dockerfile` and `docker/docker-compose.yml`.
-  - `SECURITY_AUDIT_REPORT.md`: Updated automated verification checklist to display clean baseline vs. post-remediation results.
-  - Incremented version to `0.1.26` across `package.json`, `src-tauri/Cargo.toml`, and `src-tauri/tauri.conf.json`.
+  - `src/components/Settings/NetworkSettings.tsx`: Updated card header to "Connect Remote Peer / Anchor Node", updated helper copy to explain automatic `bootstrap_peer` persistence, updated placeholder to include `node_id@ip:port`, and changed button text to "Add Peer / Anchor to Swarm".
+  - Incremented version to `0.1.27`.
+
+---
+
+## Issues & Resolutions (Version 0.1.28)
+
+### 1. Zero-Domain Light VPS Anchor Defaults
+- **Issue:** Headless anchor node container and service configurations defaulted to requiring domain TLS certificates (`/etc/letsencrypt/live/...`), causing deployments on cheap/bare-IP VPS instances to fail on startup.
+- **Root Cause:**
+  - `docker/Dockerfile` had `CMD` pointing to `--relay-port 443`.
+  - `docker-compose.yml` and `docker/p2pstud-anchor.service` had hardcoded domain and cert directory parameters.
+- **Fix:**
+  - `docker/Dockerfile`: Defaulted `CMD` to `["--data-dir", "/var/lib/p2pstud", "--no-relay"]`.
+  - `docker/docker-compose.yml`: Defaulted `command` to `--data-dir /var/lib/p2pstud --no-relay` with public Iroh EU relay fallback (< 40 MB RAM, 0 domain/cert requirements).
+  - `docker/p2pstud-anchor.service`: Updated service definition to run storage-only anchor by default.
+  - `README.md` & `docker/.env.example`: Documented zero-domain light VPS setup vs. optional custom domain relay mode.
+  - Incremented version to `0.1.28`.
+
 
 
 
