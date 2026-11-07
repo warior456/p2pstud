@@ -114,7 +114,7 @@ pub async fn run_connection_doctor(
     // 3. Test Relay over port 443 (TCP)
     let relay_url = crate::p2p::relay::EU_RELAY_URL;
     let relay_tcp_ok = {
-        let addr_str = "euw1-1.relay.iroh.network:443";
+        let addr_str = "euc1-1.relay.n0.iroh.link:443";
         match tokio::time::timeout(Duration::from_millis(2500), tokio::net::TcpStream::connect(addr_str)).await {
             Ok(Ok(_stream)) => true,
             _ => {

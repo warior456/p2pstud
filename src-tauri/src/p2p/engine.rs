@@ -36,7 +36,7 @@ impl IrohEngine {
     pub fn update_network_alpn(&mut self, db: Arc<Database>) {
         let new_alpn = get_sync_alpn(&db);
         self.sync_alpn = new_alpn.clone();
-        let sync_handler = Arc::new(CatalogSyncHandler::new(db, Some(self.store.clone())));
+        let sync_handler = Arc::new(CatalogSyncHandler::new(db, Some(self.store.clone()), self.node_id().to_string()));
         let router = Router::builder(self.endpoint.clone())
             .accept(iroh_blobs::ALPN, (*self.blobs).clone())
             .accept(new_alpn, sync_handler);
@@ -84,9 +84,12 @@ impl IrohEngine {
         // 3. Build QUIC endpoint with relay fallback and presets.
         // Disable portmapper (UPnP / NAT-PMP) by default to prevent triggering campus IDS/firewall
         // alerts (such as unauthorized UPnP port forwards classified as BitTorrent distribution).
+        // Configure AddrFilter::unfiltered() so both local socket addrs and relay addresses are
+        // published to DNS/pkarr, enabling immediate zero-configuration discovery on LAN and WAN.
         let endpoint = match Endpoint::builder(presets::N0)
             .secret_key(secret_key.clone())
             .relay_mode(relay_mode)
+            .addr_filter(iroh::endpoint_info::AddrFilter::unfiltered())
             .portmapper_config(iroh::endpoint::PortmapperConfig::Disabled)
             .bind()
             .await
@@ -97,6 +100,7 @@ impl IrohEngine {
                 match Endpoint::builder(presets::N0)
                     .secret_key(secret_key.clone())
                     .relay_mode(iroh::RelayMode::Default)
+                    .addr_filter(iroh::endpoint_info::AddrFilter::unfiltered())
                     .portmapper_config(iroh::endpoint::PortmapperConfig::Disabled)
                     .bind()
                     .await
@@ -107,6 +111,7 @@ impl IrohEngine {
                         Endpoint::builder(presets::N0)
                             .secret_key(secret_key.clone())
                             .relay_mode(iroh::RelayMode::Disabled)
+                            .addr_filter(iroh::endpoint_info::AddrFilter::unfiltered())
                             .portmapper_config(iroh::endpoint::PortmapperConfig::Disabled)
                             .bind()
                             .await?
@@ -117,7 +122,7 @@ impl IrohEngine {
 
         let sync_alpn = get_sync_alpn(&db);
         let blobs = Arc::new(BlobsProtocol::new(&store, None));
-        let sync_handler = Arc::new(CatalogSyncHandler::new(db.clone(), Some(store.clone())));
+        let sync_handler = Arc::new(CatalogSyncHandler::new(db.clone(), Some(store.clone()), node_id.to_string()));
         let router = Router::builder(endpoint.clone())
             .accept(iroh_blobs::ALPN, (*blobs).clone())
             .accept(sync_alpn.clone(), sync_handler);
@@ -137,15 +142,25 @@ impl IrohEngine {
                 if let Ok(Some(bootstrap)) = bg_db.get_setting("bootstrap_peer") {
                     let trimmed = bootstrap.trim();
                     if !trimmed.is_empty() {
-                        if let Ok(ticket) = trimmed.parse::<iroh_tickets::endpoint::EndpointTicket>() {
-                            let addr = EndpointAddr::from(ticket);
-                            let _ = bg_endpoint.connect(addr.clone(), iroh_blobs::ALPN).await;
-                            let _ = sync_catalog_with_peer(&bg_endpoint, &bg_db, Some(&bg_store), addr).await;
-                        } else if let Ok(id) = trimmed.parse::<EndpointId>() {
-                            let addr = EndpointAddr::from(id);
-                            let _ = bg_endpoint.connect(addr.clone(), iroh_blobs::ALPN).await;
+                        if let Ok(mut addr) = crate::commands::peer_cmds::parse_peer_address(trimmed, None) {
+                            if addr.relay_urls().next().is_none() {
+                                for relay in bg_endpoint.addr().relay_urls() {
+                                    addr = addr.with_relay_url(relay.clone());
+                                }
+                            }
                             let _ = sync_catalog_with_peer(&bg_endpoint, &bg_db, Some(&bg_store), addr).await;
                         }
+                    }
+                }
+
+                // Also maintain periodic catalog synchronization with all active peers
+                for peer_id in crate::p2p::sync::get_active_peer_ids() {
+                    if peer_id != bg_endpoint.id() {
+                        let mut addr = EndpointAddr::from(peer_id);
+                        for relay in bg_endpoint.addr().relay_urls() {
+                            addr = addr.with_relay_url(relay.clone());
+                        }
+                        let _ = sync_catalog_with_peer(&bg_endpoint, &bg_db, Some(&bg_store), addr).await;
                     }
                 }
             }
@@ -171,6 +186,6 @@ impl IrohEngine {
 
     /// Returns the number of currently connected peers.
     pub async fn peer_count(&self) -> usize {
-        1
+        crate::p2p::sync::get_active_peer_ids().len()
     }
 }

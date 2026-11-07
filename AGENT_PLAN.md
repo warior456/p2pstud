@@ -46,7 +46,7 @@ At the end of every session (or when interrupted), update the `## Progress Track
 ## Progress Tracker
 
 > **Last session:** 2026-11-07
-> **Last completed task:** Step 60 completed: Successfully compiled optimized release binary and packaged NSIS desktop installer bundle `p2pstud_0.1.29_x64-setup.exe` (13.82 MiB) with upgraded `zip 9.4.1`, live update download progress bar, staged installer launcher, and safe window close intercept.
+> **Last completed task:** Step 61 completed: Automated swarm discovery and peer connectivity fix (v0.1.30): migrated obsolete relay endpoint to official Iroh 1.4 Western Europe relay (`https://euc1-1.relay.n0.iroh.link/`), enabled unfiltered address filter for direct LAN/pkarr lookup, converted single bi-stream catalog sync loop to multiplexed listener, fixed announce node id reflection bug, unified file_seeds + peer_versions + active in-memory connections for peer counts and listing, augmented bare NodeId dials with relay URL, and updated port 443 probes.
 > **Next action:** Production release distribution and testing.
 
 | # | Step | Status | Notes |
@@ -111,6 +111,7 @@ At the end of every session (or when interrupted), update the `## Progress Track
 | 58 | Windows Release NSIS Installer Packaging (v0.1.28) | ✅ | Successfully compiled release binary and packaged NSIS desktop installer bundle (`p2pstud_0.1.28_x64-setup.exe`, 13.82 MiB) with all 37 Vitest tests passing. |
 | 59 | Dependabot Alert Fix (zip 9.4.1), Lockfile Sync & Live Updater Progress (v0.1.29) | ✅ | Upgraded `zip` crate to `9.4.1`, synced root and `src-tauri` Cargo.lock, deduplicated `dependabot.yml` cargo config, added live update download progress streaming and foreground setup launcher, prevented abrupt window close in `lib.rs`, and bumped version to 0.1.29. |
 | 60 | Windows Release NSIS Installer Packaging (v0.1.29) | ✅ | Successfully compiled optimized release binary and packaged NSIS desktop installer bundle (`p2pstud_0.1.29_x64-setup.exe`, 13.82 MiB) with all 37 Vitest tests passing. |
+| 61 | Automated Swarm Discovery, Relay Modernization & Peer Visibility (v0.1.30) | ✅ | Fixed dead Iroh 0.x relay domain to `euc1-1.relay.n0.iroh.link`, enabled `AddrFilter::unfiltered()` for local/direct IP dialing, converted `CatalogSyncHandler` to multiplexed accept bi-stream loop, resolved announce reflection bug, included non-seeding peers in peer counts/listing via `peer_versions` and in-memory active endpoints, augmented bare NodeId connects with active relay, updated DB migration 0016, and passed all integration and unit tests. |
 
 ---
 

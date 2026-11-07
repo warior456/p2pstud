@@ -41,7 +41,7 @@ export function NetworkSettings() {
   const [nodeId, setNodeId] = useState<string>('');
   const [nodeTicket, setNodeTicket] = useState<string>('');
   const [nodeAddr, setNodeAddr] = useState<string>('');
-  const [relayUrl, setRelayUrl] = useState<string>('https://euw1-1.relay.iroh.network/');
+  const [relayUrl, setRelayUrl] = useState<string>('https://euc1-1.relay.n0.iroh.link/');
   const [peerInput, setPeerInput] = useState<string>('');
   const [peerRelayInput, setPeerRelayInput] = useState<string>('');
   const [networkSecret, setNetworkSecret] = useState<string>('');
@@ -915,7 +915,7 @@ export function NetworkSettings() {
         <div className="space-y-2">
           <div className="flex items-center gap-2">
             <span className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-blue-50 text-blue-700 text-xs font-semibold rounded-lg border border-blue-200">
-              🇪🇺 Western Europe (EU) Active: <code className="font-mono">https://euw1-1.relay.iroh.network/</code>
+              🇪🇺 Western Europe (EU) Active: <code className="font-mono">https://euc1-1.relay.n0.iroh.link/</code>
             </span>
           </div>
           <p className="text-[11px] text-gray-500 leading-relaxed">
@@ -930,7 +930,7 @@ export function NetworkSettings() {
               type="text"
               value={relayUrl}
               onChange={(e) => setRelayUrl(e.target.value)}
-              placeholder="https://euw1-1.relay.iroh.network/"
+              placeholder="https://euc1-1.relay.n0.iroh.link/"
               className="w-full mt-1 text-xs font-mono bg-gray-50 border border-gray-200 rounded-lg px-3 py-2 focus:bg-white focus:border-blue-500 focus:outline-none transition-all"
             />
           </div>
@@ -938,7 +938,7 @@ export function NetworkSettings() {
           <div className="flex items-center gap-2">
             <button
               type="button"
-              onClick={() => setPresetRelay('https://euw1-1.relay.iroh.network/')}
+              onClick={() => setPresetRelay('https://euc1-1.relay.n0.iroh.link/')}
               className="px-3 py-1.5 bg-gray-100 hover:bg-gray-200 text-gray-700 text-xs font-medium rounded-lg transition cursor-pointer"
             >
               Reset to Official EU Relay

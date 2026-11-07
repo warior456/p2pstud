@@ -176,11 +176,12 @@ pub fn verify_receipt_signature(
 pub struct CatalogSyncHandler {
     db: Arc<Database>,
     store: Option<iroh_blobs::store::fs::FsStore>,
+    our_node_id: String,
 }
 
 impl CatalogSyncHandler {
-    pub fn new(db: Arc<Database>, store: Option<iroh_blobs::store::fs::FsStore>) -> Self {
-        Self { db, store }
+    pub fn new(db: Arc<Database>, store: Option<iroh_blobs::store::fs::FsStore>, our_node_id: String) -> Self {
+        Self { db, store, our_node_id }
     }
 
     /// Process an incoming message and update local SQLite catalog.
@@ -546,9 +547,8 @@ impl CatalogSyncHandler {
             SyncMessage::NodeAnnounce { node_id, app_version } => {
                 let _ = crate::storage::blob_tracker::record_peer_version(&self.db, &node_id, &app_version);
                 let my_version = env!("CARGO_PKG_VERSION").to_string();
-                let my_id = sender_peer_id.unwrap_or_default();
                 Ok(Some(SyncMessage::NodeAnnounce {
-                    node_id: my_id.to_string(),
+                    node_id: self.our_node_id.clone(),
                     app_version: my_version,
                 }))
             }
@@ -566,23 +566,24 @@ impl ProtocolHandler for CatalogSyncHandler {
             let remote_id = connection.remote_id();
             register_active_peer(remote_id);
             let sender_peer = Some(remote_id.to_string());
-            let (mut send, mut recv) = connection.accept_bi().await?;
 
-            // Read incoming message with 2MB limit (plenty for thousands of catalog entries)
-            let bytes = recv
-                .read_to_end(2 * 1024 * 1024)
-                .await
-                .map_err(|e| std::io::Error::other(e.to_string()))?;
-            if let Ok(msg) = serde_json::from_slice::<SyncMessage>(&bytes) {
-                if let Ok(Some(reply)) = this.handle_message(msg, sender_peer.as_deref()).await {
-                    if let Ok(reply_bytes) = serde_json::to_vec(&reply) {
-                        send.write_all(&reply_bytes)
-                            .await
-                            .map_err(|e| std::io::Error::other(e.to_string()))?;
+            // Loop to accept all incoming bi-directional streams on this connection
+            while let Ok((mut send, mut recv)) = connection.accept_bi().await {
+                let this = this.clone();
+                let sender_peer = sender_peer.clone();
+                tokio::spawn(async move {
+                    if let Ok(bytes) = recv.read_to_end(2 * 1024 * 1024).await {
+                        if let Ok(msg) = serde_json::from_slice::<SyncMessage>(&bytes) {
+                            if let Ok(Some(reply)) = this.handle_message(msg, sender_peer.as_deref()).await {
+                                if let Ok(reply_bytes) = serde_json::to_vec(&reply) {
+                                    let _ = send.write_all(&reply_bytes).await;
+                                }
+                            }
+                        }
                     }
-                }
+                    let _ = send.finish();
+                });
             }
-            let _ = send.finish();
             Ok(())
         }
     }
@@ -598,6 +599,15 @@ pub fn register_active_peer(peer_id: iroh::EndpointId) {
     }
 }
 
+/// Retrieve all currently registered active peer endpoint IDs.
+pub fn get_active_peer_ids() -> Vec<iroh::EndpointId> {
+    if let Ok(lock) = ACTIVE_SWARM_PEERS.read() {
+        lock.clone()
+    } else {
+        Vec::new()
+    }
+}
+
 /// Perform a bi-directional catalog exchange with a remote peer.
 pub async fn sync_catalog_with_peer(
     endpoint: &Endpoint,
@@ -606,6 +616,7 @@ pub async fn sync_catalog_with_peer(
     peer_addr: EndpointAddr,
 ) -> Result<()> {
     register_active_peer(peer_addr.id);
+    let peer_id_str = peer_addr.id.to_string();
     let alpn = get_sync_alpn(db);
     let connection = endpoint.connect(peer_addr.clone(), &alpn).await?;
 
@@ -623,9 +634,15 @@ pub async fn sync_catalog_with_peer(
             if let Ok(reply) = ann_recv.read_to_end(64 * 1024).await {
                 if let Ok(SyncMessage::NodeAnnounce { node_id, app_version }) = serde_json::from_slice(&reply) {
                     let _ = crate::storage::blob_tracker::record_peer_version(db, &node_id, &app_version);
+                } else {
+                    let _ = crate::storage::blob_tracker::record_peer_version(db, &peer_id_str, "0.1.0");
                 }
+            } else {
+                let _ = crate::storage::blob_tracker::record_peer_version(db, &peer_id_str, "0.1.0");
             }
         }
+    } else {
+        let _ = crate::storage::blob_tracker::record_peer_version(db, &peer_id_str, "0.1.0");
     }
 
     let (mut send, mut recv) = connection.open_bi().await?;
@@ -787,7 +804,7 @@ mod tests {
     async fn test_offline_conflict_resolution_older_wins() {
         let dir = TempDir::new().unwrap();
         let db = Arc::new(Database::open(&dir.path().join("test.db")).unwrap());
-        let handler = CatalogSyncHandler::new(db.clone(), None);
+        let handler = CatalogSyncHandler::new(db.clone(), None, "nodeA".to_string());
 
         let local_hash = "0000000000000000000000000000000000000000000000000000000000000001";
         let incoming_hash = "0000000000000000000000000000000000000000000000000000000000000002";

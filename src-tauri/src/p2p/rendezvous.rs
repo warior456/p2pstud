@@ -120,12 +120,20 @@ pub fn get_active_peer_count(db: &Database, our_node_id: &str) -> usize {
     let conn = db.lock();
     let count: i64 = conn
         .query_row(
-            "SELECT COUNT(DISTINCT peer_node_id) FROM file_seeds WHERE peer_node_id != ?1 AND last_seen_at >= ?2",
+            "SELECT COUNT(DISTINCT peer_id) FROM (
+                SELECT peer_node_id AS peer_id, last_seen_at FROM file_seeds
+                UNION
+                SELECT node_id AS peer_id, last_seen_at FROM peer_versions
+            ) WHERE peer_id != ?1 AND last_seen_at >= ?2",
             rusqlite::params![our_node_id, cutoff],
             |r| r.get(0),
         )
         .unwrap_or(0);
-    count.max(0) as usize
+    let in_memory = crate::p2p::sync::get_active_peer_ids()
+        .iter()
+        .filter(|id| id.to_string() != our_node_id)
+        .count();
+    (count.max(0) as usize).max(in_memory)
 }
 
 /// Spawn the automated swarm rendezvous background task.
@@ -139,6 +147,9 @@ pub fn start_swarm_rendezvous(
     store: iroh_blobs::store::fs::FsStore,
 ) {
     tokio::spawn(async move {
+        // Wait briefly (up to 3s) for the endpoint to establish its home relay connection
+        let _ = tokio::time::timeout(Duration::from_secs(3), endpoint.online()).await;
+
         let client = match reqwest::Client::builder()
             .timeout(Duration::from_secs(8))
             .build()
@@ -197,7 +208,12 @@ pub async fn run_rendezvous_cycle(
 
     // 3. Prepare our signed & ticket-obfuscated announcement (VULN-04 & VULN-09)
     let our_node_id = endpoint.id().to_string();
-    let our_addr = endpoint.addr();
+    let mut our_addr = endpoint.addr();
+    if our_addr.relay_urls().next().is_none() {
+        if let Ok(relay) = crate::p2p::relay::EU_RELAY_URL.parse::<iroh::RelayUrl>() {
+            our_addr = our_addr.with_relay_url(relay);
+        }
+    }
     let our_ticket = iroh_tickets::endpoint::EndpointTicket::new(our_addr).to_string();
     let masked_ticket = obfuscate_ticket(&our_ticket, &secret);
     let now = SystemTime::now()
@@ -275,7 +291,7 @@ async fn connect_and_sync_discovered_peer(
     ticket_str: &str,
     node_id_str: &str,
 ) {
-    let addr = if let Ok(ticket) = ticket_str.parse::<iroh_tickets::endpoint::EndpointTicket>() {
+    let mut addr = if let Ok(ticket) = ticket_str.parse::<iroh_tickets::endpoint::EndpointTicket>() {
         EndpointAddr::from(ticket)
     } else if let Ok(id) = node_id_str.parse::<EndpointId>() {
         EndpointAddr::from(id)
@@ -283,10 +299,26 @@ async fn connect_and_sync_discovered_peer(
         return;
     };
 
-    // Connect using Iroh Blobs ALPN
-    if let Ok(_conn) = endpoint.connect(addr.clone(), iroh_blobs::ALPN).await {
+    // If addr has no relay URLs, augment with local endpoint's relay URLs or standard EU relay
+    if addr.relay_urls().next().is_none() {
+        for relay in endpoint.addr().relay_urls() {
+            addr = addr.with_relay_url(relay.clone());
+        }
+        if addr.relay_urls().next().is_none() {
+            if let Ok(relay) = crate::p2p::relay::EU_RELAY_URL.parse::<iroh::RelayUrl>() {
+                addr = addr.with_relay_url(relay);
+            }
+        }
+    }
+
+    // Connect using swarm sync ALPN directly
+    if let Ok(()) = sync_catalog_with_peer(endpoint, db, Some(store), addr.clone()).await {
         tracing::info!(peer = %node_id_str, "Successfully auto-connected to peer via swarm rendezvous!");
-        let _ = sync_catalog_with_peer(endpoint, db, Some(store), addr).await;
+        // Warm up blobs connection in background for fast file transfers
+        let bg_ep = endpoint.clone();
+        tokio::spawn(async move {
+            let _ = bg_ep.connect(addr, iroh_blobs::ALPN).await;
+        });
     }
 }
 
@@ -340,5 +372,23 @@ mod tests {
 
         let restored = deobfuscate_ticket(&masked, secret).expect("must restore");
         assert_eq!(restored, original_ticket);
+    }
+
+    #[test]
+    fn test_get_active_peer_count_includes_peer_versions() {
+        use tempfile::TempDir;
+        let dir = TempDir::new().unwrap();
+        let db = Database::open(&dir.path().join("test_count.db")).unwrap();
+        let our_id = "our-node-id-123";
+        let peer_id = "peer-node-id-456";
+
+        // Initially 0 peers
+        assert_eq!(get_active_peer_count(&db, our_id), 0);
+
+        // Record peer version (even when no files are seeded yet)
+        crate::storage::blob_tracker::record_peer_version(&db, peer_id, "0.1.30").unwrap();
+
+        // Now must count 1 active peer
+        assert_eq!(get_active_peer_count(&db, our_id), 1);
     }
 }

@@ -202,6 +202,11 @@ const MIGRATIONS: &[&str] = &[
     UPDATE settings SET value = 'https://euw1-1.relay.iroh.network/'
     WHERE key = 'relay_url' AND (value LIKE '%use1-1%' OR value = '' OR value = 'default' OR value = 'global');
     "#,
+    // Migration 0016 — Migrate obsolete Iroh 0.x relay URLs to Iroh 1.4 infrastructure
+    r#"
+    UPDATE settings SET value = 'https://euc1-1.relay.n0.iroh.link/'
+    WHERE key = 'relay_url' AND (value LIKE '%iroh.network%' OR value LIKE '%euw1-1%' OR value = '' OR value = 'default' OR value = 'global');
+    "#,
 ];
 
 fn apply_migrations_to_conn(conn: &Connection) -> Result<()> {
@@ -639,7 +644,7 @@ impl Database {
 
     /// Expose a reference to the inner connection for use by other modules.
     /// Callers must lock it themselves; this gives controlled access.
-    pub(crate) fn lock(&self) -> std::sync::MutexGuard<'_, Connection> {
+    pub fn lock(&self) -> std::sync::MutexGuard<'_, Connection> {
         self.conn.lock().unwrap()
     }
 }

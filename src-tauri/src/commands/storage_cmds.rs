@@ -445,7 +445,11 @@ pub async fn get_connection_status(state: State<'_, AppState>) -> Result<Connect
             let count: i64 = {
                 let conn = state.db.lock();
                 conn.query_row(
-                    "SELECT COUNT(DISTINCT peer_node_id) FROM file_seeds WHERE peer_node_id != ?1 AND last_seen_at >= ?2",
+                    "SELECT COUNT(DISTINCT peer_id) FROM (
+                        SELECT peer_node_id AS peer_id, last_seen_at FROM file_seeds
+                        UNION
+                        SELECT node_id AS peer_id, last_seen_at FROM peer_versions
+                    ) WHERE peer_id != ?1 AND last_seen_at >= ?2",
                     rusqlite::params![&my_id, fifteen_mins_ago],
                     |r| r.get(0),
                 ).unwrap_or(0)
@@ -465,7 +469,7 @@ pub async fn get_connection_status(state: State<'_, AppState>) -> Result<Connect
         matches!(
             tokio::time::timeout(
                 std::time::Duration::from_millis(1500),
-                tokio::net::TcpStream::connect("euw1-1.relay.iroh.network:443"),
+                tokio::net::TcpStream::connect("euc1-1.relay.n0.iroh.link:443"),
             )
             .await,
             Ok(Ok(_))

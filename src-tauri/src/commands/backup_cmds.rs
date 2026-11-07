@@ -590,33 +590,33 @@ pub async fn check_and_stage_app_update(db: &Database) -> Result<UpdateInfo, Str
         let _ = db.set_setting("update_asset_size", &asset.size.to_string());
     }
 
-    if is_newer && !dismissed && matched_asset.is_some() {
-        let asset = matched_asset.unwrap();
-        Ok(UpdateInfo {
-            current_version,
-            version: remote_ver_str,
-            notes: notes_str,
-            download_size_bytes: asset.size,
-            is_pending: false,
-            update_available: true,
-            has_staged_installer,
-        })
-    } else {
-        let dl_size = matched_asset.as_ref().map(|a| a.size).unwrap_or(0);
-        Ok(UpdateInfo {
-            current_version: current_version.clone(),
-            version: remote_ver_str,
-            notes: if is_newer && matched_asset.is_none() {
-                "New version found, but no compatible installer artifact was found for this platform.".to_string()
-            } else {
-                notes_str
-            },
-            download_size_bytes: dl_size,
-            is_pending: false,
-            update_available: false,
-            has_staged_installer,
-        })
+    if is_newer && !dismissed {
+        if let Some(asset) = matched_asset {
+            return Ok(UpdateInfo {
+                current_version,
+                version: remote_ver_str,
+                notes: notes_str,
+                download_size_bytes: asset.size,
+                is_pending: false,
+                update_available: true,
+                has_staged_installer,
+            });
+        }
     }
+    let dl_size = matched_asset.as_ref().map(|a| a.size).unwrap_or(0);
+    Ok(UpdateInfo {
+        current_version: current_version.clone(),
+        version: remote_ver_str,
+        notes: if is_newer && matched_asset.is_none() {
+            "New version found, but no compatible installer artifact was found for this platform.".to_string()
+        } else {
+            notes_str
+        },
+        download_size_bytes: dl_size,
+        is_pending: false,
+        update_available: false,
+        has_staged_installer,
+    })
 }
 
 #[tauri::command]
@@ -875,7 +875,7 @@ pub async fn install_app_update(_app: AppHandle, state: State<'_, AppState>) -> 
             }
             Err(e) => {
                 tracing::error!(error = %e, "Failed to spawn foreground updater process");
-                return Err(format!("Failed to launch updater: {e}"));
+                Err(format!("Failed to launch updater: {e}"))
             }
         }
     }

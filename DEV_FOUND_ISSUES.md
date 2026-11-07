@@ -365,6 +365,37 @@
   - Upgraded `zip` crate to `9.4.1` in `src-tauri/Cargo.toml` and removed duplicate `/src-tauri` from `.github/dependabot.yml`.
   - Incremented version to `0.1.29` across `package.json`, `src-tauri/Cargo.toml`, and `src-tauri/tauri.conf.json`.
 
+---
+
+## Issues & Resolutions (Version 0.1.30)
+
+### 1. Automated Swarm Discovery, Relay Infrastructure Modernization & Peer Visibility
+- **Issue:** Peers were unable to discover or connect to each other automatically via the swarm rendezvous system. Furthermore, even when manually entering another peer's Node ID, connection attempts failed, and peers with 0 files uploaded did not appear in peer counts or connection listings.
+- **Root Causes:**
+  1. **Dead Legacy Relay Domain:** Default relay was pointing to `euw1-1.relay.iroh.network`, a discontinued Iroh 0.x relay infrastructure domain that does not resolve or accept connections for modern Iroh 1.4 nodes.
+  2. **Relay-Only Address Publishing:** `Endpoint::builder(presets::N0)` defaults `AddrFilter` to `relay_only()`, which withheld direct LAN and public IP candidates from DNS and pkarr publishing, preventing peer-to-peer connection whenever relay traversal was delayed or unreachable.
+  3. **Single Bi-Stream Termination in CatalogSyncHandler:** `CatalogSyncHandler::accept` accepted only one bi-stream and exited. In the catalog synchronization flow, `sync_catalog_with_peer` opens two sequential streams (`NodeAnnounce` followed by `CatalogDump`). The second stream failed with stream reset / disconnection.
+  4. **NodeAnnounce Node ID Reflection Bug:** When answering a `NodeAnnounce`, `sync.rs` echoed back the caller's node ID instead of the receiver's node ID (`my_id = sender_peer_id`), corrupting the receiver identity in peer tracking.
+  5. **Empty Workspace Peer Invisibility:** `list_peers`, `get_connection_status`, and `get_active_peer_count` queried only `file_seeds`. Newly connected peers that had not yet uploaded or shared files were excluded, reporting 0 active peers and a disconnected status despite active QUIC connections.
+  6. **Bare NodeId Dialing Without Relay Hint:** When connecting to a peer using only a bare Node ID or an address lacking relay metadata, the dialer failed if pkarr lookup had not propagated.
+- **Fix:**
+  - `src-tauri/src/p2p/relay.rs`: Migrated default and Western Europe relay URL to official Iroh 1.4 endpoint `https://euc1-1.relay.n0.iroh.link/`. Standardized unconfigured relay mode to `RelayMode::Default` (Number 0 anycast global relay map).
+  - `src-tauri/src/p2p/engine.rs`: Configured `.addr_filter(iroh::endpoint_info::AddrFilter::unfiltered())` on `Endpoint::builder` so direct IP addresses are announced alongside relay URLs. Added background periodic re-sync loop across all active peers.
+  - `src-tauri/src/p2p/sync.rs`:
+    - Refactored `CatalogSyncHandler::accept` to continuously accept bi-streams with `while let Ok((send, recv)) = connection.accept_bi().await` and spawn concurrent stream handlers.
+    - Corrected `NodeAnnounce` response to return `our_node_id`.
+    - Added `get_active_peer_ids()` to export active peer IDs currently connected in memory.
+  - `src-tauri/src/commands/peer_cmds.rs` & `storage_cmds.rs`:
+    - Updated `list_peers` and `get_connection_status` queries to union `file_seeds` with `peer_versions` (within active time window) and in-memory active endpoints from `engine.get_active_peer_ids()`.
+    - Augmented bare NodeId dials with active endpoint relay URLs or `EU_RELAY_URL` fallback.
+    - Directly invoked swarm ALPN catalog synchronization during `connect_peer` and warmed up blobs ALPN asynchronously.
+  - `src-tauri/src/storage/db.rs`: Added Migration 0016 updating legacy `euw1-1.relay.iroh.network` URLs to `https://euc1-1.relay.n0.iroh.link/`. Made `Database::lock(&self)` public for integration tests.
+  - `src-tauri/src/commands/diagnostic_cmds.rs` & `storage_cmds.rs`: Updated TCP port 443 probes to `euc1-1.relay.n0.iroh.link:443`.
+  - Frontend presets updated in `NetworkSettings.tsx`, `OnboardingWizard.tsx`, and `OnboardingAdvanced.tsx`.
+  - Updated integration test suite in `tests/integration.rs` to verify full two-node catalog sync, version exchange, and database persistence under Iroh 1.4.
+  - Incremented version to `0.1.30` across `package.json`, `src-tauri/Cargo.toml`, and `src-tauri/tauri.conf.json`.
+
+
 
 
 

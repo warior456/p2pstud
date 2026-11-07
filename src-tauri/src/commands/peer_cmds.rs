@@ -25,10 +25,16 @@ pub async fn list_peers(state: State<'_, AppState>) -> Result<Vec<PeerInfo>, Str
     };
 
     let my_node_id = engine.node_id().to_string();
-    let peer_ids: Vec<String> = {
+    let mut peer_ids: Vec<String> = {
         let conn = state.db.lock();
         let mut stmt = conn
-            .prepare("SELECT DISTINCT peer_node_id FROM file_seeds WHERE peer_node_id != ?1 AND last_seen_at >= ?2")
+            .prepare(
+                "SELECT DISTINCT peer_id FROM (
+                    SELECT peer_node_id AS peer_id, last_seen_at FROM file_seeds
+                    UNION
+                    SELECT node_id AS peer_id, last_seen_at FROM peer_versions
+                ) WHERE peer_id != ?1 AND last_seen_at >= ?2",
+            )
             .map_err(|e| e.to_string())?;
         let thirty_mins_ago = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -39,6 +45,14 @@ pub async fn list_peers(state: State<'_, AppState>) -> Result<Vec<PeerInfo>, Str
             .map_err(|e| e.to_string())?;
         rows.filter_map(|r| r.ok()).collect()
     };
+
+    // Also include in-memory active swarm peers
+    for p in crate::p2p::sync::get_active_peer_ids() {
+        let s = p.to_string();
+        if s != my_node_id && !peer_ids.contains(&s) {
+            peer_ids.push(s);
+        }
+    }
 
     let mut peers = Vec::new();
     for peer_id_str in peer_ids {
@@ -76,14 +90,23 @@ pub async fn get_node_id(state: State<'_, AppState>) -> Result<String, String> {
 }
 
 /// Return this node's full NodeTicket (string starting with "node") for easy sharing.
-/// Waits briefly if the engine is currently completing its startup sequence.
+/// Waits briefly if the engine is currently completing its startup sequence or connecting to home relay.
 #[tauri::command]
 pub async fn get_node_ticket(state: State<'_, AppState>) -> Result<String, String> {
     for _ in 0..15 {
         {
             let guard = state.engine.read().await;
             if let Some(engine) = guard.as_ref() {
-                let addr = engine.endpoint.addr();
+                // If home relay is not yet connected, give it up to 500ms to finish handshake
+                if engine.endpoint.addr().relay_urls().next().is_none() {
+                    let _ = tokio::time::timeout(std::time::Duration::from_millis(500), engine.endpoint.online()).await;
+                }
+                let mut addr = engine.endpoint.addr();
+                if addr.relay_urls().next().is_none() {
+                    if let Ok(relay) = crate::p2p::relay::EU_RELAY_URL.parse::<iroh::RelayUrl>() {
+                        addr = addr.with_relay_url(relay);
+                    }
+                }
                 let ticket = iroh_tickets::endpoint::EndpointTicket::new(addr);
                 return Ok(ticket.to_string());
             }
@@ -101,7 +124,15 @@ pub async fn get_node_addr(state: State<'_, AppState>) -> Result<String, String>
         {
             let guard = state.engine.read().await;
             if let Some(engine) = guard.as_ref() {
-                let addr = engine.endpoint.addr();
+                if engine.endpoint.addr().relay_urls().next().is_none() {
+                    let _ = tokio::time::timeout(std::time::Duration::from_millis(500), engine.endpoint.online()).await;
+                }
+                let mut addr = engine.endpoint.addr();
+                if addr.relay_urls().next().is_none() {
+                    if let Ok(relay) = crate::p2p::relay::EU_RELAY_URL.parse::<iroh::RelayUrl>() {
+                        addr = addr.with_relay_url(relay);
+                    }
+                }
                 return serde_json::to_string(&addr).map_err(|e| e.to_string());
             }
         }
@@ -116,7 +147,7 @@ pub async fn get_node_addr(state: State<'_, AppState>) -> Result<String, String>
 /// 2. JSON EndpointAddr
 /// 3. node_id@ip:port or node_id@relay_url
 /// 4. Bare NodeId + optional relay_url
-fn parse_peer_address(input: &str, relay_url: Option<String>) -> Result<iroh::EndpointAddr, String> {
+pub fn parse_peer_address(input: &str, relay_url: Option<String>) -> Result<iroh::EndpointAddr, String> {
     let trimmed = input.trim();
     if trimmed.is_empty() {
         return Err("Peer address cannot be empty".to_string());
@@ -180,23 +211,38 @@ pub async fn connect_peer(
         .or(node_id)
         .ok_or_else(|| "Peer address or ticket cannot be empty".to_string())?;
 
-    let addr = parse_peer_address(&raw_input, relay_url)?;
+    let mut addr = parse_peer_address(&raw_input, relay_url)?;
 
     let guard = state.engine.read().await;
     let engine = guard.as_ref().ok_or("Iroh engine not yet started")?;
 
-    // Connect using Iroh Blobs ALPN
-    engine
-        .endpoint
-        .connect(addr.clone(), iroh_blobs::ALPN)
+    // If addr has no relay URLs, augment with local active relays or standard EU relay
+    // so peers can discover and connect to each other even with only a bare NodeId.
+    if addr.relay_urls().next().is_none() {
+        for relay in engine.endpoint.addr().relay_urls() {
+            addr = addr.with_relay_url(relay.clone());
+        }
+        if addr.relay_urls().next().is_none() {
+            if let Ok(relay) = crate::p2p::relay::EU_RELAY_URL.parse::<iroh::RelayUrl>() {
+                addr = addr.with_relay_url(relay);
+            }
+        }
+    }
+
+    // Synchronize workspace catalog immediately using swarm sync ALPN
+    sync_catalog_with_peer(&engine.endpoint, &state.db, Some(&engine.store), addr.clone())
         .await
         .map_err(|e| format!("Connection to peer failed: {e}"))?;
 
     // Save as bootstrap peer in settings so connection is restored on restart
     let _ = state.db.set_setting("bootstrap_peer", raw_input.trim());
 
-    // Synchronize workspace catalog immediately
-    let _ = sync_catalog_with_peer(&engine.endpoint, &state.db, Some(&engine.store), addr).await;
+    // Warm up blobs connection in the background for fast blob transfers
+    let bg_endpoint = engine.endpoint.clone();
+    let bg_addr = addr.clone();
+    tokio::spawn(async move {
+        let _ = bg_endpoint.connect(bg_addr, iroh_blobs::ALPN).await;
+    });
 
     tracing::info!(node_id = %raw_input, "Connected to peer and synchronized catalog successfully");
     Ok(())
@@ -313,18 +359,28 @@ pub async fn reconnect_swarm(app: AppHandle, state: State<'_, AppState>) -> Resu
     if let Ok(Some(bootstrap)) = state.db.get_setting("bootstrap_peer") {
         let trimmed = bootstrap.trim();
         if !trimmed.is_empty() {
-            if let Ok(addr) = parse_peer_address(trimmed, None) {
-                let _ = engine
-                    .endpoint
-                    .connect(addr.clone(), iroh_blobs::ALPN)
-                    .await;
+            if let Ok(mut addr) = parse_peer_address(trimmed, None) {
+                if addr.relay_urls().next().is_none() {
+                    for relay in engine.endpoint.addr().relay_urls() {
+                        addr = addr.with_relay_url(relay.clone());
+                    }
+                    if addr.relay_urls().next().is_none() {
+                        if let Ok(relay) = crate::p2p::relay::EU_RELAY_URL.parse::<iroh::RelayUrl>() {
+                            addr = addr.with_relay_url(relay);
+                        }
+                    }
+                }
                 let _ = sync_catalog_with_peer(
                     &engine.endpoint,
                     &state.db,
                     Some(&engine.store),
-                    addr,
+                    addr.clone(),
                 )
                 .await;
+                let bg_ep = engine.endpoint.clone();
+                tokio::spawn(async move {
+                    let _ = bg_ep.connect(addr, iroh_blobs::ALPN).await;
+                });
             }
         }
     }
