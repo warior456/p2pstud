@@ -330,23 +330,21 @@ pub fn get_seed_count(
 ) -> Result<usize> {
     let conn = db.lock();
     let threshold = now_unix() - 1800; // 30 minutes
-    let peer_seeds: i64 = if let Some(my_id) = local_node_id {
-        conn.query_row(
-            "SELECT COUNT(DISTINCT peer_node_id) FROM file_seeds WHERE hash = ?1 AND peer_node_id != ?2 AND last_seen_at >= ?3",
-            params![hash, my_id, threshold],
-            |r| r.get(0),
-        )
-        .unwrap_or(0)
-    } else {
-        conn.query_row(
-            "SELECT COUNT(DISTINCT peer_node_id) FROM file_seeds WHERE hash = ?1 AND last_seen_at >= ?2",
-            params![hash, threshold],
-            |r| r.get(0),
-        )
-        .unwrap_or(0)
-    };
+    let mut stmt = conn.prepare(
+        "SELECT DISTINCT peer_node_id FROM file_seeds WHERE hash = ?1 AND last_seen_at >= ?2",
+    )?;
+    let rows = stmt.query_map(params![hash, threshold], |r| r.get::<_, String>(0))?;
+    let mut peer_seeds = 0;
+    for row in rows.flatten() {
+        if let Some(my_id) = local_node_id {
+            if crate::storage::db::is_matching_node_id(&row, my_id) {
+                continue;
+            }
+        }
+        peer_seeds += 1;
+    }
 
-    let mut total = peer_seeds as usize;
+    let mut total = peer_seeds;
     if is_locally_cached {
         total += 1;
     }
@@ -959,28 +957,41 @@ pub fn get_sole_seed_files(db: &Database, our_node_id: &str) -> Result<Vec<SoleS
     let conn = db.lock();
 
     let mut stmt = conn.prepare(
-        "SELECT b.hash, b.name, b.size_bytes
+        "SELECT b.hash, b.name, b.size_bytes,
+                (SELECT GROUP_CONCAT(DISTINCT s.peer_node_id) FROM file_seeds s
+                 WHERE s.hash = b.hash AND s.last_seen_at > ?1) AS seeders
          FROM local_blobs b
-         WHERE (b.is_quarantined = 0 OR b.is_quarantined IS NULL)
-           AND (
-             SELECT COUNT(*) FROM file_seeds s
-             WHERE s.hash = b.hash
-               AND s.peer_node_id != ?1
-               AND s.last_seen_at > ?2
-           ) = 0",
+         WHERE (b.is_quarantined = 0 OR b.is_quarantined IS NULL)",
     )?;
 
-    let rows = stmt.query_map(params![our_node_id, threshold], |r| {
-        Ok(SoleSeedFile {
-            hash: r.get(0)?,
-            name: r.get(1)?,
-            size_bytes: r.get::<_, i64>(2)? as u64,
-        })
+    let rows = stmt.query_map(params![threshold], |r| {
+        let hash: String = r.get(0)?;
+        let name: Option<String> = r.get(1)?;
+        let size_bytes: i64 = r.get(2)?;
+        let seeders_str: Option<String> = r.get(3)?;
+        Ok((hash, name, size_bytes as u64, seeders_str))
     })?;
 
     let mut files = Vec::new();
     for row in rows {
-        files.push(row?);
+        let (hash, name, size_bytes, seeders_str) = row?;
+        let mut has_remote_seed = false;
+        if let Some(s_str) = seeders_str {
+            for seeder in s_str.split(',') {
+                let trimmed = seeder.trim();
+                if !trimmed.is_empty() && !crate::storage::db::is_matching_node_id(trimmed, our_node_id) {
+                    has_remote_seed = true;
+                    break;
+                }
+            }
+        }
+        if !has_remote_seed {
+            files.push(SoleSeedFile {
+                hash,
+                name,
+                size_bytes,
+            });
+        }
     }
     Ok(files)
 }

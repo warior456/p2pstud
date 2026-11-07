@@ -17,6 +17,7 @@ import {
   X
 } from 'lucide-react';
 import { FileEntry, UploadItem } from '../../types';
+import { isSameNodeId } from '../../utils/nodeId';
 import { FileRow } from './FileRow';
 
 interface FileTreeProps {
@@ -202,7 +203,7 @@ export const FileTree: React.FC<FileTreeProps> = ({
 
   const ownedSelectedCount = useMemo(() => {
     if (!currentUserId) return 0;
-    return selectedFilesList.filter((f) => f.owner_node_id === currentUserId).length;
+    return selectedFilesList.filter((f) => isSameNodeId(f.owner_node_id, currentUserId)).length;
   }, [selectedFilesList, currentUserId]);
 
   return (

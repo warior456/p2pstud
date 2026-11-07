@@ -225,6 +225,183 @@ fn apply_migrations_to_conn(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// Compare two node IDs for equivalence regardless of whether they are formatted
+/// as base32 or canonical hex.
+pub fn is_matching_node_id(id1: &str, id2: &str) -> bool {
+    let t1 = id1.trim();
+    let t2 = id2.trim();
+    if t1.eq_ignore_ascii_case(t2) {
+        return true;
+    }
+    match (t1.parse::<iroh::EndpointId>(), t2.parse::<iroh::EndpointId>()) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => false,
+    }
+}
+
+/// Convert any base32 or hex NodeId string into its canonical hex representation.
+pub fn to_canonical_node_id(input: &str) -> String {
+    let trimmed = input.trim();
+    if let Ok(id) = trimmed.parse::<iroh::EndpointId>() {
+        id.to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+/// Migrate and normalize all stored node IDs across SQLite tables to canonical hex format.
+pub fn canonicalize_node_ids_in_conn(conn: &Connection) -> Result<()> {
+    // 1. local_blobs.owner_node_id
+    if let Ok(mut stmt) = conn.prepare("SELECT DISTINCT owner_node_id FROM local_blobs WHERE owner_node_id IS NOT NULL AND owner_node_id != ''") {
+        if let Ok(owners) = stmt.query_map([], |r| r.get::<_, String>(0)) {
+            let list: Vec<String> = owners.filter_map(|r| r.ok()).collect();
+            for owner in list {
+                if let Ok(id) = owner.parse::<iroh::EndpointId>() {
+                    let canon = id.to_string();
+                    if canon != owner {
+                        let _ = conn.execute(
+                            "UPDATE local_blobs SET owner_node_id = ?1 WHERE owner_node_id = ?2",
+                            rusqlite::params![canon, owner],
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    // 2. file_seeds.peer_node_id
+    if let Ok(mut stmt) = conn.prepare("SELECT DISTINCT peer_node_id FROM file_seeds WHERE peer_node_id IS NOT NULL AND peer_node_id != ''") {
+        if let Ok(seeders) = stmt.query_map([], |r| r.get::<_, String>(0)) {
+            let list: Vec<String> = seeders.filter_map(|r| r.ok()).collect();
+            for seeder in list {
+                if let Ok(id) = seeder.parse::<iroh::EndpointId>() {
+                    let canon = id.to_string();
+                    if canon != seeder {
+                        let _ = conn.execute(
+                            "UPDATE OR IGNORE file_seeds SET peer_node_id = ?1 WHERE peer_node_id = ?2",
+                            rusqlite::params![canon, seeder],
+                        );
+                        let _ = conn.execute(
+                            "DELETE FROM file_seeds WHERE peer_node_id = ?1",
+                            rusqlite::params![seeder],
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    // 3. file_delete_votes, file_keep_votes, file_ratings
+    for table in &["file_delete_votes", "file_keep_votes", "file_ratings"] {
+        let col = "voter_node_id";
+        let query = format!("SELECT DISTINCT {col} FROM {table} WHERE {col} IS NOT NULL AND {col} != ''");
+        if let Ok(mut stmt) = conn.prepare(&query) {
+            if let Ok(voters) = stmt.query_map([], |r| r.get::<_, String>(0)) {
+                let list: Vec<String> = voters.filter_map(|r| r.ok()).collect();
+                for voter in list {
+                    if let Ok(id) = voter.parse::<iroh::EndpointId>() {
+                        let canon = id.to_string();
+                        if canon != voter {
+                            let _ = conn.execute(
+                                &format!("UPDATE OR IGNORE {table} SET {col} = ?1 WHERE {col} = ?2"),
+                                rusqlite::params![canon, voter],
+                            );
+                            let _ = conn.execute(
+                                &format!("DELETE FROM {table} WHERE {col} = ?1"),
+                                rusqlite::params![voter],
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 4. quarantine_reports
+    if let Ok(mut stmt) = conn.prepare("SELECT DISTINCT reporter_node_id FROM quarantine_reports WHERE reporter_node_id IS NOT NULL AND reporter_node_id != ''") {
+        if let Ok(reporters) = stmt.query_map([], |r| r.get::<_, String>(0)) {
+            let list: Vec<String> = reporters.filter_map(|r| r.ok()).collect();
+            for rep in list {
+                if let Ok(id) = rep.parse::<iroh::EndpointId>() {
+                    let canon = id.to_string();
+                    if canon != rep {
+                        let _ = conn.execute(
+                            "UPDATE OR IGNORE quarantine_reports SET reporter_node_id = ?1 WHERE reporter_node_id = ?2",
+                            rusqlite::params![canon, rep],
+                        );
+                        let _ = conn.execute(
+                            "DELETE FROM quarantine_reports WHERE reporter_node_id = ?1",
+                            rusqlite::params![rep],
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    // 5. seeding_receipts
+    for col in &["seeder_node_id", "recipient_node_id"] {
+        let query = format!("SELECT DISTINCT {col} FROM seeding_receipts WHERE {col} IS NOT NULL AND {col} != ''");
+        if let Ok(mut stmt) = conn.prepare(&query) {
+            if let Ok(nodes) = stmt.query_map([], |r| r.get::<_, String>(0)) {
+                let list: Vec<String> = nodes.filter_map(|r| r.ok()).collect();
+                for node in list {
+                    if let Ok(id) = node.parse::<iroh::EndpointId>() {
+                        let canon = id.to_string();
+                        if canon != node {
+                            let _ = conn.execute(
+                                &format!("UPDATE seeding_receipts SET {col} = ?1 WHERE {col} = ?2"),
+                                rusqlite::params![canon, node],
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 6. peer_versions
+    if let Ok(mut stmt) = conn.prepare("SELECT DISTINCT node_id FROM peer_versions WHERE node_id IS NOT NULL AND node_id != ''") {
+        if let Ok(nodes) = stmt.query_map([], |r| r.get::<_, String>(0)) {
+            let list: Vec<String> = nodes.filter_map(|r| r.ok()).collect();
+            for node in list {
+                if let Ok(id) = node.parse::<iroh::EndpointId>() {
+                    let canon = id.to_string();
+                    if canon != node {
+                        let _ = conn.execute(
+                            "UPDATE OR IGNORE peer_versions SET node_id = ?1 WHERE node_id = ?2",
+                            rusqlite::params![canon, node],
+                        );
+                        let _ = conn.execute(
+                            "DELETE FROM peer_versions WHERE node_id = ?1",
+                            rusqlite::params![node],
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    // 7. bootstrap_peer in settings
+    if let Ok(val) = conn.query_row::<String, _, _>(
+        "SELECT value FROM settings WHERE key = 'bootstrap_peer'",
+        [],
+        |r| r.get(0),
+    ) {
+        if let Ok(id) = val.trim().parse::<iroh::EndpointId>() {
+            let canon = id.to_string();
+            if canon != val.trim() {
+                let _ = conn.execute(
+                    "UPDATE settings SET value = ?1 WHERE key = 'bootstrap_peer'",
+                    rusqlite::params![canon],
+                );
+            }
+        }
+    }
+
+    Ok(())
+}
+
 /// Thread-safe SQLite database wrapper supporting multi-network isolation.
 #[derive(Debug)]
 pub struct Database {
@@ -266,6 +443,7 @@ impl Database {
             .with_context(|| format!("opening SQLite at {}", target_db_file.display()))?;
 
         apply_migrations_to_conn(&conn)?;
+        canonicalize_node_ids_in_conn(&conn)?;
 
         let db = Database {
             conn: Mutex::new(conn),
@@ -326,6 +504,7 @@ impl Database {
             .with_context(|| format!("opening target database {}", target_db_file.display()))?;
 
         apply_migrations_to_conn(&new_conn)?;
+        canonicalize_node_ids_in_conn(&new_conn)?;
 
         // Ensure settings in target DB record its own network_secret
         new_conn.execute(
@@ -469,6 +648,7 @@ impl Database {
         // Open target connection if not active
         let target_conn = Connection::open(&tgt_path)?;
         apply_migrations_to_conn(&target_conn)?;
+        canonicalize_node_ids_in_conn(&target_conn)?;
 
         // Read candidate files from source
         let source_conn = Connection::open_with_flags(&src_path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;

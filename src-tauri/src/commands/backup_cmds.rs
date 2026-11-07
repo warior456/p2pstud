@@ -499,7 +499,17 @@ pub async fn check_and_stage_app_update(db: &Database) -> Result<UpdateInfo, Str
                     release
                         .assets
                         .iter()
-                        .find(|a| a.name.to_lowercase().ends_with("-setup.exe"))
+                        .find(|a| {
+                            let name = a.name.to_lowercase();
+                            (name == "p2pstud-windows-x86_64.exe" || name == "p2pstud.exe")
+                                && !name.starts_with("anchor")
+                        })
+                        .or_else(|| {
+                            release
+                                .assets
+                                .iter()
+                                .find(|a| a.name.to_lowercase().ends_with("-setup.exe"))
+                        })
                         .or_else(|| {
                             release.assets.iter().find(|a| {
                                 let name = a.name.to_lowercase();
@@ -515,7 +525,10 @@ pub async fn check_and_stage_app_update(db: &Database) -> Result<UpdateInfo, Str
                     release
                         .assets
                         .iter()
-                        .find(|a| a.name.to_lowercase().ends_with(".dmg") || a.name.to_lowercase().ends_with(".tar.gz"))
+                        .find(|a| {
+                            let name = a.name.to_lowercase();
+                            name.ends_with(".tar.gz") || name.ends_with(".tgz") || name.ends_with(".dmg")
+                        })
                         .cloned()
                 }
                 #[cfg(target_os = "linux")]
@@ -523,7 +536,16 @@ pub async fn check_and_stage_app_update(db: &Database) -> Result<UpdateInfo, Str
                     release
                         .assets
                         .iter()
-                        .find(|a| (a.name.to_lowercase().ends_with(".appimage") || a.name.to_lowercase().ends_with(".deb")) && !a.name.to_lowercase().starts_with("anchor"))
+                        .find(|a| {
+                            let name = a.name.to_lowercase();
+                            (name == "p2pstud-linux-x86_64" || name == "p2pstud") && !name.starts_with("anchor")
+                        })
+                        .or_else(|| {
+                            release.assets.iter().find(|a| {
+                                let name = a.name.to_lowercase();
+                                (name.ends_with(".appimage") || name.ends_with(".deb")) && !name.starts_with("anchor")
+                            })
+                        })
                         .cloned()
                 }
                 #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
@@ -809,14 +831,16 @@ pub async fn install_app_update(_app: AppHandle, state: State<'_, AppState>) -> 
                 "$Host.UI.RawUI.WindowTitle = 'P2P Campus Workspace Updater'; \
                  Clear-Host; \
                  Write-Host '===================================================' -ForegroundColor Cyan; \
-                 Write-Host '   P2P Campus Workspace Updater (Foreground)' -ForegroundColor Cyan; \
+                 Write-Host '   P2P Campus Workspace Updater' -ForegroundColor Cyan; \
                  Write-Host '===================================================' -ForegroundColor Cyan; \
                  Write-Host ''; \
                  Write-Host 'Closing running P2PStud process...' -ForegroundColor Yellow; \
                  try {{ Stop-Process -Id {pid} -Force -ErrorAction SilentlyContinue }} catch {{}}; \
                  Start-Sleep -Milliseconds 600; \
-                 Write-Host 'Launching MSI Installer in foreground...' -ForegroundColor Green; \
-                 $proc = Start-Process -FilePath 'msiexec.exe' -ArgumentList '/i', '\"{}\"', '/passive', '/norestart' -Wait -PassThru; \
+                 Get-Process -Name 'p2pstud' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue; \
+                 Start-Sleep -Milliseconds 600; \
+                 Write-Host 'Applying MSI update silently...' -ForegroundColor Green; \
+                 $proc = Start-Process -FilePath 'msiexec.exe' -ArgumentList '/i', '\"{}\"', '/quiet', '/norestart' -Wait -PassThru; \
                  Write-Host \"Installer finished with exit code $($proc.ExitCode).\" -ForegroundColor Cyan; \
                  Start-Sleep -Milliseconds 800; \
                  $f1 = [System.Environment]::GetFolderPath('LocalApplicationData') + '\\p2pstud\\p2pstud.exe'; \
@@ -826,26 +850,22 @@ pub async fn install_app_update(_app: AppHandle, state: State<'_, AppState>) -> 
                  if (Test-Path $target) {{ Write-Host \"Relaunching $target...\" -ForegroundColor Green; Start-Process -FilePath $target }}",
                 clean_installer_str
             )
-        } else {
+        } else if installer_path_str.to_lowercase().ends_with("-setup.exe") {
             format!(
                 "$Host.UI.RawUI.WindowTitle = 'P2P Campus Workspace Updater'; \
                  Clear-Host; \
                  Write-Host '===================================================' -ForegroundColor Cyan; \
-                 Write-Host '   P2P Campus Workspace Updater (Foreground)' -ForegroundColor Cyan; \
+                 Write-Host '   P2P Campus Workspace Updater' -ForegroundColor Cyan; \
                  Write-Host '===================================================' -ForegroundColor Cyan; \
                  Write-Host ''; \
                  Write-Host 'Closing running P2PStud process...' -ForegroundColor Yellow; \
                  try {{ Stop-Process -Id {pid} -Force -ErrorAction SilentlyContinue }} catch {{}}; \
-                 Start-Sleep -Milliseconds 800; \
+                 Start-Sleep -Milliseconds 600; \
                  Get-Process -Name 'p2pstud' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue; \
                  Start-Sleep -Milliseconds 600; \
-                 Write-Host 'Launching Setup Installer in the foreground...' -ForegroundColor Green; \
-                 $proc = Start-Process -FilePath '{clean_installer_str}' -Wait -PassThru; \
-                 Write-Host \"Setup process completed (Exit code: $($proc.ExitCode)).\" -ForegroundColor Cyan; \
-                 if ($proc.ExitCode -ne 0) {{ \
-                     Write-Host \"Installer returned non-zero exit code: $($proc.ExitCode).\" -ForegroundColor Red; \
-                     Start-Sleep -Seconds 3; \
-                 }} \
+                 Write-Host 'Applying update silently...' -ForegroundColor Green; \
+                 $proc = Start-Process -FilePath '{clean_installer_str}' -ArgumentList '/S' -Wait -PassThru; \
+                 Write-Host \"Setup completed (Exit code: $($proc.ExitCode)).\" -ForegroundColor Cyan; \
                  Start-Sleep -Milliseconds 800; \
                  $f1 = [System.Environment]::GetFolderPath('LocalApplicationData') + '\\p2pstud\\p2pstud.exe'; \
                  $f2 = [System.Environment]::GetFolderPath('LocalApplicationData') + '\\Programs\\p2pstud\\p2pstud.exe'; \
@@ -855,8 +875,45 @@ pub async fn install_app_update(_app: AppHandle, state: State<'_, AppState>) -> 
                      Write-Host \"Relaunching updated application ($target)...\" -ForegroundColor Green; \
                      Start-Process -FilePath $target; \
                  }} else {{ \
-                     Write-Host 'Application updated. Please launch P2PStud from the Start Menu.' -ForegroundColor Yellow; \
-                     Start-Sleep -Seconds 4; \
+                     Start-Process -FilePath '{clean_installer_str}' -ArgumentList '/S'; \
+                 }}",
+            )
+        } else {
+            // Direct standalone binary replacement (.exe)
+            format!(
+                "$Host.UI.RawUI.WindowTitle = 'P2P Campus Workspace Updater'; \
+                 Clear-Host; \
+                 Write-Host '===================================================' -ForegroundColor Cyan; \
+                 Write-Host '   P2P Campus Workspace Updater' -ForegroundColor Cyan; \
+                 Write-Host '===================================================' -ForegroundColor Cyan; \
+                 Write-Host ''; \
+                 Write-Host 'Closing running P2PStud process...' -ForegroundColor Yellow; \
+                 try {{ Stop-Process -Id {pid} -Force -ErrorAction SilentlyContinue }} catch {{}}; \
+                 Start-Sleep -Milliseconds 600; \
+                 Get-Process -Name 'p2pstud' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue; \
+                 Start-Sleep -Milliseconds 600; \
+                 $target = '{current_exe}'; \
+                 $f1 = [System.Environment]::GetFolderPath('LocalApplicationData') + '\\p2pstud\\p2pstud.exe'; \
+                 $f2 = [System.Environment]::GetFolderPath('LocalApplicationData') + '\\Programs\\p2pstud\\p2pstud.exe'; \
+                 if (Test-Path $f1) {{ $target = $f1 }} elseif (Test-Path $f2) {{ $target = $f2 }}; \
+                 Write-Host \"Replacing application binary ($target)...\" -ForegroundColor Green; \
+                 $replaced = $false; \
+                 for ($i = 0; $i -lt 20; $i++) {{ \
+                     try {{ \
+                         Copy-Item -Path '{clean_installer_str}' -Destination $target -Force; \
+                         $replaced = $true; \
+                         break; \
+                     }} catch {{ \
+                         Start-Sleep -Milliseconds 300; \
+                     }} \
+                 }}; \
+                 if ($replaced) {{ \
+                     Write-Host 'Binary successfully updated! Relaunching application...' -ForegroundColor Green; \
+                     Start-Process -FilePath $target; \
+                 }} else {{ \
+                     Write-Host 'Failed to overwrite binary. Relaunching existing executable...' -ForegroundColor Red; \
+                     Start-Sleep -Seconds 2; \
+                     Start-Process -FilePath $target; \
                  }}",
             )
         };
@@ -870,11 +927,11 @@ pub async fn install_app_update(_app: AppHandle, state: State<'_, AppState>) -> 
 
         match spawn_res {
             Ok(_) => {
-                tracing::info!("Foreground updater console spawned successfully, exiting host process");
+                tracing::info!("Updater console spawned successfully, exiting host process");
                 std::process::exit(0);
             }
             Err(e) => {
-                tracing::error!(error = %e, "Failed to spawn foreground updater process");
+                tracing::error!(error = %e, "Failed to spawn updater process");
                 Err(format!("Failed to launch updater: {e}"))
             }
         }
@@ -882,21 +939,51 @@ pub async fn install_app_update(_app: AppHandle, state: State<'_, AppState>) -> 
 
     #[cfg(target_os = "macos")]
     {
-        let _ = std::process::Command::new("open")
-            .arg(&installer_path)
-            .spawn();
+        if installer_path_str.ends_with(".tar.gz") || installer_path_str.ends_with(".tgz") {
+            let _ = std::process::Command::new("tar")
+                .args(["-xzf", &installer_path_str, "-C", "/Applications"])
+                .status();
+            let _ = std::process::Command::new("open")
+                .arg("/Applications/p2pstud.app")
+                .spawn();
+        } else if installer_path_str.ends_with(".dmg") {
+            let _ = std::process::Command::new("sh")
+                .arg("-c")
+                .arg(format!(
+                    "hdiutil attach -nobrowse '{0}' -mountpoint /tmp/p2pstud_mount && cp -R /tmp/p2pstud_mount/p2pstud.app /Applications/ && hdiutil detach /tmp/p2pstud_mount && open /Applications/p2pstud.app",
+                    installer_path_str
+                ))
+                .spawn();
+        } else {
+            let _ = std::process::Command::new("open")
+                .arg(&installer_path)
+                .spawn();
+        }
         std::process::exit(0);
     }
 
     #[cfg(target_os = "linux")]
     {
+        let current_exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("p2pstud"));
         if installer_path_str.ends_with(".appimage") {
             let _ = std::process::Command::new("chmod")
                 .arg("+x")
                 .arg(&installer_path)
                 .status();
+            let _ = std::process::Command::new(&installer_path).spawn();
+        } else if installer_path_str.ends_with(".deb") {
+            let _ = std::process::Command::new("pkexec")
+                .args(["dpkg", "-i", &installer_path_str])
+                .spawn();
+        } else {
+            // Direct standalone binary replacement
+            let _ = std::process::Command::new("chmod")
+                .arg("+x")
+                .arg(&installer_path)
+                .status();
+            let _ = std::fs::copy(&installer_path, &current_exe);
+            let _ = std::process::Command::new(&current_exe).spawn();
         }
-        let _ = std::process::Command::new(&installer_path).spawn();
         std::process::exit(0);
     }
 

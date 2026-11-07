@@ -64,12 +64,18 @@ export const TelemetryBar: React.FC<TelemetryBarProps> = ({
         <div className="flex items-center gap-1.5 text-gray-400">
           <Users className="w-3.5 h-3.5" />
           <span>Peers: {peerCount}</span>
-          {stats?.swarm_median_version && (
+          <span
+            className="text-[10px] bg-gray-800 text-emerald-300 px-1.5 py-0.5 rounded font-mono border border-emerald-900/50"
+            title={`Application Build Version: v${stats?.current_version || '0.1.32'}`}
+          >
+            v{stats?.current_version || '0.1.32'}
+          </span>
+          {stats?.swarm_median_version && stats.swarm_median_version !== stats.current_version && (
             <span
               className="text-[10px] bg-gray-800 text-blue-300 px-1.5 py-0.5 rounded font-mono border border-blue-900/50"
               title={`Swarm Median Version: v${stats.swarm_median_version}`}
             >
-              v{stats.swarm_median_version}
+              Swarm: v{stats.swarm_median_version}
             </span>
           )}
         </div>

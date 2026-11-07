@@ -37,6 +37,7 @@ export interface StorageStats {
   full_mirror: boolean;
   upload_bytes_per_sec: number;
   download_bytes_per_sec: number;
+  current_version?: string;
   swarm_median_version?: string;
   is_online?: boolean;
   relay_connected?: boolean;

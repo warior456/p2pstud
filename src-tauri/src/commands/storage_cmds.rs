@@ -25,6 +25,8 @@ pub struct StorageStats {
     pub upload_bytes_per_sec: u64,
     /// Instantaneous inbound network transfer rate (bytes per second).
     pub download_bytes_per_sec: u64,
+    /// Currently running application package version.
+    pub current_version: String,
     /// Calculated median software version across all active swarm peers + local node.
     pub swarm_median_version: Option<String>,
     /// Whether swarm connectivity is currently active.
@@ -118,6 +120,7 @@ pub async fn get_storage_stats(state: State<'_, AppState>) -> Result<StorageStat
         full_mirror,
         upload_bytes_per_sec,
         download_bytes_per_sec,
+        current_version: current_version.to_string(),
         swarm_median_version: Some(version_info.median_version),
         is_online,
         relay_connected,

@@ -180,6 +180,30 @@ pub fn run() {
                     }
                 };
 
+                // Auto-heal local blob index: scan blob_dir/data for any existing .data files not indexed in store
+                let heal_store = loaded_store.clone();
+                let heal_data_dir = blob_dir.join("data");
+                tauri::async_runtime::spawn(async move {
+                    if let Ok(mut dir_entries) = tokio::fs::read_dir(&heal_data_dir).await {
+                        while let Ok(Some(entry)) = dir_entries.next_entry().await {
+                            let path = entry.path();
+                            if let Some(name) = path.file_name().and_then(|f| f.to_str()) {
+                                if name.ends_with(".data") {
+                                    let hash_str = name.trim_end_matches(".data");
+                                    if let Ok(parsed) = hash_str.parse::<iroh_blobs::Hash>() {
+                                        if !storage::hosting_worker::is_blob_cached(&heal_store, &parsed).await {
+                                            if let Ok(bytes) = tokio::fs::read(&path).await {
+                                                let _ = heal_store.blobs().add_bytes(bytes).await;
+                                                tracing::info!(hash = %hash_str, "Re-indexed existing disk blob into redb store");
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                });
+
                 // 2. Start the Iroh node with the loaded store (shared store, no file lock conflict).
                 let mut retry_delay = std::time::Duration::from_secs(3);
                 loop {

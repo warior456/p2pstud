@@ -26,6 +26,7 @@ import {
   Archive
 } from 'lucide-react';
 import { FileEntry } from '../../types';
+import { isSameNodeId } from '../../utils/nodeId';
 
 interface FileRowProps {
   file: FileEntry;
@@ -96,13 +97,13 @@ export const FileRow: React.FC<FileRowProps> = ({
   const [isDragTarget, setIsDragTarget] = useState(false);
 
   const isOwner = Boolean(
-    file.owner_node_id && currentUserId && file.owner_node_id === currentUserId
+    file.owner_node_id && currentUserId && isSameNodeId(file.owner_node_id, currentUserId)
   );
   const isSoleSeed = (file.seeds_count ?? 1) <= 1;
   const deleteVotes = file.delete_votes || [];
   const keepVotes = file.keep_votes || [];
-  const hasVotedDelete = Boolean(currentUserId && deleteVotes.includes(currentUserId));
-  const hasVotedKeep = Boolean(currentUserId && keepVotes.includes(currentUserId));
+  const hasVotedDelete = Boolean(currentUserId && deleteVotes.some((v) => isSameNodeId(v, currentUserId)));
+  const hasVotedKeep = Boolean(currentUserId && keepVotes.some((v) => isSameNodeId(v, currentUserId)));
 
   const totalVotes = deleteVotes.length + keepVotes.length;
   const deleteRatio = totalVotes > 0 ? Math.round((deleteVotes.length / totalVotes) * 100) : 0;
@@ -345,12 +346,19 @@ export const FileRow: React.FC<FileRowProps> = ({
             ) : (
               <>
                 {file.owner_node_id && (
-                  <span className="flex items-center gap-1 font-mono">
+                  <span
+                    className={`flex items-center gap-1 font-mono ${
+                      isOwner ? 'text-blue-600 font-semibold' : 'text-gray-500'
+                    }`}
+                    title={isOwner ? 'You created and own this file' : `Owner Node ID: ${file.owner_node_id}`}
+                  >
                     <User className="w-2.5 h-2.5" />
                     {isOwner ? 'You (Owner)' : `Owner: ${file.owner_node_id.slice(0, 8)}...`}
                   </span>
                 )}
-                <span className="font-mono">{file.hash.slice(0, 10)}...</span>
+                <span className="font-mono text-gray-400" title={`Blob hash: ${file.hash}`}>
+                  #{file.hash.slice(0, 8)}...
+                </span>
               </>
             )}
           </div>

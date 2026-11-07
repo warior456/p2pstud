@@ -24,7 +24,8 @@ import {
   ImportProgress,
   UpdateInfo,
   UpdateDownloadProgress,
-  ExportPreflightInfo
+  ExportPreflightInfo,
+  SoleSeedFile
 } from './types';
 import { useStorageStats } from './hooks/useStorageStats';
 import { usePeerStatus } from './hooks/usePeerStatus';
@@ -45,6 +46,7 @@ import { OnboardingWizard } from './components/Onboarding/OnboardingWizard';
 import { ZipImportModal, ZipFileItem } from './components/Explorer/ZipImportModal';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
+import { isSameNodeId, toCanonicalHexNodeId } from './utils/nodeId';
 
 interface SelectedFileInfo {
   path: string;
@@ -308,7 +310,7 @@ export default function App() {
             size_bytes: r.size_bytes,
             is_dir: false,
             sync_state: r.is_pinned ? 'pinned' : r.is_cached ? 'cached' : 'cloud_only',
-            owner_node_id: r.owner_node_id || undefined,
+            owner_node_id: r.owner_node_id ? (toCanonicalHexNodeId(r.owner_node_id) || r.owner_node_id) : undefined,
             last_accessed_at: r.last_accessed_at,
             delete_votes: r.delete_votes || [],
             keep_votes: r.keep_votes || [],
@@ -724,7 +726,7 @@ export default function App() {
       setIsUpdatingNow(true);
       setToastMessage('Downloading update package...');
       await invoke('download_app_update');
-      setToastMessage('Download verified! Launching updater in foreground...');
+      setToastMessage('Download verified! Applying update...');
       setIsUpdatePending(true);
       setDownloadProgress(null);
       await invoke('confirm_app_exit', { installUpdate: true });
@@ -862,8 +864,8 @@ export default function App() {
   const handleBatchDelete = async (hashes: string[]) => {
     if (!hashes || hashes.length === 0) return;
     const selectedList = files.filter((f) => hashes.includes(f.hash));
-    const owned = selectedList.filter((f) => f.owner_node_id === nodeId);
-    const community = selectedList.filter((f) => f.owner_node_id !== nodeId);
+    const owned = selectedList.filter((f) => isSameNodeId(f.owner_node_id, nodeId));
+    const community = selectedList.filter((f) => !isSameNodeId(f.owner_node_id, nodeId));
 
     let confirmMsg = '';
     if (owned.length > 0 && community.length > 0) {
@@ -1299,9 +1301,18 @@ export default function App() {
             <h1 className="text-sm font-bold tracking-tight text-gray-900">
               P2P Shared Cloud
             </h1>
-            <p className="text-[10px] font-mono text-gray-400 truncate max-w-[200px]">
+            <button
+              onClick={() => {
+                if (nodeId) {
+                  navigator.clipboard.writeText(nodeId);
+                  setToastMessage(`Copied Node ID to clipboard: ${nodeId.slice(0, 16)}...`);
+                }
+              }}
+              className="text-[10px] font-mono text-gray-400 hover:text-blue-600 truncate max-w-[200px] text-left cursor-pointer transition-colors block"
+              title={nodeId ? `Click to copy full Node ID: ${nodeId}` : 'Connecting to Iroh Swarm...'}
+            >
               {nodeId ? `Node: ${nodeId.slice(0, 16)}...` : 'Connecting to Iroh Swarm...'}
-            </p>
+            </button>
           </div>
         </div>
 
@@ -1410,15 +1421,25 @@ export default function App() {
               </span>
               <div className="mt-1.5 space-y-0.5">
                 <button
-                  onClick={() => setSearchQuery('.pdf')}
-                  className="w-full flex items-center gap-2.5 px-3 py-1.5 text-xs text-gray-600 rounded-lg hover:bg-gray-100"
+                  onClick={() => setSearchQuery((prev) => (prev === '.pdf' ? '' : '.pdf'))}
+                  className={`w-full flex items-center gap-2.5 px-3 py-1.5 text-xs rounded-lg transition-colors cursor-pointer ${
+                    searchQuery === '.pdf'
+                      ? 'bg-red-50 text-red-700 font-semibold'
+                      : 'text-gray-600 hover:bg-gray-100'
+                  }`}
+                  title={searchQuery === '.pdf' ? 'Click to clear filter' : 'Filter files ending with .pdf'}
                 >
                   <FileText className="w-3.5 h-3.5 text-red-500" />
                   Documents (.pdf)
                 </button>
                 <button
-                  onClick={() => setSearchQuery('.md')}
-                  className="w-full flex items-center gap-2.5 px-3 py-1.5 text-xs text-gray-600 rounded-lg hover:bg-gray-100"
+                  onClick={() => setSearchQuery((prev) => (prev === '.md' ? '' : '.md'))}
+                  className={`w-full flex items-center gap-2.5 px-3 py-1.5 text-xs rounded-lg transition-colors cursor-pointer ${
+                    searchQuery === '.md'
+                      ? 'bg-blue-50 text-blue-700 font-semibold'
+                      : 'text-gray-600 hover:bg-gray-100'
+                  }`}
+                  title={searchQuery === '.md' ? 'Click to clear filter' : 'Filter files ending with .md or .txt'}
                 >
                   <FileCode className="w-3.5 h-3.5 text-blue-500" />
                   Notes (.md, .txt)
@@ -1477,7 +1498,21 @@ export default function App() {
         {/* Center / Content Area */}
         <main className="flex-1 flex flex-col bg-white overflow-hidden">
           {/* Top Banners */}
-          <SoleSeedBanner />
+          <SoleSeedBanner
+            onShowSoleSeeds={async () => {
+              try {
+                const soleSeeds = await invoke<SoleSeedFile[]>('get_sole_seed_files');
+                if (soleSeeds && soleSeeds.length > 0) {
+                  setPaths(['Shared Cloud']);
+                  const hashes = soleSeeds.map((s) => s.hash);
+                  setSelectedHashes(hashes);
+                  setToastMessage(`Highlighted ${soleSeeds.length} rare/sole-seeded file(s) across your workspace.`);
+                }
+              } catch (err) {
+                console.warn('Failed to display sole seeds:', err);
+              }
+            }}
+          />
           <OfflineBanner
             isOnline={isOnline}
             relayConnected={relayConnected}

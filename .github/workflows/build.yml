@@ -71,11 +71,27 @@ jobs:
       - name: Build Tauri Desktop Client
         run: npx tauri build
 
+      - name: Export Standalone Intermediary Binaries
+        shell: bash
+        run: |
+          mkdir -p dist-bin
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            cp target/release/p2pstud.exe dist-bin/p2pstud-windows-x86_64.exe 2>/dev/null || cp src-tauri/target/release/p2pstud.exe dist-bin/p2pstud-windows-x86_64.exe 2>/dev/null || true
+            cp target/release/anchor.exe dist-bin/anchor-windows-x86_64.exe 2>/dev/null || cp src-tauri/target/release/anchor.exe dist-bin/anchor-windows-x86_64.exe 2>/dev/null || true
+          elif [ "${{ runner.os }}" = "Linux" ]; then
+            cp target/release/p2pstud dist-bin/p2pstud-linux-x86_64 2>/dev/null || cp src-tauri/target/release/p2pstud dist-bin/p2pstud-linux-x86_64 2>/dev/null || true
+            cp target/release/anchor dist-bin/anchor-linux-x86_64 2>/dev/null || cp src-tauri/target/release/anchor dist-bin/anchor-linux-x86_64 2>/dev/null || true
+          elif [ "${{ runner.os }}" = "macOS" ]; then
+            cp target/release/p2pstud dist-bin/p2pstud-macos-arm64 2>/dev/null || cp src-tauri/target/release/p2pstud dist-bin/p2pstud-macos-arm64 2>/dev/null || true
+            cp target/release/anchor dist-bin/anchor-macos-arm64 2>/dev/null || cp src-tauri/target/release/anchor dist-bin/anchor-macos-arm64 2>/dev/null || true
+          fi
+
       - name: Upload Build Artifacts
         uses: actions/upload-artifact@v4
         with:
           name: p2pstud-${{ matrix.name }}
           path: |
+            dist-bin/
             target/release/bundle/
             src-tauri/target/release/bundle/
             target/release/anchor
@@ -109,6 +125,7 @@ jobs:
           prerelease: false
           generate_release_notes: true
           files: |
+            dist-bin/*
             target/release/bundle/**/*.deb
             target/release/bundle/**/*.AppImage
             target/release/bundle/**/*.msi

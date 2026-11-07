@@ -56,14 +56,45 @@ pub async fn list_files(state: State<'_, AppState>) -> Result<Vec<BlobRecord>, S
         None
     };
 
+    let blob_dir = match state.db.get_setting("custom_blob_dir") {
+        Ok(Some(custom)) if !custom.trim().is_empty() => std::path::PathBuf::from(custom.trim()),
+        _ => state.data_dir.join("blobs"),
+    };
+    let data_dir = blob_dir.join("data");
+
     for blob in &mut blobs {
         if let Ok(parsed_hash) = blob.hash.parse::<iroh_blobs::Hash>() {
+            let mut is_cached = false;
             if let Some(store) = maybe_store {
-                blob.is_cached = is_blob_cached(store, &parsed_hash).await;
-            } else {
-                // Disk-based fallback: if marked written_at or pinned
-                blob.is_cached = blob.is_pinned || blob.written_at.map(|w| w > 0).unwrap_or(false);
+                is_cached = is_blob_cached(store, &parsed_hash).await;
             }
+            if !is_cached {
+                let disk_file = data_dir.join(format!("{}.data", blob.hash));
+                let fallback_disk_file = blob_dir.join(format!("{}.data", blob.hash));
+                let found_path = if disk_file.exists() {
+                    Some(disk_file)
+                } else if fallback_disk_file.exists() {
+                    Some(fallback_disk_file)
+                } else {
+                    None
+                };
+
+                if let Some(f) = found_path {
+                    is_cached = true;
+                    // Auto-heal / re-index into store asynchronously
+                    if let Some(store) = maybe_store {
+                        let s = store.clone();
+                        tokio::spawn(async move {
+                            if let Ok(bytes) = tokio::fs::read(&f).await {
+                                let _ = s.blobs().add_bytes(bytes).await;
+                            }
+                        });
+                    }
+                } else if blob.is_pinned || blob.written_at.map(|w| w > 0).unwrap_or(false) {
+                    is_cached = true;
+                }
+            }
+            blob.is_cached = is_cached;
             blob.seed_count = get_seed_count(
                 &state.db,
                 &blob.hash,
@@ -123,43 +154,64 @@ pub async fn read_file_bytes(
     let data = match local_res {
         Some(d) => d,
         None => {
-            // Blob is not in local cache: fetch on-demand from the swarm peers!
-            let guard = state.engine.read().await;
-            let engine = guard
-                .as_ref()
-                .ok_or_else(|| "File is not stored in local offline cache and peer network is currently disconnected.".to_string())?;
+            let blob_dir = match state.db.get_setting("custom_blob_dir") {
+                Ok(Some(custom)) if !custom.trim().is_empty() => std::path::PathBuf::from(custom.trim()),
+                _ => state.data_dir.join("blobs"),
+            };
+            let disk_file = blob_dir.join("data").join(format!("{hash}.data"));
+            let fallback_disk_file = blob_dir.join(format!("{hash}.data"));
+            let disk_bytes = if disk_file.exists() {
+                tokio::fs::read(&disk_file).await.ok()
+            } else if fallback_disk_file.exists() {
+                tokio::fs::read(&fallback_disk_file).await.ok()
+            } else {
+                None
+            };
 
-            let blob_rec = get_blob(&state.db, &hash).ok().flatten();
-            let mut download_ok = false;
-            let mut successful_seeder_id: Option<String> = None;
+            if let Some(bytes) = disk_bytes {
+                let engine_guard = state.engine.read().await;
+                if let Some(engine) = engine_guard.as_ref() {
+                    let _ = engine.store.blobs().add_bytes(bytes::Bytes::copy_from_slice(&bytes)).await;
+                }
+                bytes
+            } else {
+                // Blob is not in local cache: fetch on-demand from the swarm peers!
+                let guard = state.engine.read().await;
+                let engine = guard
+                    .as_ref()
+                    .ok_or_else(|| "File is not stored in local offline cache and peer network is currently disconnected.".to_string())?;
 
-            // Track in resume queue before download starts
-            let _ = crate::storage::blob_tracker::add_or_update_resume_queue(
-                &state.db,
-                &hash,
-                blob_rec.as_ref().and_then(|r| r.name.as_deref()),
-                blob_rec.as_ref().map(|r| r.size_bytes).unwrap_or(0),
-                0,
-                blob_rec.as_ref().and_then(|r| r.owner_node_id.as_deref()),
-            );
+                let blob_rec = get_blob(&state.db, &hash).ok().flatten();
+                let mut download_ok = false;
+                let mut successful_seeder_id: Option<String> = None;
 
-            // Try the owner node first if known
-            let my_node_id = engine.node_id().to_string();
-            if let Some(rec) = &blob_rec {
-                if let Some(owner) = &rec.owner_node_id {
-                    if owner != &my_node_id {
-                        if let Ok(owner_id) = owner.parse::<iroh::EndpointId>() {
-                            let downloader = engine.store.downloader(&engine.endpoint);
-                            if downloader.download(parsed_hash, vec![owner_id]).await.is_ok()
-                                && engine.store.blobs().get_bytes(parsed_hash).await.is_ok()
-                            {
-                                download_ok = true;
-                                successful_seeder_id = Some(owner.clone());
+                // Track in resume queue before download starts
+                let _ = crate::storage::blob_tracker::add_or_update_resume_queue(
+                    &state.db,
+                    &hash,
+                    blob_rec.as_ref().and_then(|r| r.name.as_deref()),
+                    blob_rec.as_ref().map(|r| r.size_bytes).unwrap_or(0),
+                    0,
+                    blob_rec.as_ref().and_then(|r| r.owner_node_id.as_deref()),
+                );
+
+                // Try the owner node first if known
+                let my_node_id = engine.node_id().to_string();
+                if let Some(rec) = &blob_rec {
+                    if let Some(owner) = &rec.owner_node_id {
+                        if !crate::storage::db::is_matching_node_id(owner, &my_node_id) {
+                            if let Ok(owner_id) = owner.parse::<iroh::EndpointId>() {
+                                let downloader = engine.store.downloader(&engine.endpoint);
+                                if downloader.download(parsed_hash, vec![owner_id]).await.is_ok()
+                                    && engine.store.blobs().get_bytes(parsed_hash).await.is_ok()
+                                {
+                                    download_ok = true;
+                                    successful_seeder_id = Some(owner.clone());
+                                }
                             }
                         }
                     }
                 }
-            }
 
             // Fallback: try all other known seeders for this blob
             if !download_ok {
@@ -272,7 +324,8 @@ pub async fn read_file_bytes(
 
             downloaded.to_vec()
         }
-    };
+    }
+};
 
     if data.len() as u64 <= INLINE_LIMIT {
         // Small enough to return inline.
@@ -551,7 +604,11 @@ pub async fn delete_file(
     let engine = guard.as_ref().ok_or("Iroh engine not yet started")?;
     let my_node_id = engine.node_id().to_string();
 
-    let is_owner = blob.owner_node_id.as_deref() == Some(&my_node_id);
+    let is_owner = blob
+        .owner_node_id
+        .as_deref()
+        .map(|o| crate::storage::db::is_matching_node_id(o, &my_node_id))
+        .unwrap_or(false);
 
     if !is_owner {
         return Err(
@@ -1330,7 +1387,11 @@ pub async fn batch_delete_files(
 
     for hash in hashes {
         let is_owner = match get_blob(&state.db, &hash) {
-            Ok(Some(r)) => r.owner_node_id.as_deref() == Some(&my_id),
+            Ok(Some(r)) => r
+                .owner_node_id
+                .as_deref()
+                .map(|o| crate::storage::db::is_matching_node_id(o, &my_id))
+                .unwrap_or(false),
             _ => false,
         };
 
