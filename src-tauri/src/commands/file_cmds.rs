@@ -143,6 +143,13 @@ pub async fn list_files(state: State<'_, AppState>) -> Result<Vec<BlobRecord>, S
                 }
             }
             blob.is_cached = is_cached;
+            // Keep the presence marker consistent with what is actually on disk.
+            if is_cached
+                && !blob.written_at.map(|w| w > 0).unwrap_or(false)
+                && crate::storage::blob_tracker::mark_blob_local(&state.db, &blob.hash).is_ok()
+            {
+                blob.written_at = Some(crate::storage::blob_tracker::now_unix());
+            }
             blob.seed_count = get_seed_count(
                 &state.db,
                 &blob.hash,
@@ -377,6 +384,17 @@ pub async fn read_file_bytes(
         }
     }
 };
+
+    if data.is_empty() {
+        // An empty file is indistinguishable from the streamed large-file path
+        // (both return an empty array), so explicitly signal completion.
+        app.emit(
+            "file-chunk-done",
+            serde_json::json!({ "hash": hash, "total": 0u64 }),
+        )
+        .map_err(|e| format!("event emit failed: {e}"))?;
+        return Ok(vec![]);
+    }
 
     if data.len() as u64 <= INLINE_LIMIT {
         // Small enough to return inline.

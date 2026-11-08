@@ -185,11 +185,11 @@ But `read_file_bytes` already supports the preloaded `state.store` fallback. Upl
 
 ---
 
-*This report is the audit artifact for the 0.1.44 → 0.1.45 release cycle.*
+*This report is the audit artifact for the 0.1.44 → 0.1.46 release cycle.*
 
 ---
 
-## 9. Resolution status (0.1.45)
+## 9. Resolution status (0.1.46)
 
 The following fixes were applied in this cycle. `cargo clippy --workspace --all-targets -- -D warnings`, `npm run build`, `npm run test`, and the Rust test suite are used as gates.
 
@@ -203,9 +203,10 @@ The following fixes were applied in this cycle. `cargo clippy --workspace --all-
 | H3 | ✅ Fixed | `export_file` now honors an absolute `dest_path`, resolves relative paths under Downloads, accepts legitimate `..`-containing names, works without a running engine, and reports uncached files clearly. |
 | H4 | ✅ Fixed | `handleExecuteUploadAsZip` now throws when no upload source exists. Removed duplicate tombstone calls. |
 | M1/M2 | ✅ Fixed | Extension checks are lowercased; unsupported types show a toast instead of silently doing nothing; empty/failed PDF opens report an error. |
-| M3 | ✅ Fixed | Telemetry fallback version updated to `0.1.45`. |
+| M3 | ✅ Fixed | Telemetry fallback version updated to `0.1.46`. |
 | M4 | ✅ Fixed | Star tooltip no longer claims offline availability. |
 | M7 | ✅ Fixed | Both clippy errors resolved; full `-D warnings` run is clean. |
+| M11 | ✅ Fixed | Empty files now emit `file-chunk-done`, so the chunk-collecting reader cannot hang on a 0-byte file. `list_files` re-marks blobs found on disk/store as locally present, keeping cache stats consistent. |
 
 **Verification commands run:** `cargo clippy -p p2pstud-tauri --all-targets -- -D warnings`, `cargo test -p p2pstud-tauri`, `npm run build`, `npm run test`.
 
