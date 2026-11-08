@@ -33,6 +33,12 @@ pub struct StorageStats {
     pub is_online: bool,
     /// Whether connected to a working relay.
     pub relay_connected: bool,
+    /// Size of the active SQLite database file on disk.
+    #[serde(default)]
+    pub db_bytes: u64,
+    /// Size of the active SQLite WAL file on disk.
+    #[serde(default)]
+    pub wal_bytes: u64,
 }
 
 /// Swarm connection health and relay status.
@@ -121,6 +127,7 @@ pub async fn get_storage_stats(state: State<'_, AppState>) -> Result<StorageStat
     let (upload_bytes_per_sec, download_bytes_per_sec) = state.bandwidth.get_rates();
     let current_version = env!("CARGO_PKG_VERSION");
     let version_info = crate::storage::blob_tracker::calculate_swarm_median_version(&state.db, current_version);
+    let (db_file_bytes, wal_file_bytes) = state.db.get_database_sizes();
 
     Ok(StorageStats {
         used_bytes,
@@ -134,7 +141,18 @@ pub async fn get_storage_stats(state: State<'_, AppState>) -> Result<StorageStat
         swarm_median_version: Some(version_info.median_version),
         is_online,
         relay_connected,
+        db_bytes: db_file_bytes,
+        wal_bytes: wal_file_bytes,
     })
+}
+
+/// Checkpoint WAL, truncate temporary journals, and reclaim unused database storage.
+#[tauri::command]
+pub async fn optimize_database(state: State<'_, AppState>) -> Result<u64, String> {
+    state.db.checkpoint_wal().map_err(|e| e.to_string())?;
+    let _ = state.db.vacuum_db();
+    let (db_bytes, wal_bytes) = state.db.get_database_sizes();
+    Ok(db_bytes + wal_bytes)
 }
 
 /// Return all application configuration settings.

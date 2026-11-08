@@ -118,6 +118,16 @@ pub fn remove_deletion_tombstone(db: &Database, hash: &str) -> Result<()> {
 /// Validate and apply an incoming deletion tombstone.
 /// Ensures the cryptographic signature verifies and that the signer matches the known owner.
 pub fn record_deletion_tombstone(db: &Database, tombstone: &DeletionTombstone) -> Result<bool> {
+    record_deletion_tombstone_ext(db, tombstone, false)
+}
+
+/// Record a locally initiated deletion tombstone. Always persists locally to prevent
+/// peer sync resurrection even if the local node was not the original uploader.
+pub fn record_deletion_tombstone_local(db: &Database, tombstone: &DeletionTombstone) -> Result<bool> {
+    record_deletion_tombstone_ext(db, tombstone, true)
+}
+
+pub fn record_deletion_tombstone_ext(db: &Database, tombstone: &DeletionTombstone, is_local_origin: bool) -> Result<bool> {
     // 1. Verify cryptographic Ed25519 signature
     if !tombstone.verify() {
         tracing::warn!(
@@ -128,17 +138,20 @@ pub fn record_deletion_tombstone(db: &Database, tombstone: &DeletionTombstone) -
         return Ok(false);
     }
 
-    // 2. If the file is known locally, verify that the tombstone owner matches the known owner
-    if let Ok(Some(existing)) = get_blob(db, &tombstone.hash) {
-        if let Some(ref known_owner) = existing.owner_node_id {
-            if !crate::storage::db::is_matching_node_id(known_owner, &tombstone.owner_node_id) {
-                tracing::warn!(
-                    hash = %tombstone.hash,
-                    known_owner = %known_owner,
-                    signer = %tombstone.owner_node_id,
-                    "Rejected deletion tombstone: signer is not the registered owner of this file"
-                );
-                return Ok(false);
+    // 2. If the file is known locally and this is a remote tombstone from the network,
+    // verify that the tombstone owner matches the known owner to prevent deletion spoofing.
+    if !is_local_origin {
+        if let Ok(Some(existing)) = get_blob(db, &tombstone.hash) {
+            if let Some(ref known_owner) = existing.owner_node_id {
+                if !crate::storage::db::is_matching_node_id(known_owner, &tombstone.owner_node_id) {
+                    tracing::warn!(
+                        hash = %tombstone.hash,
+                        known_owner = %known_owner,
+                        signer = %tombstone.owner_node_id,
+                        "Rejected deletion tombstone: signer is not the registered owner of this file"
+                    );
+                    return Ok(false);
+                }
             }
         }
     }
@@ -459,7 +472,7 @@ pub fn record_peer_seed(db: &Database, hash: &str, peer_node_id: &str) -> Result
 
     let now = now_unix();
     if let Some(prev) = last_seen {
-        if now - prev < 60 {
+        if now - prev < 180 {
             // Already updated recently: avoid continuous WAL writes during sync cycles
             return Ok(());
         }
@@ -603,11 +616,13 @@ pub fn upsert_blob(
 }
 
 /// Update last_accessed_at to now (called when a blob is read/opened).
+/// Debounced so repeated chunk access within 60s does not cause constant WAL writes.
 pub fn touch_blob(db: &Database, hash: &str) -> Result<()> {
     let conn = db.lock();
+    let now = now_unix();
     conn.execute(
-        "UPDATE local_blobs SET last_accessed_at = ?1 WHERE hash = ?2",
-        params![now_unix(), hash],
+        "UPDATE local_blobs SET last_accessed_at = ?1 WHERE hash = ?2 AND (?1 - last_accessed_at > 60)",
+        params![now, hash],
     )?;
     Ok(())
 }
@@ -838,12 +853,14 @@ pub fn list_all_blobs_filtered(db: &Database, include_quarantined: bool) -> Resu
             "SELECT hash, name, size_bytes, last_accessed_at, is_pinned, owner_node_id, deletion_scheduled_at,
                     written_at, is_quarantined, quarantine_expires_at, catalog_first_seen_at, last_any_seed_seen_at
              FROM local_blobs
+             WHERE hash NOT IN (SELECT hash FROM deleted_blobs)
              ORDER BY last_accessed_at DESC"
         } else {
             "SELECT hash, name, size_bytes, last_accessed_at, is_pinned, owner_node_id, deletion_scheduled_at,
                     written_at, is_quarantined, quarantine_expires_at, catalog_first_seen_at, last_any_seed_seen_at
              FROM local_blobs
-             WHERE is_quarantined = 0 OR is_quarantined IS NULL
+             WHERE (is_quarantined = 0 OR is_quarantined IS NULL)
+               AND hash NOT IN (SELECT hash FROM deleted_blobs)
              ORDER BY last_accessed_at DESC"
         };
         let mut stmt = conn.prepare(sql)?;
@@ -1135,6 +1152,11 @@ pub fn list_virtual_folders(db: &Database) -> Result<Vec<String>> {
 /// Delete an empty virtual folder and any empty subfolders from persistence.
 pub fn delete_virtual_folder(db: &Database, virtual_path: &str) -> Result<()> {
     check_folder_empty(db, virtual_path)?;
+    delete_virtual_folder_cascade(db, virtual_path)
+}
+
+/// Unconditionally remove a virtual folder and any of its child subfolders from the virtual_folders index.
+pub fn delete_virtual_folder_cascade(db: &Database, virtual_path: &str) -> Result<()> {
     let clean = virtual_path.trim().trim_matches('/').replace('\\', "/");
     let conn = db.lock();
     let subfolder_prefix = format!("{clean}/%");
@@ -1170,31 +1192,25 @@ pub fn delete_virtual_folder_recursive(
         })?;
 
         for row in rows.flatten() {
-            let (hash, owner_id) = row;
+            let (hash, _owner_id) = row;
             deleted_hashes.push(hash.clone());
 
-            // If we are the registered owner (or no owner was set), generate a signed tombstone
+            // Generate a signed tombstone for every deleted file so this node never re-accepts it
             if let (Some(our_id), Some(sk)) = (our_node_id, secret_key) {
-                let is_our_file = match owner_id {
-                    Some(ref o) => crate::storage::db::is_matching_node_id(o, our_id),
-                    None => true,
-                };
-                if is_our_file {
-                    let tombstone = DeletionTombstone::create_signed(
-                        hash.clone(),
-                        our_id.to_string(),
-                        now_unix(),
-                        sk,
-                    );
-                    tombstones.push(tombstone);
-                }
+                let tombstone = DeletionTombstone::create_signed(
+                    hash.clone(),
+                    our_id.to_string(),
+                    now_unix(),
+                    sk,
+                );
+                tombstones.push(tombstone);
             }
         }
     }
 
-    // Persist all generated tombstones
+    // Persist all generated tombstones locally to prevent peer resurrection
     for t in &tombstones {
-        let _ = record_deletion_tombstone(db, t);
+        let _ = record_deletion_tombstone_local(db, t);
     }
 
     // Now delete from local_blobs, file_seeds, and virtual_folders

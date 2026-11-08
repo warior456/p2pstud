@@ -7,6 +7,7 @@ interface TelemetryBarProps {
   importProgress?: ImportProgress | null;
   onOpenSettings?: () => void;
   onOpenNetworkSettings?: () => void;
+  onOpenBandwidthSettings?: () => void;
 }
 
 function formatGigabytes(bytes: number): string {
@@ -26,7 +27,8 @@ export const TelemetryBar: React.FC<TelemetryBarProps> = ({
   networkProfile,
   importProgress,
   onOpenSettings,
-  onOpenNetworkSettings 
+  onOpenNetworkSettings,
+  onOpenBandwidthSettings 
 }) => {
   const isConnected = stats ? stats.peer_count > 0 : false;
   const peerCount = stats?.peer_count ?? 0;
@@ -114,16 +116,20 @@ export const TelemetryBar: React.FC<TelemetryBarProps> = ({
 
       {/* Center: Live dynamic network speeds & active importing badge */}
       <div className="flex items-center gap-4 font-mono text-xs">
-        <div className="flex items-center gap-4 bg-gray-950/70 px-2.5 py-1 rounded border border-gray-800/80">
-          <div className="flex items-center gap-1.5 text-blue-400 font-medium" title="P2P Swarm Network Upload Speed">
+        <button
+          onClick={onOpenBandwidthSettings}
+          className="flex items-center gap-4 bg-gray-950/70 hover:bg-gray-800/80 px-2.5 py-1 rounded border border-gray-800/80 transition-colors cursor-pointer"
+          title="Live P2P Network Speeds. Click to configure Bandwidth & Battery Defense limits."
+        >
+          <div className="flex items-center gap-1.5 text-blue-400 font-medium">
             <span className="text-sm">↑</span>
             <span>{upSpeed}</span>
           </div>
-          <div className="flex items-center gap-1.5 text-emerald-400 font-medium" title="P2P Swarm Network Download Speed">
+          <div className="flex items-center gap-1.5 text-emerald-400 font-medium">
             <span className="text-sm">↓</span>
             <span>{downSpeed}</span>
           </div>
-        </div>
+        </button>
 
         {importProgress && importProgress.status === 'importing' && (
           <div

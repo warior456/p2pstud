@@ -572,7 +572,7 @@ impl CatalogSyncHandler {
                 Ok(None)
             }
             SyncMessage::FolderDeleted { path } => {
-                let _ = crate::storage::blob_tracker::delete_virtual_folder(&self.db, &path);
+                let _ = crate::storage::blob_tracker::delete_virtual_folder_cascade(&self.db, &path);
                 Ok(None)
             }
             SyncMessage::NodeAnnounce { node_id, app_version } => {

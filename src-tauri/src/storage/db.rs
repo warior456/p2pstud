@@ -220,7 +220,7 @@ const MIGRATIONS: &[&str] = &[
 ];
 
 fn apply_migrations_to_conn(conn: &Connection) -> Result<()> {
-    conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")?;
+    conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA wal_autocheckpoint=1000;")?;
     let current_version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
     let current_ver = current_version.max(0) as usize;
     if current_ver < MIGRATIONS.len() {
@@ -857,6 +857,31 @@ impl Database {
         let conn = self.conn.lock().unwrap();
         conn.execute("DELETE FROM settings WHERE key = ?1", params![key])?;
         Ok(())
+    }
+
+    /// Checkpoints and truncates the SQLite WAL file to reclaim disk space and prevent WAL bloat.
+    pub fn checkpoint_wal(&self) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?;
+        Ok(())
+    }
+
+    /// Checkpoints WAL and vacuums the active database to reclaim fragmented space.
+    pub fn vacuum_db(&self) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); VACUUM;")?;
+        Ok(())
+    }
+
+    /// Return (db_file_bytes, wal_file_bytes) for the currently active database.
+    pub fn get_database_sizes(&self) -> (u64, u64) {
+        let secret = self.active_network_secret();
+        let db_path = self.get_network_db_path(&secret);
+        let wal_path = PathBuf::from(format!("{}-wal", db_path.display()));
+
+        let db_bytes = fs::metadata(&db_path).map(|m| m.len()).unwrap_or(0);
+        let wal_bytes = fs::metadata(&wal_path).map(|m| m.len()).unwrap_or(0);
+        (db_bytes, wal_bytes)
     }
 
     /// Expose a reference to the inner connection for use by other modules.

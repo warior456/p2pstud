@@ -7,7 +7,9 @@ import {
   FolderOpen, 
   Trash2, 
   Power, 
-  Laptop 
+  Laptop,
+  Database as DatabaseIcon,
+  Sparkles
 } from 'lucide-react';
 import { StorageStats } from '../../types';
 
@@ -145,6 +147,29 @@ export const CacheSlider: React.FC<CacheSliderProps> = ({ stats, onStatsUpdated 
     } catch (err) {
       alert(`Failed to open data directory: ${err}`);
     }
+  };
+
+  const [optimizingDb, setOptimizingDb] = useState<boolean>(false);
+  const [dbOptimizedMsg, setDbOptimizedMsg] = useState<string | null>(null);
+
+  const handleOptimizeDb = async () => {
+    setOptimizingDb(true);
+    setDbOptimizedMsg(null);
+    try {
+      const newSizeBytes = await invoke<number>('optimize_database');
+      const mb = (newSizeBytes / (1024 * 1024)).toFixed(1);
+      setDbOptimizedMsg(`Database optimized! WAL flushed and truncated. Total DB footprint: ${mb} MB.`);
+      if (onStatsUpdated) onStatsUpdated();
+    } catch (err) {
+      alert(`Database optimization failed: ${err}`);
+    } finally {
+      setOptimizingDb(false);
+    }
+  };
+
+  const formatMb = (bytes?: number) => {
+    if (!bytes || bytes === 0) return '0.0 MB';
+    return (bytes / (1024 * 1024)).toFixed(2) + ' MB';
   };
 
   const targetHostGb = (sliderGb * 0.8).toFixed(1);
@@ -308,6 +333,50 @@ export const CacheSlider: React.FC<CacheSliderProps> = ({ stats, onStatsUpdated 
               </div>
             )}
           </div>
+        </div>
+
+        {/* Database & Journal Storage Footprint */}
+        <div className="p-4 bg-gray-50 rounded-xl border border-gray-200 space-y-3">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <DatabaseIcon className="w-4 h-4 text-indigo-600" />
+              <span className="text-xs font-bold text-gray-900">Database & Journal Storage</span>
+            </div>
+            <span className="text-[10px] font-mono bg-indigo-50 text-indigo-700 border border-indigo-200 px-2 py-0.5 rounded">
+              SQLite WAL
+            </span>
+          </div>
+          <p className="text-[11px] text-gray-500 leading-relaxed">
+            Index metadata, peer discovery timestamps, and tombstone records. Background checkpointing automatically truncates journal files so WAL never inflates disk consumption.
+          </p>
+          <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
+            <div className="flex items-center gap-4 text-xs font-mono text-gray-700">
+              <div>
+                <span className="text-gray-400 text-[10px] block font-sans">Database File</span>
+                <strong>{formatMb(stats?.db_bytes)}</strong>
+              </div>
+              <div className="h-6 w-px bg-gray-200"></div>
+              <div>
+                <span className="text-gray-400 text-[10px] block font-sans">WAL Journal</span>
+                <strong className={stats?.wal_bytes && stats.wal_bytes > 50 * 1024 * 1024 ? "text-amber-600 font-bold" : "text-gray-700"}>
+                  {formatMb(stats?.wal_bytes)}
+                </strong>
+              </div>
+            </div>
+            <button
+              onClick={handleOptimizeDb}
+              disabled={optimizingDb}
+              className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white rounded-lg text-xs font-semibold flex items-center gap-1.5 transition cursor-pointer shadow-2xs"
+            >
+              <Sparkles className="w-3.5 h-3.5" />
+              {optimizingDb ? 'Optimizing...' : 'Flush WAL & Optimize Database'}
+            </button>
+          </div>
+          {dbOptimizedMsg && (
+            <div className="p-2 rounded text-[11px] font-medium bg-emerald-50 text-emerald-800 border border-emerald-200">
+              {dbOptimizedMsg}
+            </div>
+          )}
         </div>
 
         {/* Disk Actions */}

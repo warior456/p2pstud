@@ -41,6 +41,8 @@ export interface StorageStats {
   swarm_median_version?: string;
   is_online?: boolean;
   relay_connected?: boolean;
+  db_bytes?: number;
+  wal_bytes?: number;
 }
 
 export interface ConnectionStatus {

@@ -63,6 +63,18 @@ pub fn run() {
 
             // Reset any transient session-level update dismissal from past runs
             commands::backup_cmds::reset_update_dismissal_on_startup(&db);
+            // Truncate SQLite WAL on startup to prevent excessive journal growth
+            let _ = db.checkpoint_wal();
+
+            // Periodic WAL checkpoint background task (every 5 minutes)
+            let db_wal_cleaner = db.clone();
+            tauri::async_runtime::spawn(async move {
+                let mut interval = tokio::time::interval(std::time::Duration::from_secs(300));
+                loop {
+                    interval.tick().await;
+                    let _ = db_wal_cleaner.checkpoint_wal();
+                }
+            });
 
             // Store state; local blob store and Iroh engine are started asynchronously
             let engine: Arc<RwLock<Option<IrohEngine>>> = Arc::new(RwLock::new(None));
@@ -286,6 +298,7 @@ pub fn run() {
             commands::storage_cmds::set_full_mirror,
             commands::storage_cmds::purge_cache,
             commands::storage_cmds::purge_unpinned_cache,
+            commands::storage_cmds::optimize_database,
             commands::storage_cmds::open_data_dir,
             commands::storage_cmds::get_setting,
             commands::storage_cmds::set_setting,

@@ -35,6 +35,7 @@ import { FileTree } from './components/Explorer/FileTree';
 import { PdfViewer } from './components/Viewers/PdfViewer';
 import { MarkdownEditor } from './components/Viewers/MarkdownEditor';
 import { CacheSlider } from './components/Settings/CacheSlider';
+import { BandwidthSettings } from './components/Settings/BandwidthSettings';
 import { NetworkSettings } from './components/Settings/NetworkSettings';
 import { BackupSettings } from './components/Settings/BackupSettings';
 import { UploadQueueDrawer } from './components/Explorer/UploadQueueDrawer';
@@ -82,7 +83,7 @@ export default function App() {
   const [uploadQueue, setUploadQueue] = useState<UploadItem[]>([]);
   const [selectedHash, setSelectedHash] = useState<string | null>(null);
   const [currentView, setCurrentView] = useState<'explorer' | 'pdf' | 'markdown' | 'settings'>('explorer');
-  const [settingsTab, setSettingsTab] = useState<'cache' | 'network' | 'backup'>('cache');
+  const [settingsTab, setSettingsTab] = useState<'cache' | 'bandwidth' | 'network' | 'backup'>('cache');
   const [searchQuery, setSearchQuery] = useState('');
   const [pdfData, setPdfData] = useState<Uint8Array | null>(null);
   const [networkProfile, setNetworkProfile] = useState<NetworkProfileInfo | null>(null);
@@ -1741,6 +1742,16 @@ export default function App() {
                     Cache & Quota
                   </button>
                   <button
+                    onClick={() => setSettingsTab('bandwidth')}
+                    className={`pb-2 text-xs font-semibold border-b-2 transition-colors ${
+                      settingsTab === 'bandwidth'
+                        ? 'border-blue-600 text-blue-600'
+                        : 'border-transparent text-gray-500 hover:text-gray-700'
+                    }`}
+                  >
+                    Bandwidth & Battery
+                  </button>
+                  <button
                     onClick={() => setSettingsTab('network')}
                     className={`pb-2 text-xs font-semibold border-b-2 transition-colors ${
                       settingsTab === 'network'
@@ -1764,6 +1775,10 @@ export default function App() {
 
                 {settingsTab === 'cache' && (
                   <CacheSlider stats={stats} onStatsUpdated={refetchStats} />
+                )}
+
+                {settingsTab === 'bandwidth' && (
+                  <BandwidthSettings stats={stats} onStatsUpdated={refetchStats} />
                 )}
 
                 {settingsTab === 'network' && (
@@ -1798,6 +1813,10 @@ export default function App() {
         onOpenNetworkSettings={() => {
           setCurrentView('settings');
           setSettingsTab('network');
+        }}
+        onOpenBandwidthSettings={() => {
+          setCurrentView('settings');
+          setSettingsTab('bandwidth');
         }}
       />
 
