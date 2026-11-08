@@ -272,9 +272,12 @@ pub fn resolve_network_profile(
         if let Ok(Some(profile)) = get_rule_for_ssid(db, ssid) {
             return (profile, None);
         }
+
+        // Standard consumer/home Wi-Fi networks default to Trusted so LAN peer discovery works out of the box
+        return (NetworkProfile::Trusted, None);
     }
 
-    // Default to Campus (conservative stealth mode) if unknown or unclassified
+    // Default to Campus (conservative stealth mode) if SSID cannot be determined
     (NetworkProfile::Campus, None)
 }
 
