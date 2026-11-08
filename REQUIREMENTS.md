@@ -38,6 +38,8 @@
 | 2026-11-04 | **Comprehensive Architecture & UX Alignment**: Finalized design specs for anchorless proof-of-storage, scarcity replication, SSD protection, Eduroam stealth mode, strict immutability, connection doctor, and onboarding wizard | Architectural grilling |
 | 2026-11-05 | **Cross-Platform PC Autostart & Custom Cache Location**: Added `tauri-plugin-autostart` (Windows, Linux, macOS) and configurable blob storage directory | User requirement |
 | 2026-11-05 | **ZIP Import Warning Modal & Toolbar Duplication Fix**: Added modal warning for unpacking ZIP archives with single-file alternative; removed duplicate empty folder toolbar buttons and fixed Back button shrink | Bug fix & UX |
+| 2026-11-08 | **Auto-Updater Pipeline Fix & NSIS Prioritization (v0.1.42)**: Cleared persistent update dismissal on launch; prioritized NSIS setup packages; automated background update polling | Bug fix |
+| 2026-11-08 | **SQLite WAL Truncation, Hardened Anti-Resurrection Tombstones & Bandwidth Settings (v0.1.43)**: Enforced periodic SQLite WAL checkpointing shrinking 4GB WAL; added dedicated Bandwidth & Battery tab; hardened recursive folder deletion against peer resurrection | Bug fix & UX |
 
 ---
 
