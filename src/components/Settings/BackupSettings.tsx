@@ -38,7 +38,7 @@ export function BackupSettings() {
 
   const fetchUpdateStatus = async () => {
     try {
-      const info = await invoke<UpdateInfo>('check_app_update');
+      const info = await invoke<UpdateInfo>('check_app_update', { force: false });
       setUpdateInfo(info);
     } catch (err) {
       console.warn('Could not check update status:', err);
@@ -131,7 +131,7 @@ export function BackupSettings() {
     setIsCheckingUpdate(true);
     setUpdateActionMsg(null);
     try {
-      const info = await invoke<UpdateInfo>('check_app_update');
+      const info = await invoke<UpdateInfo>('check_app_update', { force: true });
       setUpdateInfo(info);
       if (!info.update_available) {
         setUpdateActionMsg(`You are up to date! Version ${info.current_version} is the latest available.`);

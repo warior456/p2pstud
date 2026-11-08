@@ -852,6 +852,13 @@ impl Database {
         Ok(())
     }
 
+    /// Delete a settings value by key.
+    pub fn delete_setting(&self, key: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("DELETE FROM settings WHERE key = ?1", params![key])?;
+        Ok(())
+    }
+
     /// Expose a reference to the inner connection for use by other modules.
     /// Callers must lock it themselves; this gives controlled access.
     pub fn lock(&self) -> std::sync::MutexGuard<'_, Connection> {

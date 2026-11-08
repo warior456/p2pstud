@@ -153,6 +153,25 @@ export default function App() {
         if (val === 'true') setIsUpdatePending(true);
       })
       .catch(() => {});
+
+    // Automatically check for application updates on startup & periodically
+    const checkForUpdates = async () => {
+      try {
+        const update = await invoke<UpdateInfo>('check_app_update', { force: false });
+        if (update && update.update_available) {
+          setAvailableUpdate(update);
+        }
+      } catch (err) {
+        console.warn('Startup update check failed:', err);
+      }
+    };
+    const updateTimer = setTimeout(checkForUpdates, 3500);
+    const updateInterval = setInterval(checkForUpdates, 45 * 60 * 1000);
+
+    return () => {
+      clearTimeout(updateTimer);
+      clearInterval(updateInterval);
+    };
   }, []);
 
   // Fetch network profile

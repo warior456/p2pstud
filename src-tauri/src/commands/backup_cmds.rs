@@ -415,7 +415,7 @@ struct GitHubAsset {
 }
 
 /// Internal helper to check GitHub releases and stage update settings into SQLite.
-pub async fn check_and_stage_app_update(db: &Database) -> Result<UpdateInfo, String> {
+pub async fn check_and_stage_app_update(db: &Database, force: bool) -> Result<UpdateInfo, String> {
     let current_version = env!("CARGO_PKG_VERSION").to_string();
 
     let staged_path = db.get_setting("update_installer_path").unwrap_or_default();
@@ -452,12 +452,15 @@ pub async fn check_and_stage_app_update(db: &Database) -> Result<UpdateInfo, Str
         });
     }
 
-    // Check if user dismissed updates for this session
-    let dismissed = db
-        .get_setting("update_dismissed_session")
-        .unwrap_or_default()
-        .unwrap_or_default()
-        == "true";
+    // Check if user dismissed updates for this session (ignored if manual check was forced)
+    let dismissed = if force {
+        false
+    } else {
+        db.get_setting("update_dismissed_session")
+            .unwrap_or_default()
+            .unwrap_or_default()
+            == "true"
+    };
 
     // Query GitHub releases for https://github.com/warior456/p2pstud/releases
     let client = match reqwest::Client::builder()
@@ -499,23 +502,28 @@ pub async fn check_and_stage_app_update(db: &Database) -> Result<UpdateInfo, Str
                     release
                         .assets
                         .iter()
-                        .find(|a| {
-                            let name = a.name.to_lowercase();
-                            (name == "p2pstud-windows-x86_64.exe" || name == "p2pstud.exe")
-                                && !name.starts_with("anchor")
+                        .find(|a| a.name.to_lowercase().ends_with("-setup.exe"))
+                        .or_else(|| {
+                            release
+                                .assets
+                                .iter()
+                                .find(|a| a.name.to_lowercase().ends_with(".msi"))
                         })
                         .or_else(|| {
                             release
                                 .assets
                                 .iter()
-                                .find(|a| a.name.to_lowercase().ends_with("-setup.exe"))
+                                .find(|a| {
+                                    let name = a.name.to_lowercase();
+                                    (name == "p2pstud-windows-x86_64.exe" || name == "p2pstud.exe")
+                                        && !name.starts_with("anchor")
+                                })
                         })
                         .or_else(|| {
                             release.assets.iter().find(|a| {
                                 let name = a.name.to_lowercase();
                                 name.ends_with(".exe")
                                     && !name.starts_with("anchor")
-                                    && !name.ends_with(".msi")
                             })
                         })
                         .cloned()
@@ -642,8 +650,8 @@ pub async fn check_and_stage_app_update(db: &Database) -> Result<UpdateInfo, Str
 }
 
 #[tauri::command]
-pub async fn check_app_update(_app: AppHandle, state: State<'_, AppState>) -> Result<UpdateInfo, String> {
-    check_and_stage_app_update(&state.db).await
+pub async fn check_app_update(force: Option<bool>, _app: AppHandle, state: State<'_, AppState>) -> Result<UpdateInfo, String> {
+    check_and_stage_app_update(&state.db, force.unwrap_or(false)).await
 }
 
 /// Download application update installer from GitHub releases to disk with real-time progress.
@@ -999,6 +1007,11 @@ pub async fn install_app_update(_app: AppHandle, state: State<'_, AppState>) -> 
 pub async fn dismiss_app_update(state: State<'_, AppState>) -> Result<(), String> {
     let _ = state.db.set_setting("update_dismissed_session", "true");
     Ok(())
+}
+
+/// Clear session dismissal flag on application startup so user is notified of updates in new sessions.
+pub fn reset_update_dismissal_on_startup(db: &Database) {
+    let _ = db.delete_setting("update_dismissed_session");
 }
 
 /// Gracefully exit or restart the application, optionally applying a pending update.

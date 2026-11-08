@@ -61,6 +61,9 @@ pub fn run() {
                     .expect("failed to open database"),
             );
 
+            // Reset any transient session-level update dismissal from past runs
+            commands::backup_cmds::reset_update_dismissal_on_startup(&db);
+
             // Store state; local blob store and Iroh engine are started asynchronously
             let engine: Arc<RwLock<Option<IrohEngine>>> = Arc::new(RwLock::new(None));
             let store: Arc<RwLock<Option<iroh_blobs::store::fs::FsStore>>> = Arc::new(RwLock::new(None));
@@ -240,12 +243,12 @@ pub fn run() {
                     }
                 }
 
-                // Step 40 (R23.3): Non-intrusive 10-second delayed startup update check against GitHub releases
+                // Step 40 (R23.3): Non-intrusive delayed startup update check against GitHub releases
                 let app_for_updater = app_handle_for_workers.clone();
                 let db_for_updater = db_clone.clone();
                 tauri::async_runtime::spawn(async move {
-                    tokio::time::sleep(std::time::Duration::from_secs(10)).await;
-                    if let Ok(info) = commands::backup_cmds::check_and_stage_app_update(&db_for_updater).await {
+                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                    if let Ok(info) = commands::backup_cmds::check_and_stage_app_update(&db_for_updater, false).await {
                         if info.update_available {
                             tracing::info!(remote = %info.version, current = %info.current_version, "Update available, notifying frontend");
                             let _ = app_for_updater.emit("update-available", info);
