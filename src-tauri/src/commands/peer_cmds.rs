@@ -449,7 +449,7 @@ pub async fn verify_candidate_remote_seeds(
         });
     }
 
-    while let Some(_) = set.join_next().await {}
+    while set.join_next().await.is_some() {}
 }
 
 /// Return all files for which this node is the sole known seed in the swarm.

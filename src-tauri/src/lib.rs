@@ -311,6 +311,7 @@ pub fn run() {
             commands::file_cmds::list_files,
             commands::file_cmds::read_file_bytes,
             commands::file_cmds::add_file,
+            commands::file_cmds::save_note,
             commands::file_cmds::upload_file_bytes,
             commands::file_cmds::upload_file_path,
             commands::file_cmds::pick_files_dialog,

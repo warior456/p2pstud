@@ -527,7 +527,7 @@ pub fn get_seed_count(
     Ok(total)
 }
 
-/// Insert or replace a blob record (upsert).
+/// Insert or replace a blob record that is locally present (upsert).
 /// Enforces path collision protection: duplicate path with a different hash returns an error.
 pub fn upsert_blob(
     db: &Database,
@@ -536,6 +536,34 @@ pub fn upsert_blob(
     size_bytes: u64,
     is_pinned: bool,
     owner_node_id: Option<&str>,
+) -> Result<()> {
+    upsert_blob_internal(db, hash, name, size_bytes, is_pinned, owner_node_id, true)
+}
+
+/// Insert or update a blob that exists only in the remote catalog.
+///
+/// Unlike [`upsert_blob`], this never marks the blob as locally present, so
+/// catalog-only files are not reported as cached, are not counted in local
+/// storage usage, and cannot be mistaken for a sole seed.
+pub fn upsert_catalog_blob(
+    db: &Database,
+    hash: &str,
+    name: Option<&str>,
+    size_bytes: u64,
+    is_pinned: bool,
+    owner_node_id: Option<&str>,
+) -> Result<()> {
+    upsert_blob_internal(db, hash, name, size_bytes, is_pinned, owner_node_id, false)
+}
+
+fn upsert_blob_internal(
+    db: &Database,
+    hash: &str,
+    name: Option<&str>,
+    size_bytes: u64,
+    is_pinned: bool,
+    owner_node_id: Option<&str>,
+    locally_present: bool,
 ) -> Result<()> {
     // If this file has an active deletion tombstone, reject upsert so deleted files are never resurrected
     if is_blob_tombstoned(db, hash)? {
@@ -565,15 +593,17 @@ pub fn upsert_blob(
 
     // Performance optimization: Check if blob already exists with identical attributes.
     // If unchanged, skip writing to disk to avoid continuous WAL churning during peer catalog sync.
-    let existing_info: Option<(Option<String>, i64, i64, Option<String>)> = conn
+    // (name, size_bytes, is_pinned, owner_node_id, written_at)
+    type BlobSnapshot = (Option<String>, i64, i64, Option<String>, Option<i64>);
+    let existing_info: Option<BlobSnapshot> = conn
         .query_row(
-            "SELECT name, size_bytes, is_pinned, owner_node_id FROM local_blobs WHERE hash = ?1",
+            "SELECT name, size_bytes, is_pinned, owner_node_id, written_at FROM local_blobs WHERE hash = ?1",
             params![hash],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
         )
         .optional()?;
 
-    if let Some((existing_name, existing_size, existing_pinned, existing_owner)) = existing_info {
+    if let Some((existing_name, existing_size, existing_pinned, existing_owner, existing_written)) = existing_info {
         let name_matches = match (name, existing_name.as_deref()) {
             (None, _) => true,
             (Some(n), Some(en)) => n == en,
@@ -586,12 +616,17 @@ pub fn upsert_blob(
         };
         let pinned_matches = !is_pinned || (existing_pinned != 0);
         let size_matches = existing_size == size_bytes as i64;
+        // A local write must always clear the "catalog-only" state.
+        let presence_matches = !locally_present
+            || existing_written.map(|w| w > 0).unwrap_or(false);
 
-        if name_matches && owner_matches && pinned_matches && size_matches {
+        if name_matches && owner_matches && pinned_matches && size_matches && presence_matches {
             // Already completely synchronized and identical. Skip SQLite write.
             return Ok(());
         }
     }
+
+    let written_at = if locally_present { now } else { 0 };
 
     conn.execute(
         "INSERT INTO local_blobs(hash, name, size_bytes, last_accessed_at, is_pinned, owner_node_id, written_at, catalog_first_seen_at)
@@ -600,7 +635,11 @@ pub fn upsert_blob(
              name             = COALESCE(excluded.name, local_blobs.name),
              size_bytes       = excluded.size_bytes,
              last_accessed_at = excluded.last_accessed_at,
-             owner_node_id    = COALESCE(local_blobs.owner_node_id, excluded.owner_node_id)",
+             owner_node_id    = COALESCE(local_blobs.owner_node_id, excluded.owner_node_id),
+             written_at       = CASE
+                                    WHEN excluded.written_at > 0 THEN excluded.written_at
+                                    ELSE local_blobs.written_at
+                                END",
         params![
             hash,
             name,
@@ -608,9 +647,19 @@ pub fn upsert_blob(
             now,
             is_pinned as i64,
             owner_node_id,
-            now,
+            written_at,
             now,
         ],
+    )?;
+    Ok(())
+}
+
+/// Mark a catalog blob as locally present after it has been written to the store.
+pub fn mark_blob_local(db: &Database, hash: &str) -> Result<()> {
+    let conn = db.lock();
+    conn.execute(
+        "UPDATE local_blobs SET written_at = ?1 WHERE hash = ?2",
+        params![now_unix(), hash],
     )?;
     Ok(())
 }
@@ -657,33 +706,37 @@ pub fn delete_blob(db: &Database, hash: &str) -> Result<()> {
     Ok(())
 }
 
-/// Return the total bytes used by all unpinned blobs.
+/// Return the total bytes used by all locally present unpinned blobs.
 pub fn total_unpinned_bytes(db: &Database) -> Result<u64> {
     let conn = db.lock();
     let bytes: i64 = conn.query_row(
-        "SELECT COALESCE(SUM(size_bytes), 0) FROM local_blobs WHERE is_pinned = 0",
+        "SELECT COALESCE(SUM(size_bytes), 0) FROM local_blobs
+         WHERE is_pinned = 0 AND written_at IS NOT NULL AND written_at > 0",
         [],
         |r| r.get(0),
     )?;
     Ok(bytes as u64)
 }
 
-/// Return the total bytes used by all blobs (pinned + unpinned).
+/// Return the total bytes used by all locally present blobs (pinned + unpinned).
+/// Catalog-only rows are excluded so the number reflects real cache usage.
 pub fn total_bytes(db: &Database) -> Result<u64> {
     let conn = db.lock();
     let bytes: i64 = conn.query_row(
-        "SELECT COALESCE(SUM(size_bytes), 0) FROM local_blobs",
+        "SELECT COALESCE(SUM(size_bytes), 0) FROM local_blobs
+         WHERE written_at IS NOT NULL AND written_at > 0",
         [],
         |r| r.get(0),
     )?;
     Ok(bytes as u64)
 }
 
-/// Return total bytes used by pinned blobs only.
+/// Return total bytes used by locally present pinned blobs only.
 pub fn total_pinned_bytes(db: &Database) -> Result<u64> {
     let conn = db.lock();
     let bytes: i64 = conn.query_row(
-        "SELECT COALESCE(SUM(size_bytes), 0) FROM local_blobs WHERE is_pinned = 1",
+        "SELECT COALESCE(SUM(size_bytes), 0) FROM local_blobs
+         WHERE is_pinned = 1 AND written_at IS NOT NULL AND written_at > 0",
         [],
         |r| r.get(0),
     )?;
@@ -698,7 +751,7 @@ pub fn oldest_unpinned(db: &Database, limit: usize) -> Result<Vec<BlobRecord>> {
             "SELECT hash, name, size_bytes, last_accessed_at, is_pinned, owner_node_id, deletion_scheduled_at,
                     written_at, is_quarantined, quarantine_expires_at, catalog_first_seen_at, last_any_seed_seen_at
              FROM local_blobs
-             WHERE is_pinned = 0
+             WHERE is_pinned = 0 AND written_at IS NOT NULL AND written_at > 0
              ORDER BY last_accessed_at ASC
              LIMIT ?1",
         )?;
@@ -1245,7 +1298,8 @@ pub fn get_sole_seed_files(db: &Database, our_node_id: &str) -> Result<Vec<SoleS
                 (SELECT GROUP_CONCAT(DISTINCT s.peer_node_id) FROM file_seeds s
                  WHERE s.hash = b.hash AND s.last_seen_at > ?1) AS seeders
          FROM local_blobs b
-         WHERE (b.is_quarantined = 0 OR b.is_quarantined IS NULL)",
+         WHERE (b.is_quarantined = 0 OR b.is_quarantined IS NULL)
+           AND b.written_at IS NOT NULL AND b.written_at > 0",
     )?;
 
     let rows = stmt.query_map(params![threshold], |r| {
@@ -1563,6 +1617,42 @@ mod tests {
         assert_eq!(total_unpinned_bytes(&db).unwrap(), 500);
         assert_eq!(total_pinned_bytes(&db).unwrap(), 300);
         assert_eq!(total_bytes(&db).unwrap(), 800);
+    }
+
+    #[test]
+    fn catalog_only_rows_are_not_counted_as_local() {
+        let (_dir, db) = make_db();
+        // A remote catalog row contains metadata only and no local bytes.
+        upsert_catalog_blob(&db, "remote_hash", Some("cloud.pdf"), 900, false, Some("peer")).unwrap();
+
+        assert_eq!(total_bytes(&db).unwrap(), 0, "catalog-only row must not count as cache usage");
+        assert_eq!(total_unpinned_bytes(&db).unwrap(), 0);
+        assert!(
+            oldest_unpinned(&db, 10).unwrap().is_empty(),
+            "catalog-only row must never become an eviction candidate"
+        );
+        assert!(
+            get_sole_seed_files(&db, "my_node").unwrap().is_empty(),
+            "catalog-only row must never be reported as a sole seed"
+        );
+
+        // If the file is downloaded and marked local, it starts counting.
+        mark_blob_local(&db, "remote_hash").unwrap();
+        assert_eq!(total_bytes(&db).unwrap(), 900);
+        assert_eq!(oldest_unpinned(&db, 10).unwrap().len(), 1);
+        assert_eq!(get_sole_seed_files(&db, "my_node").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn catalog_upsert_preserves_existing_local_presence() {
+        let (_dir, db) = make_db();
+        upsert_blob(&db, "local_hash", Some("notes.md"), 100, false, Some("me")).unwrap();
+        assert_eq!(total_bytes(&db).unwrap(), 100);
+
+        // A later remote catalog sync for the same hash must not clear presence.
+        upsert_catalog_blob(&db, "local_hash", Some("notes.md"), 100, false, Some("me")).unwrap();
+        assert_eq!(total_bytes(&db).unwrap(), 100);
+        assert_eq!(get_sole_seed_files(&db, "me").unwrap().len(), 1);
     }
 
     #[test]

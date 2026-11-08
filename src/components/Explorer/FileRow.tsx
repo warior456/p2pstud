@@ -243,7 +243,7 @@ export const FileRow: React.FC<FileRowProps> = ({
               onToggleStar(file.hash);
             }}
             className="p-1 rounded text-gray-300 hover:text-amber-400 transition-colors"
-            title={file.is_starred ? 'Remove star' : 'Star file (Pin to quick access & offline)'}
+            title={file.is_starred ? 'Remove star' : 'Star file for quick access'}
           >
             <Star
               className={`w-4 h-4 ${

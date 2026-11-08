@@ -1,13 +1,13 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { marked } from 'marked';
 import DOMPurify from 'dompurify';
-import { invoke } from '@tauri-apps/api/core';
 import { Save, CheckCircle2, Loader2 } from 'lucide-react';
+import { readFileBytes } from '../../utils/readFileBytes';
 
 interface MarkdownEditorProps {
   hash?: string;
   initialContent?: string;
-  onSave?: (newContent: string) => void;
+  onSave?: (newContent: string) => void | Promise<void>;
   onClose?: () => void;
 }
 
@@ -26,10 +26,10 @@ export const MarkdownEditor: React.FC<MarkdownEditorProps> = ({
   useEffect(() => {
     if (!hash) return;
     setLoading(true);
-    invoke<number[]>('read_file_bytes', { hash })
+    readFileBytes(hash)
       .then((bytes) => {
         if (bytes && bytes.length > 0) {
-          const text = new TextDecoder().decode(new Uint8Array(bytes));
+          const text = new TextDecoder().decode(bytes);
           setContent(text);
         }
         setLoading(false);
@@ -51,11 +51,17 @@ export const MarkdownEditor: React.FC<MarkdownEditorProps> = ({
     if (timerRef.current) clearTimeout(timerRef.current);
     timerRef.current = setTimeout(async () => {
       setSaving(true);
-      if (onSave) {
-        onSave(text);
+      try {
+        if (onSave) {
+          await onSave(text);
+        }
+        setSaved(true);
+      } catch (err) {
+        console.error('Failed to save note:', err);
+        setSaved(false);
+      } finally {
+        setSaving(false);
       }
-      setSaving(false);
-      setSaved(true);
     }, 1000);
   };
 

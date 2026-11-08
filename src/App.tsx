@@ -40,6 +40,7 @@ import { NetworkSettings } from './components/Settings/NetworkSettings';
 import { BackupSettings } from './components/Settings/BackupSettings';
 import { UploadQueueDrawer } from './components/Explorer/UploadQueueDrawer';
 import { TelemetryBar } from './components/Footer/TelemetryBar';
+import { readFileBytes } from './utils/readFileBytes';
 import { OfflineBanner } from './components/OfflineBanner';
 import { SoleSeedBanner } from './components/SoleSeedBanner';
 import { ImportingBanner } from './components/ImportingBanner';
@@ -86,6 +87,8 @@ export default function App() {
   const [settingsTab, setSettingsTab] = useState<'cache' | 'bandwidth' | 'network' | 'backup'>('cache');
   const [searchQuery, setSearchQuery] = useState('');
   const [pdfData, setPdfData] = useState<Uint8Array | null>(null);
+  const [markdownHash, setMarkdownHash] = useState<string | null>(null);
+  const [markdownName, setMarkdownName] = useState<string>('');
   const [networkProfile, setNetworkProfile] = useState<NetworkProfileInfo | null>(null);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
@@ -678,6 +681,8 @@ export default function App() {
         const buffer = await target.file.arrayBuffer();
         const bytes = Array.from(new Uint8Array(buffer));
         await invoke('upload_file_bytes', { name: targetName, data: bytes });
+      } else {
+        throw new Error('No upload source is available for this archive.');
       }
       setToastMessage(`Uploaded archive "${target.name}" as single file.`);
       setImportProgress({
@@ -1160,20 +1165,30 @@ export default function App() {
 
   const handleSelectFile = async (file: FileEntry) => {
     setSelectedHash(file.hash);
-    if (file.name.endsWith('.pdf')) {
+    const lowerName = file.name.toLowerCase();
+    if (lowerName.endsWith('.pdf')) {
       setCurrentView('pdf');
+      setPdfData(null);
       try {
-        const bytes = await invoke<number[]>('read_file_bytes', { hash: file.hash });
-        if (bytes && bytes.length > 0) {
-          setPdfData(new Uint8Array(bytes));
+        const bytes = await readFileBytes(file.hash);
+        if (bytes.length > 0) {
+          setPdfData(bytes);
         } else {
-          setPdfData(null);
+          setToastMessage(`"${file.name}" is empty or could not be read.`);
+          setTimeout(() => setToastMessage(null), 5000);
         }
-      } catch {
-        setPdfData(null);
+      } catch (err) {
+        console.error(err);
+        setToastMessage(`Could not open "${file.name}". It may not be cached and no peers are online.`);
+        setTimeout(() => setToastMessage(null), 5000);
       }
-    } else if (file.name.endsWith('.md') || file.name.endsWith('.txt')) {
+    } else if (lowerName.endsWith('.md') || lowerName.endsWith('.txt')) {
+      setMarkdownHash(file.hash);
+      setMarkdownName(file.name);
       setCurrentView('markdown');
+    } else {
+      setToastMessage(`Preview is not available for "${file.name}". Use Download to save it.`);
+      setTimeout(() => setToastMessage(null), 5000);
     }
   };
 
@@ -1212,18 +1227,19 @@ export default function App() {
     );
 
     try {
-      const bytes = await invoke<number[]>('read_file_bytes', { hash });
-      if (bytes && bytes.length > 0) {
-        const blob = new Blob([new Uint8Array(bytes)], { type: 'application/octet-stream' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = file.name;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        URL.revokeObjectURL(url);
+      const bytes = await readFileBytes(hash);
+      if (!bytes || bytes.length === 0) {
+        throw new Error('The file is empty or could not be read.');
       }
+      const blob = new Blob([bytes as unknown as BlobPart], { type: 'application/octet-stream' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = file.name;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
 
       setFiles((prev) =>
         prev.map((f) => (f.hash === hash ? { ...f, sync_state: 'cached' } : f))
@@ -1231,7 +1247,8 @@ export default function App() {
       refetchStats();
     } catch (err) {
       console.error('Download error:', err);
-      alert(`Download failed: ${err}`);
+      setToastMessage(`Download failed for "${file.name}": ${err}`);
+      setTimeout(() => setToastMessage(null), 6000);
       setFiles((prev) =>
         prev.map((f) => (f.hash === hash ? { ...f, sync_state: 'cloud_only' } : f))
       );
@@ -1698,7 +1715,22 @@ export default function App() {
 
           {currentView === 'markdown' && (
             <MarkdownEditor
-              initialContent="# Notes & Markdown Preview\n\nEdit notes here or preview documents."
+              hash={markdownHash ?? undefined}
+              initialContent={markdownHash ? '' : '# Notes & Markdown Preview\n\nEdit notes here or preview documents.'}
+              onSave={async (newContent) => {
+                if (!markdownHash) return;
+                const newHash = await invoke<string>('save_note', {
+                  hash: markdownHash,
+                  name: markdownName,
+                  content: newContent,
+                });
+                if (newHash !== markdownHash) {
+                  setMarkdownHash(newHash);
+                  setSelectedHash(newHash);
+                  await loadWorkspaceFiles();
+                  refetchStats();
+                }
+              }}
               onClose={() => setCurrentView('explorer')}
             />
           )}

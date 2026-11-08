@@ -12,7 +12,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::storage::blob_tracker::{
     cast_delete_vote, cast_keep_vote, delete_blob, get_blob, list_all_blobs, record_peer_seed,
-    remove_delete_vote, remove_keep_vote, remove_peer_seed, rename_blob, upsert_blob, BlobRecord,
+    remove_delete_vote, remove_keep_vote, remove_peer_seed, rename_blob,
+    upsert_catalog_blob, BlobRecord,
 };
 use crate::storage::db::Database;
 
@@ -200,7 +201,7 @@ impl CatalogSyncHandler {
                         continue;
                     }
                     let clean_name = sanitize_incoming_name(r.name.as_deref());
-                    let _ = upsert_blob(
+                    let _ = upsert_catalog_blob(
                         &self.db,
                         &r.hash,
                         clean_name.as_deref(),
@@ -283,7 +284,7 @@ impl CatalogSyncHandler {
                                 // Incoming file is older -> it wins original path
                                 let new_local_name = resolve_path_conflict(target_name, local_short);
                                 let _ = rename_blob(&self.db, &local_hash, &new_local_name);
-                                let _ = upsert_blob(
+                                let _ = upsert_catalog_blob(
                                     &self.db,
                                     &r.hash,
                                     Some(target_name),
@@ -294,7 +295,7 @@ impl CatalogSyncHandler {
                             } else {
                                 // Local file is older -> it wins original path
                                 let new_incoming_name = resolve_path_conflict(target_name, sender_short);
-                                let _ = upsert_blob(
+                                let _ = upsert_catalog_blob(
                                     &self.db,
                                     &r.hash,
                                     Some(&new_incoming_name),
@@ -304,7 +305,7 @@ impl CatalogSyncHandler {
                                 );
                             }
                         } else {
-                            let _ = upsert_blob(
+                            let _ = upsert_catalog_blob(
                                 &self.db,
                                 &r.hash,
                                 Some(target_name),
@@ -314,7 +315,7 @@ impl CatalogSyncHandler {
                             );
                         }
                     } else {
-                        let _ = upsert_blob(
+                        let _ = upsert_catalog_blob(
                             &self.db,
                             &r.hash,
                             Some(target_name),
@@ -747,7 +748,7 @@ pub async fn sync_catalog_with_peer(
                     continue;
                 }
                 let clean_name = sanitize_incoming_name(r.name.as_deref());
-                let _ = upsert_blob(
+                let _ = upsert_catalog_blob(
                     db,
                     &r.hash,
                     clean_name.as_deref(),
@@ -885,7 +886,7 @@ mod tests {
         let incoming_hash = "0000000000000000000000000000000000000000000000000000000000000002";
 
         // Local file created at timestamp 2000
-        upsert_blob(&db, local_hash, Some("notes.pdf"), 500, false, Some("nodeA")).unwrap();
+        crate::storage::blob_tracker::upsert_blob(&db, local_hash, Some("notes.pdf"), 500, false, Some("nodeA")).unwrap();
         {
             let conn = db.lock();
             conn.execute(

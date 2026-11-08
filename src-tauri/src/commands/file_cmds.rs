@@ -3,14 +3,51 @@
 
 use tauri::{AppHandle, Emitter, Manager, State};
 
+use crate::p2p::engine::IrohEngine;
 use crate::p2p::sync::{broadcast_catalog_event, SyncMessage};
 use crate::storage::blob_tracker::{
-    cast_delete_vote, cast_keep_vote, get_blob, get_seed_count, list_all_blobs,
+    cast_delete_vote, cast_keep_vote, delete_blob, get_blob, get_seed_count, list_all_blobs,
     record_peer_seed, remove_delete_vote, remove_keep_vote, rename_blob, set_pinned, touch_blob,
-    upsert_blob, BlobRecord,
+    upsert_blob, BlobRecord, DeletionTombstone,
 };
 use crate::storage::hosting_worker::is_blob_cached;
 use crate::AppState;
+
+/// Resolve the blob store for upload-only operations.
+///
+/// Uploads must work while the P2P engine is still starting (or fully offline),
+/// so fall back to the preloaded store and the persisted identity. The returned
+/// engine is `None` when there is no running node to broadcast catalog events.
+async fn resolve_upload_context(
+    state: &AppState,
+) -> Result<(iroh_blobs::store::fs::FsStore, String, Option<IrohEngine>), String> {
+    let engine_guard = state.engine.read().await;
+    if let Some(engine) = engine_guard.as_ref() {
+        return Ok((
+            engine.store.clone(),
+            engine.node_id().to_string(),
+            Some(engine.clone()),
+        ));
+    }
+    drop(engine_guard);
+
+    let store_guard = state.store.read().await;
+    let store = store_guard
+        .clone()
+        .ok_or_else(|| "Local storage is not ready yet. Please retry in a moment.".to_string())?;
+    drop(store_guard);
+
+    let key = crate::p2p::identity::load_or_create_secret_key(&state.data_dir)
+        .map_err(|e| format!("failed to load local identity: {e}"))?;
+    Ok((store, key.public().to_string(), None))
+}
+
+/// Broadcast a catalog event only when a running engine is available.
+async fn broadcast_catalog_event_opt(engine: &Option<IrohEngine>, msg: SyncMessage) {
+    if let Some(engine) = engine.as_ref() {
+        broadcast_catalog_event(&engine.endpoint, &engine.sync_alpn, msg).await;
+    }
+}
 
 /// Progress event emitted during local file additions and ZIP archive extractions.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -268,6 +305,9 @@ pub async fn read_file_bytes(
                 .await
                 .map_err(|e| format!("blob read failed after swarm download: {e}"))?;
 
+            // The blob now exists locally, so mark it present in the catalog.
+            let _ = crate::storage::blob_tracker::mark_blob_local(&state.db, &hash);
+
             // Record dynamic network download throughput
             state.bandwidth.record_download(downloaded.len() as u64);
 
@@ -394,12 +434,9 @@ pub async fn add_file(local_path: String, state: State<'_, AppState>) -> Result<
     let data = std::fs::read(path).map_err(|e| format!("read failed: {e}"))?;
     let size_bytes = data.len() as u64;
 
-    let guard = state.engine.read().await;
-    let engine = guard.as_ref().ok_or("Iroh engine not yet started")?;
-    let owner_node_id = engine.node_id().to_string();
+    let (store, owner_node_id, engine) = resolve_upload_context(&state).await?;
 
-    let tag_info = engine
-        .store
+    let tag_info = store
         .blobs()
         .add_bytes(bytes::Bytes::from(data))
         .await
@@ -407,8 +444,7 @@ pub async fn add_file(local_path: String, state: State<'_, AppState>) -> Result<
 
     let hash = tag_info.hash.to_hex().to_string();
 
-    let _ = engine
-        .store
+    let _ = store
         .tags()
         .set(
             file_name.as_deref().unwrap_or(&hash).as_bytes(),
@@ -420,8 +456,6 @@ pub async fn add_file(local_path: String, state: State<'_, AppState>) -> Result<
     let _ = crate::storage::blob_tracker::remove_deletion_tombstone(&state.db, &hash);
 
     // Record in SQLite with filename and owner node ID.
-    let _ = crate::storage::blob_tracker::remove_deletion_tombstone(&state.db, &hash);
-
     upsert_blob(
         &state.db,
         &hash,
@@ -435,13 +469,7 @@ pub async fn add_file(local_path: String, state: State<'_, AppState>) -> Result<
     // Record initial seed for the local node
     let _ = record_peer_seed(&state.db, &hash, &owner_node_id);
 
-    // Record upload bandwidth
-    state.bandwidth.record_upload(size_bytes);
-
-    // Record upload bandwidth
-    state.bandwidth.record_upload(size_bytes);
-
-    // Record upload bandwidth
+    // Record upload bandwidth (once per successful upload)
     state.bandwidth.record_upload(size_bytes);
 
     // Broadcast file addition to the swarm
@@ -462,10 +490,106 @@ pub async fn add_file(local_path: String, state: State<'_, AppState>) -> Result<
         is_cached: true,
         ..Default::default()
     };
-    broadcast_catalog_event(&engine.endpoint, &engine.sync_alpn, SyncMessage::FileAdded(record)).await;
+    broadcast_catalog_event_opt(&engine, SyncMessage::FileAdded(record)).await;
 
     tracing::info!(hash = %hash, name = ?file_name, owner = %owner_node_id, bytes = size_bytes, "Added file to workspace");
     Ok(hash)
+}
+
+/// Save edited note content, replacing the previous revision of the file.
+///
+/// Only the file's owner may save over it. If the content did not change the
+/// original hash is returned. Otherwise the old revision is tombstoned (so it
+/// cannot be resurrected by peers) and the new revision is published.
+#[tauri::command]
+pub async fn save_note(
+    hash: String,
+    name: String,
+    content: String,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    let clean_name = crate::storage::path_utils::sanitize_virtual_path(&name)
+        .map_err(|e| format!("Invalid filename: {e}"))?;
+    let size_bytes = content.len() as u64;
+    let (store, owner_node_id, engine) = resolve_upload_context(&state).await?;
+
+    let tag_info = store
+        .blobs()
+        .add_bytes(bytes::Bytes::from(content.into_bytes()))
+        .await
+        .map_err(|e| format!("blob import failed: {e}"))?;
+    let new_hash = tag_info.hash.to_hex().to_string();
+    let _ = store.tags().set(clean_name.as_bytes(), tag_info).await;
+
+    if new_hash == hash {
+        let _ = touch_blob(&state.db, &hash);
+        return Ok(hash);
+    }
+
+    // Verify the caller owns the existing file before replacing it.
+    let old = get_blob(&state.db, &hash).map_err(|e| e.to_string())?;
+    if let Some(rec) = &old {
+        if let Some(owner) = rec.owner_node_id.as_deref() {
+            if !crate::storage::db::is_matching_node_id(owner, &owner_node_id) {
+                return Err("You can only edit notes that you own.".to_string());
+            }
+        }
+    }
+
+    let now = crate::storage::blob_tracker::now_unix();
+    match engine.as_ref() {
+        Some(engine) => {
+            let tombstone = DeletionTombstone::create_signed(
+                hash.clone(),
+                owner_node_id.clone(),
+                now,
+                &engine.secret_key,
+            );
+            crate::storage::blob_tracker::record_deletion_tombstone(&state.db, &tombstone)
+                .map_err(|e| e.to_string())?;
+            let _ = store.tags().delete(hash.as_bytes()).await;
+            broadcast_catalog_event(
+                &engine.endpoint,
+                &engine.sync_alpn,
+                SyncMessage::FileDeletedTombstone(tombstone),
+            )
+            .await;
+        }
+        None => {
+            let _ = delete_blob(&state.db, &hash);
+            let _ = store.tags().delete(hash.as_bytes()).await;
+        }
+    }
+
+    upsert_blob(
+        &state.db,
+        &new_hash,
+        Some(&clean_name),
+        size_bytes,
+        false,
+        Some(&owner_node_id),
+    )
+    .map_err(|e| e.to_string())?;
+    let _ = record_peer_seed(&state.db, &new_hash, &owner_node_id);
+
+    let record = BlobRecord {
+        hash: new_hash.clone(),
+        name: Some(clean_name.clone()),
+        size_bytes,
+        last_accessed_at: now,
+        is_pinned: false,
+        owner_node_id: Some(owner_node_id.clone()),
+        delete_votes: Vec::new(),
+        keep_votes: Vec::new(),
+        deletion_scheduled_at: None,
+        seed_count: 1,
+        is_cached: true,
+        ..Default::default()
+    };
+    broadcast_catalog_event_opt(&engine, SyncMessage::FileAdded(record)).await;
+
+    tracing::info!(old_hash = %hash, new_hash = %new_hash, name = %clean_name, "Saved note revision");
+    Ok(new_hash)
 }
 
 /// Upload a file to the shared cloud workspace via in-memory bytes (e.g. from UI file input).
@@ -507,12 +631,9 @@ pub async fn upload_file_bytes(
 
     let start_time = std::time::Instant::now();
 
-    let guard = state.engine.read().await;
-    let engine = guard.as_ref().ok_or("Iroh engine not yet started")?;
-    let owner_node_id = engine.node_id().to_string();
+    let (store, owner_node_id, engine) = resolve_upload_context(&state).await?;
 
-    let tag_info = match engine
-        .store
+    let tag_info = match store
         .blobs()
         .add_bytes(bytes::Bytes::from(data))
         .await
@@ -541,8 +662,7 @@ pub async fn upload_file_bytes(
 
     let hash = tag_info.hash.to_hex().to_string();
 
-    let _ = engine
-        .store
+    let _ = store
         .tags()
         .set(
             clean_name.as_bytes(),
@@ -554,8 +674,6 @@ pub async fn upload_file_bytes(
     let _ = crate::storage::blob_tracker::remove_deletion_tombstone(&state.db, &hash);
 
     // Record in SQLite with filename and owner node ID.
-    let _ = crate::storage::blob_tracker::remove_deletion_tombstone(&state.db, &hash);
-
     upsert_blob(
         &state.db,
         &hash,
@@ -569,10 +687,7 @@ pub async fn upload_file_bytes(
     // Record initial seed for the local node
     let _ = record_peer_seed(&state.db, &hash, &owner_node_id);
 
-    // Record upload bandwidth
-    state.bandwidth.record_upload(size_bytes);
-
-    // Record upload bandwidth
+    // Record upload bandwidth (once per successful upload)
     state.bandwidth.record_upload(size_bytes);
 
     // Broadcast file addition to the swarm
@@ -593,7 +708,7 @@ pub async fn upload_file_bytes(
         is_cached: true,
         ..Default::default()
     };
-    broadcast_catalog_event(&engine.endpoint, &engine.sync_alpn, SyncMessage::FileAdded(record)).await;
+    broadcast_catalog_event_opt(&engine, SyncMessage::FileAdded(record)).await;
 
     let elapsed = start_time.elapsed().as_secs_f64();
     let speed = if elapsed > 0.02 {
@@ -858,6 +973,9 @@ pub async fn move_file(
 }
 
 /// Save a blob to a specified local destination file path.
+///
+/// `dest_path` is expected to be an absolute path chosen by the native save
+/// dialog. Relative paths are resolved under the OS Downloads directory.
 #[tauri::command]
 pub async fn export_file(
     hash: String,
@@ -865,40 +983,63 @@ pub async fn export_file(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
+    let dest_path = dest_path.trim();
+    if dest_path.is_empty() {
+        return Err("Destination path is empty".to_string());
+    }
     if dest_path.contains('\0') {
         return Err("Invalid destination path: contains null byte".to_string());
-    }
-    if dest_path.contains("..") {
-        return Err("Directory traversal '..' detected in destination path".to_string());
     }
 
     let parsed_hash = hash
         .parse::<iroh_blobs::Hash>()
         .map_err(|e| format!("invalid hash '{hash}': {e}"))?;
 
-    let guard = state.engine.read().await;
-    let engine = guard.as_ref().ok_or("Iroh engine not yet started")?;
+    // Read from the running engine if available, otherwise the preloaded store.
+    let data = {
+        let engine_guard = state.engine.read().await;
+        if let Some(engine) = engine_guard.as_ref() {
+            engine
+                .store
+                .blobs()
+                .get_bytes(parsed_hash)
+                .await
+                .map(|b| b.to_vec())
+                .ok()
+        } else {
+            drop(engine_guard);
+            let store_guard = state.store.read().await;
+            match store_guard.as_ref() {
+                Some(store) => store
+                    .blobs()
+                    .get_bytes(parsed_hash)
+                    .await
+                    .map(|b| b.to_vec())
+                    .ok(),
+                None => None,
+            }
+        }
+    }
+    .ok_or_else(|| {
+        "File is not cached locally. Open or download it once before exporting.".to_string()
+    })?;
 
-    let data = engine
-        .store
-        .blobs()
-        .get_bytes(parsed_hash)
-        .await
-        .map_err(|e| format!("blob read failed: {e}"))?;
-
-    let downloads = app
-        .path()
-        .download_dir()
-        .unwrap_or_else(|_| std::path::PathBuf::from("."));
-    let filename = std::path::Path::new(&dest_path)
-        .file_name()
-        .ok_or_else(|| "Invalid destination filename".to_string())?
-        .to_string_lossy();
-    let target = crate::storage::path_utils::safe_join_new(&downloads, &filename)
-        .map_err(|e| format!("Export destination outside authorized downloads directory: {e}"))?;
+    let requested = std::path::PathBuf::from(dest_path);
+    let target = if requested.is_absolute() {
+        requested
+    } else {
+        app.path()
+            .download_dir()
+            .unwrap_or_else(|_| std::path::PathBuf::from("."))
+            .join(requested)
+    };
 
     if let Some(parent) = target.parent() {
-        let _ = std::fs::create_dir_all(parent);
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent).map_err(|e| {
+                format!("failed to create destination directory '{}': {e}", parent.display())
+            })?;
+        }
     }
 
     std::fs::write(&target, data)
@@ -980,9 +1121,7 @@ async fn import_zip_archive_internal<R: std::io::Read + std::io::Seek>(
     state: &AppState,
     app: Option<&AppHandle>,
 ) -> Result<ZipImportSummary, String> {
-    let guard = state.engine.read().await;
-    let engine = guard.as_ref().ok_or("Iroh engine not yet started")?;
-    let owner_node_id = engine.node_id().to_string();
+    let (store, owner_node_id, engine) = resolve_upload_context(state).await?;
 
     let mut summary = ZipImportSummary {
         files_imported: 0,
@@ -1114,8 +1253,7 @@ async fn import_zip_archive_internal<R: std::io::Read + std::io::Seek>(
 
         let size_bytes = file_bytes.len() as u64;
 
-        let tag_info = match engine
-            .store
+        let tag_info = match store
             .blobs()
             .add_bytes(bytes::Bytes::from(file_bytes))
             .await
@@ -1129,8 +1267,7 @@ async fn import_zip_archive_internal<R: std::io::Read + std::io::Seek>(
 
         let hash = tag_info.hash.to_hex().to_string();
 
-        let _ = engine
-            .store
+        let _ = store
             .tags()
             .set(sanitized_path.as_bytes(), tag_info)
             .await;
@@ -1151,9 +1288,6 @@ async fn import_zip_archive_internal<R: std::io::Read + std::io::Seek>(
 
         let _ = record_peer_seed(&state.db, &hash, &owner_node_id);
 
-    // Record upload bandwidth
-    state.bandwidth.record_upload(size_bytes);
-
         let record = BlobRecord {
             hash: hash.clone(),
             name: Some(sanitized_path.clone()),
@@ -1172,7 +1306,7 @@ async fn import_zip_archive_internal<R: std::io::Read + std::io::Seek>(
             ..Default::default()
         };
 
-        broadcast_catalog_event(&engine.endpoint, &engine.sync_alpn, SyncMessage::FileAdded(record)).await;
+        broadcast_catalog_event_opt(&engine, SyncMessage::FileAdded(record)).await;
 
         summary.files_imported += 1;
         summary.total_bytes += size_bytes;
@@ -1315,19 +1449,16 @@ pub async fn upload_file_path(
 
     let start_time = std::time::Instant::now();
 
-    let guard = state.engine.read().await;
-    let engine = guard.as_ref().ok_or("Iroh engine not yet started")?;
-    let owner_node_id = engine.node_id().to_string();
+    let (store, owner_node_id, engine) = resolve_upload_context(&state).await?;
 
-    let outcome = match engine
-        .store
+    let outcome = match store
         .blobs()
         .add_path(path)
         .await
     {
         Ok(tag_info) => {
             let h = tag_info.hash;
-            let _ = engine.store.tags().set(clean_name.as_bytes(), tag_info).await;
+            let _ = store.tags().set(clean_name.as_bytes(), tag_info).await;
             h
         }
         Err(e) => {
@@ -1393,7 +1524,7 @@ pub async fn upload_file_path(
         ..Default::default()
     };
 
-    broadcast_catalog_event(&engine.endpoint, &engine.sync_alpn, SyncMessage::FileAdded(record)).await;
+    broadcast_catalog_event_opt(&engine, SyncMessage::FileAdded(record)).await;
 
     let elapsed = start_time.elapsed().as_secs_f64();
     let speed = if elapsed > 0.02 {

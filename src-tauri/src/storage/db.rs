@@ -939,7 +939,7 @@ mod tests {
         // List databases: should see default and course-cs-2026
         let dbs = db.list_network_databases().unwrap();
         assert!(dbs.len() >= 2);
-        let default_db = dbs.iter().find(|d| d.network_secret == "").unwrap();
+        let default_db = dbs.iter().find(|d| d.network_secret.is_empty()).unwrap();
         assert_eq!(default_db.file_count, 2);
         assert_eq!(default_db.seedable_file_count, 1);
 
