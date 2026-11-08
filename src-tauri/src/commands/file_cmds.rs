@@ -1618,25 +1618,75 @@ pub async fn list_folders(
         .map_err(|e| e.to_string())
 }
 
-/// Delete an empty virtual folder. Returns an error if the folder contains any files.
+/// Delete a virtual folder. If `recursive` is true, recursively removes all contained files,
+/// generates signed deletion tombstones for owned files, and cleans up storage.
 #[tauri::command]
 pub async fn delete_folder(
     folder_path: Option<String>,
     virtual_path: Option<String>,
+    recursive: Option<bool>,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     let path = folder_path.or(virtual_path).ok_or("Missing folder path parameter")?;
-    crate::storage::blob_tracker::delete_virtual_folder(&state.db, &path)
+    let is_recursive = recursive.unwrap_or(true);
+
+    if is_recursive {
+        let guard = state.engine.read().await;
+        let (our_node_id, sk) = match guard.as_ref() {
+            Some(e) => (Some(e.node_id().to_string()), Some(&e.secret_key)),
+            None => (None, None),
+        };
+
+        let (deleted_hashes, tombstones) = crate::storage::blob_tracker::delete_virtual_folder_recursive(
+            &state.db,
+            &path,
+            our_node_id.as_deref(),
+            sk,
+        )
         .map_err(|e| e.to_string())?;
 
-    if let Some(engine) = state.engine.read().await.as_ref() {
-        broadcast_catalog_event(
-            &engine.endpoint,
-            &engine.sync_alpn,
-            SyncMessage::FolderDeleted { path: path.clone() },
-        )
-        .await;
+        // Prune raw blob storage tags for deleted hashes
+        if let Some(engine) = guard.as_ref() {
+            for h in &deleted_hashes {
+                let _ = engine.store.tags().delete(h.as_bytes()).await;
+            }
+
+            // Broadcast deletion tombstones first
+            if !tombstones.is_empty() {
+                broadcast_catalog_event(
+                    &engine.endpoint,
+                    &engine.sync_alpn,
+                    SyncMessage::TombstoneDump(tombstones),
+                )
+                .await;
+            }
+
+            // Broadcast FolderDeleted
+            broadcast_catalog_event(
+                &engine.endpoint,
+                &engine.sync_alpn,
+                SyncMessage::FolderDeleted { path: path.clone() },
+            )
+            .await;
+        }
+
+        // Clean up orphaned disk blobs to keep disk and database in lockstep
+        let blob_dir = state.db.resolve_blob_dir();
+        let _ = crate::storage::path_utils::cleanup_orphaned_disk_blobs(&blob_dir, &state.db);
+    } else {
+        crate::storage::blob_tracker::delete_virtual_folder(&state.db, &path)
+            .map_err(|e| e.to_string())?;
+
+        if let Some(engine) = state.engine.read().await.as_ref() {
+            broadcast_catalog_event(
+                &engine.endpoint,
+                &engine.sync_alpn,
+                SyncMessage::FolderDeleted { path: path.clone() },
+            )
+            .await;
+        }
     }
+
     Ok(())
 }
 

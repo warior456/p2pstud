@@ -56,6 +56,11 @@ pub async fn run_hosting_fill_pass(
     engine: &IrohEngine,
     bandwidth: Option<&Arc<BandwidthTracker>>,
 ) -> Result<usize> {
+    if crate::p2p::network_profile::should_pause_on_battery(db) {
+        tracing::debug!("Auto-fill hosting pass skipped: running on battery power");
+        return Ok(0);
+    }
+
     let target_bytes = get_target_hosting_bytes(db)?;
     let all_records = list_all_blobs(db)?;
 

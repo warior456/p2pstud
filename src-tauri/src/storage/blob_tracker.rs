@@ -449,9 +449,25 @@ pub fn remove_keep_vote(db: &Database, hash: &str, voter_node_id: &str) -> Resul
 /// Record that a peer node holds / is actively seeding a blob.
 pub fn record_peer_seed(db: &Database, hash: &str, peer_node_id: &str) -> Result<()> {
     let conn = db.lock();
+    let last_seen: Option<i64> = conn
+        .query_row(
+            "SELECT last_seen_at FROM file_seeds WHERE hash = ?1 AND peer_node_id = ?2",
+            params![hash, peer_node_id],
+            |r| r.get(0),
+        )
+        .optional()?;
+
+    let now = now_unix();
+    if let Some(prev) = last_seen {
+        if now - prev < 60 {
+            // Already updated recently: avoid continuous WAL writes during sync cycles
+            return Ok(());
+        }
+    }
+
     conn.execute(
         "INSERT OR REPLACE INTO file_seeds(hash, peer_node_id, last_seen_at) VALUES(?1, ?2, ?3)",
-        params![hash, peer_node_id, now_unix()],
+        params![hash, peer_node_id, now],
     )?;
     Ok(())
 }
@@ -531,6 +547,36 @@ pub fn upsert_blob(
             if existing != hash {
                 anyhow::bail!("Path already occupied by a different file. Delete the existing file first.");
             }
+        }
+    }
+
+    // Performance optimization: Check if blob already exists with identical attributes.
+    // If unchanged, skip writing to disk to avoid continuous WAL churning during peer catalog sync.
+    let existing_info: Option<(Option<String>, i64, i64, Option<String>)> = conn
+        .query_row(
+            "SELECT name, size_bytes, is_pinned, owner_node_id FROM local_blobs WHERE hash = ?1",
+            params![hash],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .optional()?;
+
+    if let Some((existing_name, existing_size, existing_pinned, existing_owner)) = existing_info {
+        let name_matches = match (name, existing_name.as_deref()) {
+            (None, _) => true,
+            (Some(n), Some(en)) => n == en,
+            (Some(_), None) => false,
+        };
+        let owner_matches = match (owner_node_id, existing_owner.as_deref()) {
+            (None, _) => true,
+            (Some(o), Some(eo)) => crate::storage::db::is_matching_node_id(o, eo),
+            (Some(_), None) => false,
+        };
+        let pinned_matches = !is_pinned || (existing_pinned != 0);
+        let size_matches = existing_size == size_bytes as i64;
+
+        if name_matches && owner_matches && pinned_matches && size_matches {
+            // Already completely synchronized and identical. Skip SQLite write.
+            return Ok(());
         }
     }
 
@@ -1099,6 +1145,75 @@ pub fn delete_virtual_folder(db: &Database, virtual_path: &str) -> Result<()> {
     Ok(())
 }
 
+/// Delete a virtual folder and all its contents (contained files, subfolders, tombstones for owned files).
+/// Returns a tuple of (deleted_hashes, created_tombstones).
+pub fn delete_virtual_folder_recursive(
+    db: &Database,
+    virtual_path: &str,
+    our_node_id: Option<&str>,
+    secret_key: Option<&iroh::SecretKey>,
+) -> Result<(Vec<String>, Vec<DeletionTombstone>)> {
+    let clean = virtual_path.trim().trim_matches('/').replace('\\', "/");
+    let exact_match = clean.clone();
+    let subfolder_prefix = format!("{clean}/%");
+
+    let mut deleted_hashes = Vec::new();
+    let mut tombstones = Vec::new();
+
+    {
+        let conn = db.lock();
+        let mut stmt = conn.prepare(
+            "SELECT hash, owner_node_id FROM local_blobs WHERE name = ?1 OR name LIKE ?2",
+        )?;
+        let rows = stmt.query_map(params![exact_match, subfolder_prefix], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))
+        })?;
+
+        for row in rows.flatten() {
+            let (hash, owner_id) = row;
+            deleted_hashes.push(hash.clone());
+
+            // If we are the registered owner (or no owner was set), generate a signed tombstone
+            if let (Some(our_id), Some(sk)) = (our_node_id, secret_key) {
+                let is_our_file = match owner_id {
+                    Some(ref o) => crate::storage::db::is_matching_node_id(o, our_id),
+                    None => true,
+                };
+                if is_our_file {
+                    let tombstone = DeletionTombstone::create_signed(
+                        hash.clone(),
+                        our_id.to_string(),
+                        now_unix(),
+                        sk,
+                    );
+                    tombstones.push(tombstone);
+                }
+            }
+        }
+    }
+
+    // Persist all generated tombstones
+    for t in &tombstones {
+        let _ = record_deletion_tombstone(db, t);
+    }
+
+    // Now delete from local_blobs, file_seeds, and virtual_folders
+    let conn = db.lock();
+    conn.execute(
+        "DELETE FROM local_blobs WHERE name = ?1 OR name LIKE ?2",
+        params![exact_match, subfolder_prefix],
+    )?;
+    for hash in &deleted_hashes {
+        let _ = conn.execute("DELETE FROM file_seeds WHERE hash = ?1", params![hash]);
+    }
+    conn.execute(
+        "DELETE FROM virtual_folders WHERE path = ?1 OR path LIKE ?2",
+        params![exact_match, subfolder_prefix],
+    )?;
+
+    Ok((deleted_hashes, tombstones))
+}
+
 // ---------------------------------------------------------------------------
 // Step 36: Sole Seed Files Discovery
 // ---------------------------------------------------------------------------
@@ -1297,6 +1412,20 @@ pub struct SwarmVersionInfo {
 pub fn record_peer_version(db: &Database, node_id: &str, app_version: &str) -> Result<()> {
     let now = now_unix();
     let conn = db.lock();
+    let existing: Option<(String, i64)> = conn
+        .query_row(
+            "SELECT app_version, last_seen_at FROM peer_versions WHERE node_id = ?1",
+            params![node_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?;
+
+    if let Some((ref ver, last_seen)) = existing {
+        if ver == app_version && now - last_seen < 60 {
+            return Ok(());
+        }
+    }
+
     conn.execute(
         "INSERT INTO peer_versions (node_id, app_version, last_seen_at)
          VALUES (?1, ?2, ?3)
@@ -1582,6 +1711,14 @@ mod tests {
 
         // Attempting to delete CS50/Lectures should now fail because it's non-empty
         assert!(delete_virtual_folder(&db, "CS50/Lectures").is_err());
+
+        // But recursive deletion succeeds, removes files and folder, and issues tombstones for owned files
+        let (deleted, tombstones) = delete_virtual_folder_recursive(&db, "CS50", None, None).unwrap();
+        assert_eq!(deleted.len(), 1);
+        assert_eq!(deleted[0], "f_hash");
+        assert!(tombstones.is_empty()); // No key passed
+        assert!(get_blob(&db, "f_hash").unwrap().is_none());
+        assert!(!list_virtual_folders(&db).unwrap().contains(&"CS50".to_string()));
     }
 
     #[test]

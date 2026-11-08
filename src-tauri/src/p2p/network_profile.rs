@@ -286,10 +286,104 @@ pub fn is_discovery_allowed(profile: NetworkProfile) -> (bool, bool) {
     }
 }
 
+/// Check if the host operating system is currently running on battery power (discharging).
+/// Returns true if running on battery, false if plugged into AC mains or on desktop.
+pub fn is_running_on_battery() -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        #[repr(C)]
+        struct SystemPowerStatus {
+            ac_line_status: u8,
+            battery_flag: u8,
+            battery_life_percent: u8,
+            system_status_flag: u8,
+            battery_life_time: u32,
+            battery_full_life_time: u32,
+        }
+
+        extern "system" {
+            fn GetSystemPowerStatus(lpSystemPowerStatus: *mut SystemPowerStatus) -> i32;
+        }
+
+        let mut status = SystemPowerStatus {
+            ac_line_status: 255,
+            battery_flag: 255,
+            battery_life_percent: 255,
+            system_status_flag: 0,
+            battery_life_time: 0,
+            battery_full_life_time: 0,
+        };
+
+        let result = unsafe { GetSystemPowerStatus(&mut status) };
+        if result != 0 {
+            // ACLineStatus: 0 = Offline (battery), 1 = Online (AC), 255 = Unknown
+            return status.ac_line_status == 0;
+        }
+        false
+    }
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(entries) = std::fs::read_dir("/sys/class/power_supply") {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let online_path = path.join("online");
+                if online_path.exists() {
+                    if let Ok(s) = std::fs::read_to_string(online_path) {
+                        if s.trim() == "1" {
+                            return false; // AC power connected
+                        }
+                    }
+                }
+                let status_path = path.join("status");
+                if status_path.exists() {
+                    if let Ok(s) = std::fs::read_to_string(status_path) {
+                        if s.trim().eq_ignore_ascii_case("discharging") {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+        false
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
+    {
+        false
+    }
+}
+
+/// Check if background seeding/transfers should be paused because the device is on battery.
+pub fn should_pause_on_battery(db: &Database) -> bool {
+    if let Ok(Some(val)) = db.get_setting("pause_on_battery") {
+        if val.eq_ignore_ascii_case("true") && is_running_on_battery() {
+            return true;
+        }
+    }
+    false
+}
+
+/// Retrieve user-configured background bandwidth limit (if any).
+pub fn get_user_bandwidth_cap(db: &Database) -> Option<Option<u64>> {
+    if let Ok(Some(val)) = db.get_setting("bandwidth_cap") {
+        match val.to_lowercase().as_str() {
+            "128kb" => return Some(Some(128 * 1024)),
+            "512kb" => return Some(Some(512 * 1024)),
+            "2mb" => return Some(Some(2 * 1024 * 1024)),
+            "unlimited" => return Some(None),
+            other => {
+                if let Ok(num) = other.parse::<u64>() {
+                    return Some(if num == 0 { None } else { Some(num) });
+                }
+            }
+        }
+    }
+    None
+}
+
 /// Returns the background bandwidth limit (bytes per second) for a network profile.
 /// On Campus networks during lecture hours (Mon-Fri 09:00-17:00), limits to MAX_LECTURE_BACKGROUND_BPS (128 KB/s) by default.
 /// On Campus networks outside lecture hours, limits to MAX_CAMPUS_BACKGROUND_BPS (512 KB/s) by default.
-/// On Trusted networks, returns None (unlimited).
+/// On Trusted networks, returns None (unlimited) or user-configured cap.
 pub fn get_background_bandwidth_limit(db: &Database, profile: NetworkProfile) -> Option<u64> {
     get_background_bandwidth_limit_at(db, profile, is_current_lecture_hours())
 }
@@ -300,6 +394,22 @@ pub fn get_background_bandwidth_limit_at(
     profile: NetworkProfile,
     is_lecture: bool,
 ) -> Option<u64> {
+    if let Some(user_cap) = get_user_bandwidth_cap(db) {
+        match profile {
+            NetworkProfile::Campus => {
+                if is_lecture {
+                    // On campus during lecture hours, throttle to min(user_cap, 128 KB/s)
+                    return Some(user_cap.map_or(MAX_LECTURE_BACKGROUND_BPS, |c| c.min(MAX_LECTURE_BACKGROUND_BPS)));
+                } else {
+                    return user_cap;
+                }
+            }
+            NetworkProfile::Trusted => {
+                return user_cap;
+            }
+        }
+    }
+
     match profile {
         NetworkProfile::Campus => {
             if is_lecture {

@@ -17,6 +17,9 @@ export function OnboardingWizard({ onComplete }: OnboardingWizardProps) {
     fullMirror?: boolean;
     relayUrl?: string;
     campusModeDefault?: boolean;
+    bandwidthCap?: string;
+    pauseOnBattery?: boolean;
+    warnMetered?: boolean;
   }) => {
     try {
       if (settings.passphrase !== undefined && settings.passphrase.trim()) {
@@ -37,6 +40,18 @@ export function OnboardingWizard({ onComplete }: OnboardingWizardProps) {
         });
       }
 
+      if (settings.bandwidthCap) {
+        await invoke('set_bandwidth_cap', { cap: settings.bandwidthCap });
+      }
+
+      if (settings.pauseOnBattery !== undefined) {
+        await invoke('set_pause_on_battery', { pause: settings.pauseOnBattery });
+      }
+
+      if (settings.warnMetered !== undefined) {
+        await invoke('set_warn_metered', { warn: settings.warnMetered });
+      }
+
       // Persist onboarding complete flag explicitly in SQLite
       await invoke('set_setting', {
         key: 'onboarding_complete',
@@ -51,6 +66,9 @@ export function OnboardingWizard({ onComplete }: OnboardingWizardProps) {
           full_mirror: Boolean(settings.fullMirror),
           network_secret: settings.passphrase || '',
           onboarding_complete: 'true',
+          bandwidth_cap: settings.bandwidthCap || '512kb',
+          pause_on_battery: settings.pauseOnBattery !== undefined ? settings.pauseOnBattery : true,
+          warn_metered: settings.warnMetered !== undefined ? settings.warnMetered : true,
         },
       });
     } catch (err) {
@@ -137,6 +155,9 @@ export function OnboardingWizard({ onComplete }: OnboardingWizardProps) {
               fullMirror: res.fullMirror,
               campusModeDefault: res.campusModeDefault,
               relayUrl: res.relayUrl,
+              bandwidthCap: res.bandwidthCap,
+              pauseOnBattery: res.pauseOnBattery,
+              warnMetered: res.warnMetered,
             })}
             onBackToModeSelect={() => setMode('select')}
           />

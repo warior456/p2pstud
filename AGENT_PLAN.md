@@ -45,8 +45,8 @@ At the end of every session (or when interrupted), update the `## Progress Track
 
 ## Progress Tracker
 
-> **Last session:** 2026-11-07
-> **Last completed task:** Step 70 completed: Cryptographically Signed Deletion Tombstones & Anti-Resurrection Protection (v0.1.40).
+> **Last session:** 2026-11-08
+> **Last completed task:** Step 71 completed: Battery Defense, Settings Bandwidth Controls, SSD Anti-Churn & Recursive Folder Deletion (v0.1.41).
 > **Next action:** Production release distribution and testing.
 
 | # | Step | Status | Notes |
@@ -121,6 +121,7 @@ At the end of every session (or when interrupted), update the `## Progress Track
 | 68 | Live Online Seed Verification On App Close & Swarm Catalog Refresh (v0.1.38) | ✅ | Implemented live concurrent QUIC ping verification (`verify_candidate_remote_seeds`) before exiting from power button or tray icon, ensuring offline peers have their seed records expired immediately so sole-seed protection triggers properly; added `refresh_swarm_catalog` IPC command and wired Refresh button to perform live peer verification, rendezvous polling, and catalog synchronization with spin animation. |
 | 69 | Eduroam External Connection Audit & Stealth Mode HTTPS Relay Camouflage (v0.1.39) | ✅ | Audited all external sockets and protocols across the app; completely suppressed subnet UDP broadcasts to `255.255.255.255:27888` on Campus networks (preventing WIDS/WIPS alerts) while keeping quiet loopback `127.0.0.1`; implemented `apply_network_profile_to_endpoint` (`AddrFilter::relay_only()`); added `sanitize_endpoint_addr` and `get_sanitized_our_addr` to strip local IP addresses on Campus, strictly forcing and tunneling all P2P transfer and discovery traffic over standard HTTPS TLS port 443 via `EU_RELAY_URL`. |
 | 70 | Cryptographically Signed Deletion Tombstones & Anti-Resurrection Protection (v0.1.40) | ✅ | Fixed owner file deletion resurrection caused by re-syncing from offline/stale peers; implemented Ed25519-signed `DeletionTombstone`s in SQLite (`deleted_blobs`) and `SyncMessage::FileDeletedTombstone` / `TombstoneDump`; added signature and owner identity verification against spoofing; prevented catalog modification / owner hijacking via `COALESCE(local_blobs.owner_node_id, excluded.owner_node_id)`; enforced tombstone checks across `upsert_blob`, `CatalogDump`, and `FileAdded` so deleted files never reappear; synced tombstones before catalog dumps across QUIC sync streams. |
+| 71 | Battery Defense, Settings Bandwidth Controls, SSD Anti-Churn & Recursive Folder Deletion (v0.1.41) | ✅ | Implemented native OS battery power detection (`GetSystemPowerStatus` on Windows, `/sys/class/power_supply` on Linux) to pause background replication and chunk seeding while running on laptop battery; exposed "Bandwidth & Battery Defense" controls directly in `NetworkSettings.tsx` (background speed limits: 128 KB/s, 512 KB/s, 2 MB/s, Unlimited) and wired to `AppSettings`; eliminated excessive SSD disk writing and network traffic by increasing anti-entropy catalog interval from 5s to 60s and making `upsert_blob`, `record_peer_seed`, and `record_peer_version` zero-write no-ops when records are unchanged; fixed folder deletion anomaly by adding "Delete Folder" context action to folders in `FileRow.tsx`, implementing recursive deletion (`delete_virtual_folder_recursive`) in `file_cmds.rs` that generates signed tombstones for owned files and cleans up SQLite `virtual_folders` and disk storage in lockstep. |
 
 ---
 

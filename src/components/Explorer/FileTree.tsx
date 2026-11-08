@@ -439,6 +439,7 @@ export const FileTree: React.FC<FileTreeProps> = ({
               onToggleStar={onToggleStar}
               onReportDangerous={onReportDangerous}
               onExportFolderZip={onExportFolderZip}
+              onDeleteFolder={onDeleteFolder}
             />
           ))}
         </div>

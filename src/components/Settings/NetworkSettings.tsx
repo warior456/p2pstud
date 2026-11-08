@@ -20,11 +20,13 @@ import {
   Wifi,
   Database as DatabaseIcon,
   ArrowRightLeft,
-  CheckCircle2
+  CheckCircle2,
+  Gauge,
+  BatteryCharging
 } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import { NetworkProfileInfo, SsidRule, PeerInfo, NetworkDatabaseInfo, TransferSummary } from '../../types';
+import { NetworkProfileInfo, SsidRule, PeerInfo, NetworkDatabaseInfo, TransferSummary, AppSettings } from '../../types';
 import { ConnectionDoctor } from '../Onboarding/ConnectionDoctor';
 
 export function NetworkSettings() {
@@ -65,6 +67,12 @@ export function NetworkSettings() {
   const [transferring, setTransferring] = useState<boolean>(false);
   const [transferSummary, setTransferSummary] = useState<TransferSummary | null>(null);
 
+  // Bandwidth & Battery Limits
+  const [bandwidthCap, setBandwidthCap] = useState<string>('512kb');
+  const [pauseOnBattery, setPauseOnBattery] = useState<boolean>(true);
+  const [warnMetered, setWarnMetered] = useState<boolean>(true);
+  const [savingBandwidth, setSavingBandwidth] = useState<boolean>(false);
+
   const fetchProfileAndRules = async () => {
     try {
       const info = await invoke<NetworkProfileInfo>('get_network_profile');
@@ -90,11 +98,29 @@ export function NetworkSettings() {
   // Static settings are loaded ONCE on mount so background polling never overwrites user typing
   const loadSettingsOnce = async () => {
     try {
-      const settings = await invoke<{ relay_url: string; network_secret?: string }>('get_app_settings');
+      const settings = await invoke<AppSettings>('get_app_settings');
       if (settings?.relay_url) setRelayUrl(settings.relay_url);
       if (settings?.network_secret !== undefined) setNetworkSecret(settings.network_secret);
+      if (settings?.bandwidth_cap) setBandwidthCap(settings.bandwidth_cap);
+      if (settings?.pause_on_battery !== undefined) setPauseOnBattery(settings.pause_on_battery);
+      if (settings?.warn_metered !== undefined) setWarnMetered(settings.warn_metered);
     } catch {
       // Fallback
+    }
+  };
+
+  const handleSaveBandwidth = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSavingBandwidth(true);
+    try {
+      await invoke('set_bandwidth_cap', { cap: bandwidthCap });
+      await invoke('set_pause_on_battery', { pause: pauseOnBattery });
+      await invoke('set_warn_metered', { warn: warnMetered });
+      alert('Bandwidth & battery defense settings saved!');
+    } catch (err) {
+      alert(`Failed to save bandwidth settings: ${err}`);
+    } finally {
+      setSavingBandwidth(false);
     }
   };
 
@@ -896,6 +922,88 @@ export function NetworkSettings() {
             <Lock className="w-3.5 h-3.5" />
             {savingSecret ? 'Saving Secret...' : 'Save Network Secret'}
           </button>
+        </form>
+      </div>
+
+      {/* Bandwidth & Battery Defense Card */}
+      <div className="bg-white p-6 rounded-xl border border-gray-200 shadow-xs space-y-4">
+        <div className="flex items-center gap-2.5 border-b border-gray-100 pb-3">
+          <Gauge className="w-5 h-5 text-blue-600" />
+          <div>
+            <h3 className="text-sm font-bold text-gray-900">Bandwidth & Battery Defense</h3>
+            <p className="text-xs text-gray-500">
+              Configure background upload speed limits and power preservation.
+            </p>
+          </div>
+        </div>
+
+        <form onSubmit={handleSaveBandwidth} className="space-y-4">
+          <div>
+            <label className="text-xs font-semibold text-gray-700">
+              Background Seeding Speed Limit
+            </label>
+            <p className="text-[11px] text-gray-400 mb-1.5">
+              Caps unpinned cache replication and chunk seeding so it never saturates campus Wi-Fi or home internet.
+            </p>
+            <select
+              value={bandwidthCap}
+              onChange={(e) => setBandwidthCap(e.target.value)}
+              className="w-full text-xs bg-gray-50 border border-gray-200 rounded-lg px-3 py-2 text-gray-700 focus:bg-white focus:border-blue-500 focus:outline-none transition-all cursor-pointer"
+            >
+              <option value="128kb">128 KB/s (Ultra-stealth / strict lecture mode)</option>
+              <option value="512kb">512 KB/s (Recommended for campus networks)</option>
+              <option value="2mb">2 MB/s (High-speed broadband / dorm Wi-Fi)</option>
+              <option value="unlimited">Unlimited (Uncapped LAN sync)</option>
+            </select>
+          </div>
+
+          <div className="space-y-2 pt-1 border-t border-gray-100">
+            <label className="flex items-start gap-2.5 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={pauseOnBattery}
+                onChange={(e) => setPauseOnBattery(e.target.checked)}
+                className="mt-0.5 rounded border-gray-300 text-blue-600 focus:ring-0 cursor-pointer"
+              />
+              <div>
+                <span className="text-xs font-semibold text-gray-800 flex items-center gap-1.5">
+                  <BatteryCharging className="w-3.5 h-3.5 text-amber-500" />
+                  Pause background seeding when running on battery
+                </span>
+                <p className="text-[11px] text-gray-400">
+                  Suspends automated chunk seeding and scarcity replication when your laptop is unplugged from AC power.
+                </p>
+              </div>
+            </label>
+
+            <label className="flex items-start gap-2.5 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={warnMetered}
+                onChange={(e) => setWarnMetered(e.target.checked)}
+                className="mt-0.5 rounded border-gray-300 text-blue-600 focus:ring-0 cursor-pointer"
+              />
+              <div>
+                <span className="text-xs font-semibold text-gray-800">
+                  Warn on Mobile Hotspots & Metered Connections
+                </span>
+                <p className="text-[11px] text-gray-400">
+                  Pauses background seeding and auto-fill replication when tethered to mobile data.
+                </p>
+              </div>
+            </label>
+          </div>
+
+          <div className="pt-2">
+            <button
+              type="submit"
+              disabled={savingBandwidth}
+              className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-semibold shadow-xs transition-colors disabled:opacity-50 flex items-center gap-1.5 cursor-pointer"
+            >
+              <Gauge className="w-3.5 h-3.5" />
+              {savingBandwidth ? 'Saving...' : 'Save Bandwidth & Battery Limits'}
+            </button>
+          </div>
         </form>
       </div>
 

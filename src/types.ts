@@ -79,6 +79,9 @@ export interface AppSettings {
   network_secret: string;
   onboarding_complete?: string;
   network_profile_override?: string;
+  bandwidth_cap?: string;
+  pause_on_battery?: boolean;
+  warn_metered?: boolean;
 }
 
 export interface NetworkProfileInfo {

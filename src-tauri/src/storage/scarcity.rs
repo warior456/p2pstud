@@ -116,6 +116,12 @@ pub fn spawn_scarcity_worker(
                 continue;
             };
 
+            // 0. Battery power check
+            if crate::p2p::network_profile::should_pause_on_battery(&db) {
+                tracing::debug!("Scarcity worker pass skipped: running on battery power");
+                continue;
+            }
+
             // 1. Network Profile check: Always work, but throttle bandwidth during campus hours on campus networks
             let ssid = detect_os_ssid();
             let (profile, _) = resolve_network_profile(&db, ssid.as_deref());

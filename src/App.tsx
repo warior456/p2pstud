@@ -843,15 +843,27 @@ export default function App() {
 
   const handleDeleteFolder = async (folderName: string) => {
     const targetFolder = currentPrefix ? `${currentPrefix}${folderName}` : folderName;
-    if (!confirm(`Are you sure you want to delete folder "${folderName}"?`)) return;
+    const targetPrefix = `${targetFolder}/`;
+    const containedFiles = files.filter((f) => f.name === targetFolder || f.name.startsWith(targetPrefix));
+
+    if (containedFiles.length > 0) {
+      if (!confirm(`Folder "${folderName}" contains ${containedFiles.length} file(s).\n\nAre you sure you want to permanently delete this folder and all ${containedFiles.length} file(s) inside it?`)) {
+        return;
+      }
+    } else {
+      if (!confirm(`Are you sure you want to delete folder "${folderName}"?`)) return;
+    }
 
     try {
-      await invoke('delete_folder', { folderPath: targetFolder });
-      setCustomFolders((prev) => prev.filter((f) => f !== targetFolder && !f.startsWith(`${targetFolder}/`)));
+      await invoke('delete_folder', { folderPath: targetFolder, recursive: true });
+      setCustomFolders((prev) => prev.filter((f) => f !== targetFolder && !f.startsWith(targetPrefix)));
+      setFiles((prev) => prev.filter((f) => f.name !== targetFolder && !f.name.startsWith(targetPrefix)));
       if (paths.length > 1 && paths[paths.length - 1] === folderName) {
         setPaths((prev) => prev.slice(0, -1));
       }
       await loadWorkspaceFiles();
+      await loadWorkspaceFolders();
+      refetchStats();
     } catch (err) {
       alert(`Failed to delete folder: ${err}`);
     }

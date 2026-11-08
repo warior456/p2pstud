@@ -50,6 +50,7 @@ interface FileRowProps {
   onToggleStar?: (hash: string) => void;
   onReportDangerous?: (hash: string, reason: string) => void;
   onExportFolderZip?: (folderName: string) => void;
+  onDeleteFolder?: (folderName: string) => void;
 }
 
 const DANGEROUS_EXTENSIONS = [
@@ -92,6 +93,7 @@ export const FileRow: React.FC<FileRowProps> = ({
   onToggleStar,
   onReportDangerous,
   onExportFolderZip,
+  onDeleteFolder,
 }) => {
   const [menuOpen, setMenuOpen] = useState(false);
   const [isDragTarget, setIsDragTarget] = useState(false);
@@ -458,6 +460,21 @@ export const FileRow: React.FC<FileRowProps> = ({
                 >
                   <Archive className="w-3.5 h-3.5 text-amber-600" /> Export Folder as ZIP
                 </button>
+              )}
+              {onDeleteFolder && (
+                <>
+                  <div className="border-t border-gray-100 my-1" />
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setMenuOpen(false);
+                      onDeleteFolder(file.name);
+                    }}
+                    className="w-full text-left px-3 py-1.5 flex items-center gap-2 hover:bg-red-50 text-red-600 font-medium cursor-pointer"
+                  >
+                    <Trash2 className="w-3.5 h-3.5 text-red-600" /> Delete Folder
+                  </button>
+                </>
               )}
             </>
           ) : (

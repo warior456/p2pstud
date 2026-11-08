@@ -144,14 +144,19 @@ impl IrohEngine {
         let running_router = router.spawn();
 
         // 4. Spawn background swarm maintenance loop
-        // Periodically connects to discovered nodes and synchronizes workspace catalogs.
+        // Periodically connects to discovered nodes and synchronizes workspace catalogs (anti-entropy).
+        // Real-time mutations are broadcast immediately via gossip events; this loop provides reconciliation.
         let bg_endpoint = endpoint.clone();
         let bg_db = db.clone();
         let bg_store = store.clone();
         tokio::spawn(async move {
-            let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
             loop {
                 interval.tick().await;
+
+                if crate::p2p::network_profile::should_pause_on_battery(&bg_db) {
+                    continue;
+                }
 
                 // Sync with any configured bootstrap/anchor peer
                 if let Ok(Some(bootstrap)) = bg_db.get_setting("bootstrap_peer") {

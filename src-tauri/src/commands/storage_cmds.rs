@@ -54,6 +54,12 @@ pub struct AppSettings {
     pub network_secret: String,
     #[serde(default)]
     pub onboarding_complete: Option<String>,
+    #[serde(default)]
+    pub bandwidth_cap: Option<String>,
+    #[serde(default)]
+    pub pause_on_battery: Option<bool>,
+    #[serde(default)]
+    pub warn_metered: Option<bool>,
 }
 
 /// Return current storage statistics to the frontend.
@@ -171,6 +177,26 @@ pub async fn get_app_settings(state: State<'_, AppState>) -> Result<AppSettings,
         .get_setting("onboarding_complete")
         .map_err(|e| e.to_string())?;
 
+    let bandwidth_cap = state
+        .db
+        .get_setting("bandwidth_cap")
+        .map_err(|e| e.to_string())?
+        .unwrap_or_else(|| "512kb".to_string());
+
+    let pause_on_battery = state
+        .db
+        .get_setting("pause_on_battery")
+        .map_err(|e| e.to_string())?
+        .map(|v| v.eq_ignore_ascii_case("true"))
+        .unwrap_or(true);
+
+    let warn_metered = state
+        .db
+        .get_setting("warn_metered")
+        .map_err(|e| e.to_string())?
+        .map(|v| v.eq_ignore_ascii_case("true"))
+        .unwrap_or(true);
+
     Ok(AppSettings {
         relay_url,
         cache_limit_bytes,
@@ -178,6 +204,9 @@ pub async fn get_app_settings(state: State<'_, AppState>) -> Result<AppSettings,
         node_id,
         network_secret,
         onboarding_complete,
+        bandwidth_cap: Some(bandwidth_cap),
+        pause_on_battery: Some(pause_on_battery),
+        warn_metered: Some(warn_metered),
     })
 }
 
@@ -217,8 +246,65 @@ pub async fn update_app_settings(
             .map_err(|e| e.to_string())?;
     }
 
+    if let Some(ref cap) = settings.bandwidth_cap {
+        state
+            .db
+            .set_setting("bandwidth_cap", cap.trim())
+            .map_err(|e| e.to_string())?;
+    }
+
+    if let Some(pause) = settings.pause_on_battery {
+        state
+            .db
+            .set_setting("pause_on_battery", &pause.to_string())
+            .map_err(|e| e.to_string())?;
+    }
+
+    if let Some(warn) = settings.warn_metered {
+        state
+            .db
+            .set_setting("warn_metered", &warn.to_string())
+            .map_err(|e| e.to_string())?;
+    }
+
     tracing::info!(?settings, "Updated application settings");
     Ok(())
+}
+
+/// Set background bandwidth limit (e.g. "128kb", "512kb", "2mb", "unlimited").
+#[tauri::command]
+pub async fn set_bandwidth_cap(
+    cap: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    state
+        .db
+        .set_setting("bandwidth_cap", cap.trim())
+        .map_err(|e| e.to_string())
+}
+
+/// Set pause on battery setting.
+#[tauri::command]
+pub async fn set_pause_on_battery(
+    pause: bool,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    state
+        .db
+        .set_setting("pause_on_battery", &pause.to_string())
+        .map_err(|e| e.to_string())
+}
+
+/// Set warn metered connection setting.
+#[tauri::command]
+pub async fn set_warn_metered(
+    warn: bool,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    state
+        .db
+        .set_setting("warn_metered", &warn.to_string())
+        .map_err(|e| e.to_string())
 }
 
 /// Update the P2P network secret / workspace passphrase and isolate its database.
