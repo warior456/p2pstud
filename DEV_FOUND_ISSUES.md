@@ -417,6 +417,44 @@
 - there is no intermediary battery mode that allows seeding files that only have a single seed (but at a very limited speed (max 1 at a time and 1/90 seconds))
 
 
+---
+
+## Issues & Resolutions (Version 0.1.47 – 0.1.48)
+
+All nine issues reported at the bottom of this file are resolved and verified.
+
+### 1. Download only went to cache; no Downloads folder or external viewer
+- **Fix:** Added native IPC commands `download_file_to_downloads`, `pick_file_save_dialog`, and `open_file_with_default_app` in `src-tauri/src/commands/file_cmds.rs` (registered in `lib.rs`). The file context menu now exposes **Save to Downloads Folder**, **Save As…**, and **Open with System Viewer** (`src/components/Explorer/FileRow.tsx`).
+- **Behavior:** Downloads are fetched on demand from known peers when not cached, written to the OS Downloads folder with collision-safe names, and marked locally present.
+
+### 2. Quick filters need a flattened list of all favorites
+- **Fix:** `src/App.tsx` gained `showAllFavorites`, which flattens every starred file across all folders; `src/components/Explorer/FileTree.tsx` exposes it as the **All Favorites** quick filter with an empty-state hint.
+
+### 3. File selection sometimes highlighted rows that were not actually selected
+- **Fix:** Row highlighting now derives only from the checkbox selection set (`isSelected={activeSelected.includes(...)}` in `FileTree.tsx`). Navigating folders/breadcrumbs clears the selection, and catalog refreshes prune hashes that no longer exist.
+
+### 4. Large files briefly showed “No PDF data provided”
+- **Fix:** `PdfViewer` accepts `isLoading` and renders “Loading PDF from the swarm…” while the chunked read is in flight. `App.tsx` sets `pdfLoading` around `readFileBytes`, so the error only appears after a completed empty/failed read.
+
+### 5. Folder deletion could remove other users’ files
+- **Fix:** `delete_virtual_folder_recursive` performs an atomic pre-check and refuses the entire operation if any contained row is owned by another node (`src-tauri/src/storage/blob_tracker.rs`). The UI warns before calling the backend (`App.tsx`).
+- **Test:** `recursive_folder_delete_rejects_foreign_owned_files` asserts both the refusal and that nothing was deleted.
+
+### 6. “Staged installer ready” shown after installing, and old updates not cleaned
+- **Fix:** `check_and_stage_app_update` only treats an installer as pending while `update_target_version` is strictly newer than the running build; otherwise it clears `update_pending`, `update_installer_path`, and `update_installer_hash`. `cleanup_stale_update_artifacts` runs at startup, and `download_app_update` prunes previous artifacts. Windows installer scripts now delete the setup executable after applying it.
+
+### 7. Settings menu not intuitive; Network & Swarm tab extremely large
+- **Fix:** Main settings tabs are now icon cards with descriptions. `NetworkSettings.tsx` is split into **Overview & Campus**, **Peers & Identity**, **Workspaces**, and **Security & Relay**. The duplicated bandwidth/battery card was removed; those controls live in the dedicated **Bandwidth & Battery** tab.
+
+### 8. Connection Doctor auto-ran, gave no unverified-network warning, and 3/4 checks failed
+- **Fix:** The doctor only runs when the user clicks the button (`ConnectionDoctor.tsx`). It shows an unverified-network notice and marks only relay/TCP 443 as required. LAN discovery, direct UDP, and swarm peers are informational and display **Unavailable** rather than **Blocked** when a campus firewall filters them; relay sync still works. (`src-tauri/src/commands/diagnostic_cmds.rs`.)
+
+### 9. No intermediate battery mode for single-seed files
+- **Fix:** Added `battery_mode` with three values: `pause`, `eco`, `normal` (`src-tauri/src/commands/storage_cmds.rs`, `src-tauri/src/p2p/network_profile.rs`). Eco mode skips general auto-fill, keeps scarcity replication alive for single-seed files, processes one file at a time, waits at least 90 seconds between attempts, and caps throughput at 128 KB/s (`src-tauri/src/storage/scarcity.rs`). UI: radio selector in `src/components/Settings/BandwidthSettings.tsx`.
+
+**Verification (v0.1.48):** `cargo clippy -p p2pstud-tauri --all-targets -- -D warnings` clean; `cargo test -p p2pstud-tauri` = 55 lib + 2 anchor tests passing; `npm run build` passes; `npm run test -- --run` = 7 files / 40 tests passing.
+
+
 
 
 
