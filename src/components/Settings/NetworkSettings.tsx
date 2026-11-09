@@ -20,9 +20,7 @@ import {
   Wifi,
   Database as DatabaseIcon,
   ArrowRightLeft,
-  CheckCircle2,
-  Gauge,
-  BatteryCharging
+  CheckCircle2
 } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
@@ -67,11 +65,8 @@ export function NetworkSettings() {
   const [transferring, setTransferring] = useState<boolean>(false);
   const [transferSummary, setTransferSummary] = useState<TransferSummary | null>(null);
 
-  // Bandwidth & Battery Limits
-  const [bandwidthCap, setBandwidthCap] = useState<string>('512kb');
-  const [pauseOnBattery, setPauseOnBattery] = useState<boolean>(true);
-  const [warnMetered, setWarnMetered] = useState<boolean>(true);
-  const [savingBandwidth, setSavingBandwidth] = useState<boolean>(false);
+  // Bandwidth & battery limits live in the dedicated Bandwidth tab (BandwidthSettings).
+  const [networkSection, setNetworkSection] = useState<'overview' | 'peers' | 'workspaces' | 'security'>('overview');
 
   const fetchProfileAndRules = async () => {
     try {
@@ -101,26 +96,8 @@ export function NetworkSettings() {
       const settings = await invoke<AppSettings>('get_app_settings');
       if (settings?.relay_url) setRelayUrl(settings.relay_url);
       if (settings?.network_secret !== undefined) setNetworkSecret(settings.network_secret);
-      if (settings?.bandwidth_cap) setBandwidthCap(settings.bandwidth_cap);
-      if (settings?.pause_on_battery !== undefined) setPauseOnBattery(settings.pause_on_battery);
-      if (settings?.warn_metered !== undefined) setWarnMetered(settings.warn_metered);
     } catch {
       // Fallback
-    }
-  };
-
-  const handleSaveBandwidth = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setSavingBandwidth(true);
-    try {
-      await invoke('set_bandwidth_cap', { cap: bandwidthCap });
-      await invoke('set_pause_on_battery', { pause: pauseOnBattery });
-      await invoke('set_warn_metered', { warn: warnMetered });
-      alert('Bandwidth & battery defense settings saved!');
-    } catch (err) {
-      alert(`Failed to save bandwidth settings: ${err}`);
-    } finally {
-      setSavingBandwidth(false);
     }
   };
 
@@ -383,7 +360,10 @@ export function NetworkSettings() {
         </div>
 
         <button
-          onClick={() => setShowDoctor(!showDoctor)}
+          onClick={() => {
+            setNetworkSection('overview');
+            setShowDoctor(!showDoctor);
+          }}
           className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-50 text-blue-700 hover:bg-blue-100 rounded-lg text-xs font-semibold transition border border-blue-200 cursor-pointer"
         >
           <Stethoscope className="w-3.5 h-3.5" />
@@ -391,13 +371,39 @@ export function NetworkSettings() {
         </button>
       </div>
 
+      {/* Section navigation keeps the previously oversized network tab scannable */}
+      <div className="flex flex-wrap gap-1 p-1 bg-gray-100 rounded-xl border border-gray-200">
+        {(
+          [
+            { id: 'overview', label: 'Overview & Campus' },
+            { id: 'peers', label: 'Peers & Identity' },
+            { id: 'workspaces', label: 'Workspaces' },
+            { id: 'security', label: 'Security & Relay' },
+          ] as const
+        ).map((section) => (
+          <button
+            key={section.id}
+            onClick={() => setNetworkSection(section.id)}
+            className={`flex-1 min-w-[120px] px-3 py-1.5 rounded-lg text-xs font-semibold transition cursor-pointer ${
+              networkSection === section.id
+                ? 'bg-white text-gray-900 shadow-xs'
+                : 'text-gray-600 hover:text-gray-900 hover:bg-white/60'
+            }`}
+          >
+            {section.label}
+          </button>
+        ))}
+      </div>
+
       {/* Connection Doctor Diagnostic Tool */}
-      {showDoctor && (
+      {networkSection === 'overview' && showDoctor && (
         <div className="animate-in fade-in slide-in-from-top duration-200">
           <ConnectionDoctor />
         </div>
       )}
 
+      {networkSection === 'peers' && (
+        <>
       {/* Swarm Identity & Direct Linking Card */}
       <div className="bg-white p-6 rounded-xl border border-gray-200 shadow-xs space-y-4">
         <div className="flex items-center gap-2.5 border-b border-gray-100 pb-3">
@@ -599,7 +605,11 @@ export function NetworkSettings() {
           </div>
         )}
       </div>
+        </>
+      )}
 
+      {networkSection === 'overview' && (
+        <>
       {/* Network Profile Classification & SSID Rules */}
       <div className="bg-white p-6 rounded-xl border border-gray-200 shadow-xs space-y-4">
         <div className="flex items-center gap-2.5 border-b border-gray-100 pb-3">
@@ -723,7 +733,11 @@ export function NetworkSettings() {
           </form>
         </div>
       </div>
+        </>
+      )}
 
+      {networkSection === 'workspaces' && (
+        <>
       {/* Network Databases / Swarm Workspaces Manager (Per Issue Requirements) */}
       <div className="bg-white p-6 rounded-xl border border-gray-200 shadow-xs space-y-4">
         <div className="flex items-center justify-between border-b border-gray-100 pb-3">
@@ -876,7 +890,11 @@ export function NetworkSettings() {
           </div>
         )}
       </div>
+        </>
+      )}
 
+      {networkSection === 'security' && (
+        <>
       {/* P2P Network Secret Configuration Form */}
       <div className="bg-white p-6 rounded-xl border border-gray-200 shadow-xs space-y-4">
         <div className="flex items-center gap-2.5 border-b border-gray-100 pb-3">
@@ -922,88 +940,6 @@ export function NetworkSettings() {
             <Lock className="w-3.5 h-3.5" />
             {savingSecret ? 'Saving Secret...' : 'Save Network Secret'}
           </button>
-        </form>
-      </div>
-
-      {/* Bandwidth & Battery Defense Card */}
-      <div className="bg-white p-6 rounded-xl border border-gray-200 shadow-xs space-y-4">
-        <div className="flex items-center gap-2.5 border-b border-gray-100 pb-3">
-          <Gauge className="w-5 h-5 text-blue-600" />
-          <div>
-            <h3 className="text-sm font-bold text-gray-900">Bandwidth & Battery Defense</h3>
-            <p className="text-xs text-gray-500">
-              Configure background upload speed limits and power preservation.
-            </p>
-          </div>
-        </div>
-
-        <form onSubmit={handleSaveBandwidth} className="space-y-4">
-          <div>
-            <label className="text-xs font-semibold text-gray-700">
-              Background Seeding Speed Limit
-            </label>
-            <p className="text-[11px] text-gray-400 mb-1.5">
-              Caps unpinned cache replication and chunk seeding so it never saturates campus Wi-Fi or home internet.
-            </p>
-            <select
-              value={bandwidthCap}
-              onChange={(e) => setBandwidthCap(e.target.value)}
-              className="w-full text-xs bg-gray-50 border border-gray-200 rounded-lg px-3 py-2 text-gray-700 focus:bg-white focus:border-blue-500 focus:outline-none transition-all cursor-pointer"
-            >
-              <option value="128kb">128 KB/s (Ultra-stealth / strict lecture mode)</option>
-              <option value="512kb">512 KB/s (Recommended for campus networks)</option>
-              <option value="2mb">2 MB/s (High-speed broadband / dorm Wi-Fi)</option>
-              <option value="unlimited">Unlimited (Uncapped LAN sync)</option>
-            </select>
-          </div>
-
-          <div className="space-y-2 pt-1 border-t border-gray-100">
-            <label className="flex items-start gap-2.5 cursor-pointer select-none">
-              <input
-                type="checkbox"
-                checked={pauseOnBattery}
-                onChange={(e) => setPauseOnBattery(e.target.checked)}
-                className="mt-0.5 rounded border-gray-300 text-blue-600 focus:ring-0 cursor-pointer"
-              />
-              <div>
-                <span className="text-xs font-semibold text-gray-800 flex items-center gap-1.5">
-                  <BatteryCharging className="w-3.5 h-3.5 text-amber-500" />
-                  Pause background seeding when running on battery
-                </span>
-                <p className="text-[11px] text-gray-400">
-                  Suspends automated chunk seeding and scarcity replication when your laptop is unplugged from AC power.
-                </p>
-              </div>
-            </label>
-
-            <label className="flex items-start gap-2.5 cursor-pointer select-none">
-              <input
-                type="checkbox"
-                checked={warnMetered}
-                onChange={(e) => setWarnMetered(e.target.checked)}
-                className="mt-0.5 rounded border-gray-300 text-blue-600 focus:ring-0 cursor-pointer"
-              />
-              <div>
-                <span className="text-xs font-semibold text-gray-800">
-                  Warn on Mobile Hotspots & Metered Connections
-                </span>
-                <p className="text-[11px] text-gray-400">
-                  Pauses background seeding and auto-fill replication when tethered to mobile data.
-                </p>
-              </div>
-            </label>
-          </div>
-
-          <div className="pt-2">
-            <button
-              type="submit"
-              disabled={savingBandwidth}
-              className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-semibold shadow-xs transition-colors disabled:opacity-50 flex items-center gap-1.5 cursor-pointer"
-            >
-              <Gauge className="w-3.5 h-3.5" />
-              {savingBandwidth ? 'Saving...' : 'Save Bandwidth & Battery Limits'}
-            </button>
-          </div>
         </form>
       </div>
 
@@ -1062,6 +998,8 @@ export function NetworkSettings() {
           </div>
         </form>
       </div>
+        </>
+      )}
     </div>
   );
 }

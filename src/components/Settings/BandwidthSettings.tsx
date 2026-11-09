@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { Gauge, BatteryCharging, Wifi, ArrowUpRight, ArrowDownLeft, Shield, CheckCircle2 } from 'lucide-react';
-import { AppSettings, StorageStats } from '../../types';
+import { Gauge, BatteryCharging, Wifi, ArrowUpRight, ArrowDownLeft, Shield, CheckCircle2, Leaf, Power } from 'lucide-react';
+import { AppSettings, BatteryMode, StorageStats } from '../../types';
 
 interface BandwidthSettingsProps {
   stats?: StorageStats | null;
@@ -10,7 +10,7 @@ interface BandwidthSettingsProps {
 
 export const BandwidthSettings: React.FC<BandwidthSettingsProps> = ({ stats }) => {
   const [bandwidthCap, setBandwidthCap] = useState<string>('512kb');
-  const [pauseOnBattery, setPauseOnBattery] = useState<boolean>(true);
+  const [batteryMode, setBatteryMode] = useState<BatteryMode>('pause');
   const [warnMetered, setWarnMetered] = useState<boolean>(true);
   const [saving, setSaving] = useState<boolean>(false);
   const [savedSuccess, setSavedSuccess] = useState<boolean>(false);
@@ -19,7 +19,12 @@ export const BandwidthSettings: React.FC<BandwidthSettingsProps> = ({ stats }) =
     invoke<AppSettings>('get_app_settings')
       .then((settings) => {
         if (settings?.bandwidth_cap) setBandwidthCap(settings.bandwidth_cap);
-        if (settings?.pause_on_battery !== undefined) setPauseOnBattery(settings.pause_on_battery);
+        if (settings?.battery_mode) {
+          setBatteryMode(settings.battery_mode);
+        } else if (settings?.pause_on_battery !== undefined) {
+          // Migrate older builds that only had the boolean toggle.
+          setBatteryMode(settings.pause_on_battery ? 'pause' : 'normal');
+        }
         if (settings?.warn_metered !== undefined) setWarnMetered(settings.warn_metered);
       })
       .catch((err) => console.warn('Failed to load bandwidth settings:', err));
@@ -31,7 +36,7 @@ export const BandwidthSettings: React.FC<BandwidthSettingsProps> = ({ stats }) =
     setSavedSuccess(false);
     try {
       await invoke('set_bandwidth_cap', { cap: bandwidthCap });
-      await invoke('set_pause_on_battery', { pause: pauseOnBattery });
+      await invoke('set_battery_mode', { mode: batteryMode });
       await invoke('set_warn_metered', { warn: warnMetered });
       setSavedSuccess(true);
       setTimeout(() => setSavedSuccess(false), 3000);
@@ -131,24 +136,70 @@ export const BandwidthSettings: React.FC<BandwidthSettingsProps> = ({ stats }) =
           </div>
 
           <div className="space-y-3 pt-3 border-t border-gray-100">
-            {/* Battery Defense Toggle */}
-            <label className="flex items-start gap-3 p-3 bg-gray-50 hover:bg-gray-100/80 rounded-xl border border-gray-200 transition cursor-pointer select-none">
-              <input
-                type="checkbox"
-                checked={pauseOnBattery}
-                onChange={(e) => setPauseOnBattery(e.target.checked)}
-                className="mt-0.5 rounded border-gray-300 text-indigo-600 focus:ring-0 cursor-pointer"
-              />
-              <div className="space-y-0.5">
-                <span className="text-xs font-bold text-gray-900 flex items-center gap-1.5">
-                  <BatteryCharging className="w-4 h-4 text-amber-500" />
-                  Pause background seeding when running on battery
-                </span>
-                <p className="text-[11px] text-gray-500 leading-relaxed">
-                  Automatically halts host-to-play cache auto-fill and chunk seeding whenever your laptop is running on battery power. Direct manual downloads remain available on demand.
-                </p>
+            {/* Battery Behaviour Selector (three modes) */}
+            <div className="space-y-1.5">
+              <label className="text-xs font-bold text-gray-800 flex items-center gap-1.5">
+                <BatteryCharging className="w-4 h-4 text-amber-500" />
+                Battery Behaviour
+              </label>
+              <p className="text-[11px] text-gray-500 leading-relaxed">
+                Choose what P2PStud may do while your laptop is unplugged. Manual downloads always work.
+              </p>
+
+              <div className="grid gap-2">
+                {(
+                  [
+                    {
+                      value: 'pause' as BatteryMode,
+                      icon: Power,
+                      title: 'Pause background seeding',
+                      desc: 'Stops all background seeding and cache auto-fill on battery. Lowest power usage; manual downloads still work on demand.',
+                    },
+                    {
+                      value: 'eco' as BatteryMode,
+                      icon: Leaf,
+                      title: 'Eco — protect only scarce files',
+                      desc: 'Keeps rare single-seed course files alive, but limits replication to one file at a time, at most once every 90 seconds, capped at 128 KB/s.',
+                    },
+                    {
+                      value: 'normal' as BatteryMode,
+                      icon: BatteryCharging,
+                      title: 'Full background activity',
+                      desc: 'Seeds and replicates normally even on battery. Fastest swarm contribution, but uses more power.',
+                    },
+                  ] as const
+                ).map((option) => {
+                  const Icon = option.icon;
+                  const active = batteryMode === option.value;
+                  return (
+                    <label
+                      key={option.value}
+                      className={`flex items-start gap-3 p-3 rounded-xl border transition cursor-pointer select-none ${
+                        active
+                          ? 'bg-indigo-50 border-indigo-300 ring-1 ring-indigo-200'
+                          : 'bg-gray-50 hover:bg-gray-100/80 border-gray-200'
+                      }`}
+                    >
+                      <input
+                        type="radio"
+                        name="battery_mode"
+                        value={option.value}
+                        checked={active}
+                        onChange={() => setBatteryMode(option.value)}
+                        className="mt-0.5 border-gray-300 text-indigo-600 focus:ring-0 cursor-pointer"
+                      />
+                      <div className="space-y-0.5">
+                        <span className="text-xs font-bold text-gray-900 flex items-center gap-1.5">
+                          <Icon className={`w-4 h-4 ${active ? 'text-indigo-600' : 'text-gray-400'}`} />
+                          {option.title}
+                        </span>
+                        <p className="text-[11px] text-gray-500 leading-relaxed">{option.desc}</p>
+                      </div>
+                    </label>
+                  );
+                })}
               </div>
-            </label>
+            </div>
 
             {/* Metered / Hotspot Toggle */}
             <label className="flex items-start gap-3 p-3 bg-gray-50 hover:bg-gray-100/80 rounded-xl border border-gray-200 transition cursor-pointer select-none">

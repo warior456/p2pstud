@@ -1234,18 +1234,35 @@ pub fn delete_virtual_folder_recursive(
 
     let mut deleted_hashes = Vec::new();
     let mut tombstones = Vec::new();
+    let mut foreign_files: Vec<String> = Vec::new();
 
     {
         let conn = db.lock();
         let mut stmt = conn.prepare(
-            "SELECT hash, owner_node_id FROM local_blobs WHERE name = ?1 OR name LIKE ?2",
+            "SELECT hash, name, owner_node_id FROM local_blobs WHERE name = ?1 OR name LIKE ?2",
         )?;
         let rows = stmt.query_map(params![exact_match, subfolder_prefix], |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, Option<String>>(1)?,
+                r.get::<_, Option<String>>(2)?,
+            ))
         })?;
 
         for row in rows.flatten() {
-            let (hash, _owner_id) = row;
+            let (hash, name, owner_id) = row;
+            // Never allow a client to erase catalog entries uploaded by other peers.
+            // Rows without an owner are legacy local uploads and remain deletable.
+            let owned_by_us = match owner_id.as_deref() {
+                None | Some("") => true,
+                Some(owner) => our_node_id
+                    .map(|our_id| crate::storage::db::is_matching_node_id(owner, our_id))
+                    .unwrap_or(false),
+            };
+            if !owned_by_us {
+                foreign_files.push(name.unwrap_or_else(|| hash.clone()));
+                continue;
+            }
             deleted_hashes.push(hash.clone());
 
             // Generate a signed tombstone for every deleted file so this node never re-accepts it
@@ -1259,6 +1276,20 @@ pub fn delete_virtual_folder_recursive(
                 tombstones.push(tombstone);
             }
         }
+    }
+
+    if !foreign_files.is_empty() {
+        let mut preview: Vec<String> = foreign_files.iter().take(3).cloned().collect();
+        if foreign_files.len() > preview.len() {
+            preview.push(format!("…and {} more", foreign_files.len() - preview.len()));
+        }
+        return Err(anyhow::anyhow!(
+            "Refusing to delete folder '{}': it contains {} file(s) uploaded by other peers ({}). \
+             Only the uploader can remove those files; delete your own files individually instead.",
+            clean,
+            foreign_files.len(),
+            preview.join(", ")
+        ));
     }
 
     // Persist all generated tombstones locally to prevent peer resurrection
@@ -1825,6 +1856,21 @@ mod tests {
         assert!(tombstones.is_empty()); // No key passed
         assert!(get_blob(&db, "f_hash").unwrap().is_none());
         assert!(!list_virtual_folders(&db).unwrap().contains(&"CS50".to_string()));
+    }
+
+    #[test]
+    fn recursive_folder_delete_rejects_foreign_owned_files() {
+        let (_dir, db) = make_db();
+        upsert_blob(&db, "owned_hash", Some("Shared/mine.pdf"), 10, false, Some("node_a")).unwrap();
+        upsert_blob(&db, "foreign_hash", Some("Shared/theirs.pdf"), 10, false, Some("node_b")).unwrap();
+
+        let err = delete_virtual_folder_recursive(&db, "Shared", Some("node_a"), None)
+            .expect_err("deleting a folder containing another peer's file must be refused");
+        assert!(err.to_string().contains("other peers"));
+
+        // The refusal must be atomic: nothing was deleted locally.
+        assert!(get_blob(&db, "owned_hash").unwrap().is_some());
+        assert!(get_blob(&db, "foreign_hash").unwrap().is_some());
     }
 
     #[test]

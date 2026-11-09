@@ -10,10 +10,11 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
 
 interface PdfViewerProps {
   data: Uint8Array | null;
+  isLoading?: boolean;
   onClose?: () => void;
 }
 
-export const PdfViewer: React.FC<PdfViewerProps> = ({ data, onClose }) => {
+export const PdfViewer: React.FC<PdfViewerProps> = ({ data, isLoading = false, onClose }) => {
   const [pdfDoc, setPdfDoc] = useState<pdfjsLib.PDFDocumentProxy | null>(null);
   const [pageNum, setPageNum] = useState<number>(1);
   const [totalPages, setTotalPages] = useState<number>(0);
@@ -25,6 +26,11 @@ export const PdfViewer: React.FC<PdfViewerProps> = ({ data, onClose }) => {
   const renderTaskRef = useRef<any>(null);
 
   useEffect(() => {
+    if (isLoading) {
+      setLoading(true);
+      setError(null);
+      return;
+    }
     if (!data || data.length === 0) {
       setLoading(false);
       setError('No PDF data provided');
@@ -51,7 +57,7 @@ export const PdfViewer: React.FC<PdfViewerProps> = ({ data, onClose }) => {
     return () => {
       loadingTask.destroy();
     };
-  }, [data]);
+  }, [data, isLoading]);
 
   useEffect(() => {
     if (!pdfDoc || !canvasRef.current) return;
@@ -154,7 +160,7 @@ export const PdfViewer: React.FC<PdfViewerProps> = ({ data, onClose }) => {
         {loading && (
           <div className="flex flex-col items-center gap-2 text-gray-500">
             <Loader2 className="w-8 h-8 animate-spin text-blue-500" />
-            <p className="text-sm">Rendering PDF slides...</p>
+            <p className="text-sm">{isLoading ? 'Loading PDF from the swarm...' : 'Rendering PDF slides...'}</p>
           </div>
         )}
 

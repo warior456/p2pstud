@@ -355,14 +355,40 @@ pub fn is_running_on_battery() -> bool {
     }
 }
 
-/// Check if background seeding/transfers should be paused because the device is on battery.
-pub fn should_pause_on_battery(db: &Database) -> bool {
-    if let Ok(Some(val)) = db.get_setting("pause_on_battery") {
-        if val.eq_ignore_ascii_case("true") && is_running_on_battery() {
-            return true;
-        }
+/// Battery behaviour for background replication and seeding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BatteryMode {
+    /// Stop all background seeding/replication while on battery.
+    Pause,
+    /// Protect only single-seed files, at a heavily throttled rate (1 file / 90 s).
+    Eco,
+    /// Full background activity regardless of power source.
+    Normal,
+}
+
+/// Resolve the configured battery mode, migrating the legacy boolean setting.
+pub fn get_battery_mode(db: &Database) -> BatteryMode {
+    if let Ok(Some(val)) = db.get_setting("battery_mode") {
+        return match val.trim().to_ascii_lowercase().as_str() {
+            "normal" => BatteryMode::Normal,
+            "eco" => BatteryMode::Eco,
+            _ => BatteryMode::Pause,
+        };
     }
-    false
+    match db.get_setting("pause_on_battery") {
+        Ok(Some(val)) if val.eq_ignore_ascii_case("false") => BatteryMode::Normal,
+        _ => BatteryMode::Pause,
+    }
+}
+
+/// Check if background seeding/transfers should be fully paused because the device is on battery.
+pub fn should_pause_on_battery(db: &Database) -> bool {
+    is_running_on_battery() && get_battery_mode(db) == BatteryMode::Pause
+}
+
+/// True when the device is on battery and the user selected the limited eco mode.
+pub fn is_battery_eco_mode(db: &Database) -> bool {
+    is_running_on_battery() && get_battery_mode(db) == BatteryMode::Eco
 }
 
 /// Retrieve user-configured background bandwidth limit (if any).

@@ -163,7 +163,7 @@ describe('Phase 2 Components Test Suite', () => {
       const moreBtn = screen.getByRole('button', { name: '' });
       fireEvent.click(moreBtn);
 
-      const downloadBtn = screen.getByText('Download');
+      const downloadBtn = screen.getByText('Save to Downloads Folder');
       fireEvent.click(downloadBtn);
 
       expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining('SECURITY WARNING'));
@@ -174,16 +174,21 @@ describe('Phase 2 Components Test Suite', () => {
   });
 
   describe('ConnectionDoctor', () => {
-    it('renders all 4 diagnostic test names and invokes runner', async () => {
-      vi.mocked(invoke).mockResolvedValueOnce(undefined);
+    it('lists diagnostics but only runs them on user request', async () => {
+      vi.mocked(invoke).mockResolvedValue(undefined);
       render(<ConnectionDoctor />);
 
-      expect(screen.getByText(/Campus Local Discovery \(mDNS\)/i)).toBeInTheDocument();
-      expect(screen.getByText(/Direct UDP \/ QUIC/i)).toBeInTheDocument();
-      expect(screen.getByText(/Encrypted Relay \(Port 443 TCP\)/i)).toBeInTheDocument();
-      expect(screen.getByText(/NAT Architecture Inspection/i)).toBeInTheDocument();
+      // The doctor must be explicitly triggered, never auto-run on mount.
+      expect(invoke).not.toHaveBeenCalledWith('run_connection_doctor');
+      expect(screen.getByText(/Check your connection before troubleshooting/i)).toBeInTheDocument();
 
+      fireEvent.click(screen.getByText(/Run Connection Doctor/i));
       expect(invoke).toHaveBeenCalledWith('run_connection_doctor');
+
+      expect(await screen.findByText(/Local P2P Engine & LAN Discovery/i)).toBeInTheDocument();
+      expect(screen.getByText(/Direct QUIC \/ UDP/i)).toBeInTheDocument();
+      expect(screen.getByText(/Encrypted Relay \(TCP 443\)/i)).toBeInTheDocument();
+      expect(screen.getByText(/Swarm Peers Seen/i)).toBeInTheDocument();
     });
   });
 

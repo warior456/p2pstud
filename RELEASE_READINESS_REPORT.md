@@ -212,3 +212,34 @@ The following fixes were applied in this cycle. `cargo clippy --workspace --all-
 
 **Still recommended before a public release:** manual smoke test on a real two-node swarm (large PDF, note save across peers, offline upload, eviction under quota), and wiring a native “Save As…” flow if large downloads should avoid frontend memory. These are tracked as follow-ups rather than blockers.
 
+---
+
+## 10. Resolution status (0.1.47 – 0.1.48)
+
+This cycle closes the remaining user-reported issues and hardens the updater.
+
+### Updater stability (0.1.47)
+
+| Problem | Fix |
+|---|---|
+| “Staged installer ready” persisted after the update was already installed | `check_and_stage_app_update` treats a staged installer as valid only while `update_target_version` is strictly newer than the running build; otherwise it clears `update_pending`, `update_installer_path`, and `update_installer_hash`. A semver-aware `is_version_newer` replaced string comparison. |
+| Old installers accumulated in the app data `updates/` folder | `cleanup_stale_update_artifacts` runs at startup and `download_app_update` prunes previous artifacts before writing the new one. Installer scripts now delete the setup executable after applying it. |
+| Installer fully buffered in memory to hash it | Downloads are streamed and hashed on a blocking thread with BLAKE3 (`hash_file_streaming`), so ~15 MB installers never sit twice in RAM. |
+| Update could be fetched from an arbitrary host | `validate_update_download_url` requires HTTPS + `github.com`/`*.githubusercontent.com`; asset names are sanitized before being joined to the `updates` directory. |
+| Failed staging produced a blocking `alert()` | Replaced with the existing toast channel in `App.tsx` and `BackupSettings.tsx`. |
+
+### User-reported issues
+
+| Issue | Status | Fix |
+|---|---|---|
+| Download only went to cache; no Downloads folder or external viewer | ✅ Fixed | New IPC commands `download_file_to_downloads`, `pick_file_save_dialog`, `open_file_with_default_app`. The file menu now offers **Save to Downloads Folder**, **Save As…**, and **Open with System Viewer**. Downloads fetch from peers on demand and mark the blob local. |
+| Quick filters lack a flattened “all favorites” view | ✅ Fixed | `FileTree` gained an **All Favorites** filter driven by `App.tsx`; it flattens every starred file across folders and sorts by name. |
+| File selection sometimes looked selected but wasn’t | ✅ Fixed | Selection highlight now derives only from the checkbox selection set. Navigating folders/breadcrumbs clears the selection, and catalog refreshes prune hashes that no longer exist. |
+| Large files showed “No PDF data provided” while loading | ✅ Fixed | `PdfViewer` accepts an `isLoading` prop and renders “Loading PDF from the swarm…” instead of an error. App sets it while the chunked read is in flight. |
+| Folder delete could remove other peers’ files | ✅ Fixed | `delete_virtual_folder_recursive` performs an atomic pre-check: if any contained row is owned by another node it refuses the whole operation and reports the offending files. Regression test `recursive_folder_delete_rejects_foreign_owned_files` covers it. The UI also warns before calling the backend. |
+| Connection Doctor auto-ran, warned nothing on unverified Wi-Fi, and 3/4 checks always failed | ✅ Fixed | The doctor now runs only on request, shows an “unverified network” notice, and marks only relay/TCP 443 as required. LAN discovery, direct QUIC/UDP, and swarm peers are informational (`Unavailable` instead of `Blocked`) because campus firewalls legitimately filter them while relay sync still works. |
+| Settings menu not intuitive; Network & Swarm tab enormous | ✅ Fixed | Main settings tabs are now icon cards with one-line descriptions. `NetworkSettings` is split into four internal sections: **Overview & Campus**, **Peers & Identity**, **Workspaces**, **Security & Relay**. The duplicated bandwidth/battery card was removed; it lives in the dedicated **Bandwidth & Battery** tab. |
+| No intermediate battery mode for single-seed files | ✅ Fixed | Three-way `battery_mode` (`pause` / `eco` / `normal`) persisted via `set_battery_mode`. Eco mode keeps scarcity replication alive but skips general auto-fill, processes one file at a time, waits ≥ 90 s between attempts, and caps throughput at 128 KB/s. The old boolean is kept in sync for compatibility. |
+
+**Verification:** `cargo clippy -p p2pstud-tauri --all-targets -- -D warnings` clean; `cargo test -p p2pstud-tauri` = 55 lib + 2 anchor passing; `npm run build` passes; `npm run test -- --run` = 7 files / 40 tests passing. Version bumped to `0.1.48` in `package.json`, `src-tauri/Cargo.toml`, `src-tauri/tauri.conf.json`, and the telemetry fallback.
+

@@ -83,8 +83,11 @@ export interface AppSettings {
   network_profile_override?: string;
   bandwidth_cap?: string;
   pause_on_battery?: boolean;
+  battery_mode?: BatteryMode;
   warn_metered?: boolean;
 }
+
+export type BatteryMode = 'pause' | 'eco' | 'normal';
 
 export interface NetworkProfileInfo {
   profile: 'campus' | 'trusted' | 'unknown';

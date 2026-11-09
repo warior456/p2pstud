@@ -1081,6 +1081,247 @@ pub async fn export_file(
     Ok(())
 }
 
+/// Read a blob from the running engine or the preloaded store.
+async fn load_blob_bytes(state: &AppState, hash: iroh_blobs::Hash) -> Option<Vec<u8>> {
+    {
+        let engine_guard = state.engine.read().await;
+        if let Some(engine) = engine_guard.as_ref() {
+            return engine
+                .store
+                .blobs()
+                .get_bytes(hash)
+                .await
+                .map(|b| b.to_vec())
+                .ok();
+        }
+    }
+    let store_guard = state.store.read().await;
+    match store_guard.as_ref() {
+        Some(store) => store
+            .blobs()
+            .get_bytes(hash)
+            .await
+            .map(|b| b.to_vec())
+            .ok(),
+        None => None,
+    }
+}
+
+/// Fetch a blob from known peers (owner first, then active seeders).
+async fn fetch_blob_from_peers(
+    state: &AppState,
+    hash: &str,
+    parsed_hash: iroh_blobs::Hash,
+) -> Result<Vec<u8>, String> {
+    let engine_guard = state.engine.read().await;
+    let engine = engine_guard.as_ref().ok_or_else(|| {
+        "File is not stored in local offline cache and the peer network is currently disconnected."
+            .to_string()
+    })?;
+    let my_node_id = engine.node_id().to_string();
+    let blob_rec = get_blob(&state.db, hash).ok().flatten();
+
+    if let Some(owner) = blob_rec.as_ref().and_then(|r| r.owner_node_id.clone()) {
+        if !crate::storage::db::is_matching_node_id(&owner, &my_node_id) {
+            if let Ok(owner_id) = owner.parse::<iroh::EndpointId>() {
+                let downloader = engine.store.downloader(&engine.endpoint);
+                if downloader
+                    .download(parsed_hash, vec![owner_id])
+                    .await
+                    .is_ok()
+                {
+                    if let Ok(bytes) = engine.store.blobs().get_bytes(parsed_hash).await {
+                        let _ = crate::storage::blob_tracker::mark_blob_local(&state.db, hash);
+                        return Ok(bytes.to_vec());
+                    }
+                }
+            }
+        }
+    }
+
+    let seeders: Vec<String> = {
+        let conn = state.db.lock();
+        let mut list = Vec::new();
+        if let Ok(mut stmt) = conn.prepare(
+            "SELECT peer_node_id FROM file_seeds WHERE hash = ?1 AND peer_node_id != ?2 ORDER BY last_seen_at DESC",
+        ) {
+            if let Ok(rows) = stmt.query_map(rusqlite::params![hash, &my_node_id], |r| r.get(0)) {
+                for row in rows.flatten() {
+                    list.push(row);
+                }
+            }
+        }
+        list
+    };
+
+    for seeder in seeders {
+        if let Ok(seeder_id) = seeder.parse::<iroh::EndpointId>() {
+            let downloader = engine.store.downloader(&engine.endpoint);
+            if downloader
+                .download(parsed_hash, vec![seeder_id])
+                .await
+                .is_ok()
+            {
+                if let Ok(bytes) = engine.store.blobs().get_bytes(parsed_hash).await {
+                    let _ = crate::storage::blob_tracker::mark_blob_local(&state.db, hash);
+                    return Ok(bytes.to_vec());
+                }
+            }
+        }
+    }
+
+    Err("File is not cached locally and no peers are currently online to serve it.".to_string())
+}
+
+/// Load a blob from local storage, falling back to an on-demand swarm fetch.
+async fn load_or_fetch_blob_bytes(state: &AppState, hash: &str) -> Result<Vec<u8>, String> {
+    let _ = crate::storage::blob_tracker::touch_blob(&state.db, hash);
+    let parsed_hash = hash
+        .parse::<iroh_blobs::Hash>()
+        .map_err(|e| format!("invalid hash '{hash}': {e}"))?;
+    if let Some(bytes) = load_blob_bytes(state, parsed_hash).await {
+        return Ok(bytes);
+    }
+    fetch_blob_from_peers(state, hash, parsed_hash).await
+}
+
+/// Reduce a user-supplied file name to a safe bare file name.
+fn safe_file_name(raw: &str, fallback: &str) -> String {
+    let candidate = std::path::Path::new(raw.trim())
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let cleaned: String = candidate
+        .chars()
+        .filter(|c| !c.is_control() && !matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|'))
+        .collect();
+    if cleaned.trim().is_empty() || cleaned == "." || cleaned == ".." {
+        fallback.to_string()
+    } else {
+        cleaned
+    }
+}
+
+/// Choose a non-colliding destination path by appending " (n)" before the extension.
+fn unique_destination(dir: &std::path::Path, file_name: &str) -> std::path::PathBuf {
+    let candidate = dir.join(file_name);
+    if !candidate.exists() {
+        return candidate;
+    }
+    let path = std::path::Path::new(file_name);
+    let stem = path
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| "file".to_string());
+    let ext = path.extension().map(|e| format!(".{}", e.to_string_lossy()));
+    for index in 1..10_000 {
+        let name = match &ext {
+            Some(ext) => format!("{stem} ({index}){ext}"),
+            None => format!("{stem} ({index})"),
+        };
+        let candidate = dir.join(name);
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+    dir.join(file_name)
+}
+
+/// Prompt a native save dialog for exporting a single catalog file.
+#[tauri::command]
+pub async fn pick_file_save_dialog(default_name: Option<String>) -> Result<Option<String>, String> {
+    let name = safe_file_name(
+        default_name.as_deref().unwrap_or("p2pstud-file.bin"),
+        "p2pstud-file.bin",
+    );
+    let file = rfd::AsyncFileDialog::new()
+        .set_file_name(&name)
+        .set_title("Save File Copy")
+        .save_file()
+        .await;
+    Ok(file.map(|h| h.path().to_string_lossy().to_string()))
+}
+
+/// Save a copy of a catalog file directly into the user's Downloads folder.
+#[tauri::command]
+pub async fn download_file_to_downloads(
+    hash: String,
+    file_name: Option<String>,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    let data = load_or_fetch_blob_bytes(&state, &hash).await?;
+
+    let downloads = app
+        .path()
+        .download_dir()
+        .map_err(|e| format!("Failed to resolve Downloads folder: {e}"))?;
+    std::fs::create_dir_all(&downloads)
+        .map_err(|e| format!("Failed to create Downloads folder: {e}"))?;
+
+    let fallback = format!("{}-{}", &hash[..hash.len().min(8)], "download");
+    let name = safe_file_name(file_name.as_deref().unwrap_or(&fallback), &fallback);
+    let target = unique_destination(&downloads, &name);
+
+    std::fs::write(&target, data)
+        .map_err(|e| format!("Failed to save '{}': {e}", target.display()))?;
+    Ok(target.to_string_lossy().to_string())
+}
+
+/// Materialize a catalog file on disk and open it with the OS default application.
+#[tauri::command]
+pub async fn open_file_with_default_app(
+    hash: String,
+    file_name: Option<String>,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    let data = load_or_fetch_blob_bytes(&state, &hash).await?;
+
+    let preview_dir = app
+        .path()
+        .app_cache_dir()
+        .unwrap_or_else(|_| std::env::temp_dir())
+        .join("preview");
+    std::fs::create_dir_all(&preview_dir)
+        .map_err(|e| format!("Failed to create preview cache: {e}"))?;
+
+    let fallback = format!("{}-{}", &hash[..hash.len().min(8)], "file");
+    let name = safe_file_name(file_name.as_deref().unwrap_or(&fallback), &fallback);
+    let target = preview_dir.join(&name);
+    std::fs::write(&target, data)
+        .map_err(|e| format!("Failed to write preview file '{}': {e}", target.display()))?;
+
+    let target_str = target.to_string_lossy().to_string();
+
+    #[cfg(target_os = "windows")]
+    let mut opener = {
+        let mut cmd = std::process::Command::new("cmd");
+        cmd.args(["/C", "start", "", &target_str]);
+        cmd
+    };
+    #[cfg(target_os = "macos")]
+    let mut opener = {
+        let mut cmd = std::process::Command::new("open");
+        cmd.arg(&target_str);
+        cmd
+    };
+    #[cfg(target_os = "linux")]
+    let mut opener = {
+        let mut cmd = std::process::Command::new("xdg-open");
+        cmd.arg(&target_str);
+        cmd
+    };
+    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+    let mut opener = std::process::Command::new("true");
+
+    opener
+        .spawn()
+        .map_err(|e| format!("Failed to open file with the system viewer: {e}"))?;
+    Ok(target_str)
+}
+
+
 /// Summary of files imported from a ZIP archive.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct ZipImportSummary {
@@ -1788,22 +2029,19 @@ pub async fn delete_folder(
     let is_recursive = recursive.unwrap_or(true);
 
     if is_recursive {
-        let guard = state.engine.read().await;
-        let (our_node_id, sk) = match guard.as_ref() {
-            Some(e) => (Some(e.node_id().to_string()), Some(&e.secret_key)),
-            None => (None, None),
-        };
+        // Destructive local actions must work even while the engine is still starting.
+        let (our_node_id, engine_opt, secret_key) = resolve_identity_context(&state).await?;
 
         let (deleted_hashes, tombstones) = crate::storage::blob_tracker::delete_virtual_folder_recursive(
             &state.db,
             &path,
-            our_node_id.as_deref(),
-            sk,
+            Some(&our_node_id),
+            Some(&secret_key),
         )
         .map_err(|e| e.to_string())?;
 
         // Prune raw blob storage tags for deleted hashes
-        if let Some(engine) = guard.as_ref() {
+        if let Some(engine) = engine_opt.as_ref() {
             for h in &deleted_hashes {
                 let _ = engine.store.tags().delete(h.as_bytes()).await;
             }

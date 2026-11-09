@@ -26,14 +26,17 @@ pub struct DoctorReport {
     pub advice: Vec<String>,
 }
 
+/// Run the connection doctor.
+///
+/// Tests are intentionally split into *critical* checks (relay reachability) and
+/// *informational* checks (LAN discovery, direct UDP, swarm size). Only a relay failure
+/// prevents syncing, so the informational checks never display as a scary "Blocked"
+/// state just because a university firewall filters UDP or mDNS probes.
 #[tauri::command]
 pub async fn run_connection_doctor(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<DoctorReport, String> {
-    let _state_db = state.db.clone();
-    let engine_lock = state.engine.clone();
-
     let mut results = Vec::new();
     let mut advice = Vec::new();
 
@@ -45,134 +48,185 @@ pub async fn run_connection_doctor(
         let _ = app.emit("doctor-test-result", res);
     };
 
-    // 1. Test mDNS / Local LAN discovery
-    let mdns_ok = {
-        let guard = engine_lock.read().await;
-        if let Some(engine) = guard.as_ref() {
-            engine.endpoint.bound_sockets().iter().any(|sock| {
-                let ip = sock.ip();
-                ip.is_loopback() || match ip {
-                    std::net::IpAddr::V4(v4) => v4.is_private(),
-                    std::net::IpAddr::V6(_) => false,
-                }
-            })
-        } else {
-            false
+    // Snapshot engine state without holding the read lock across network probes.
+    let (engine_started, bound_sockets, direct_addrs, relay_urls) = {
+        let guard = state.engine.read().await;
+        match guard.as_ref() {
+            Some(engine) => {
+                let addr = engine.endpoint.addr();
+                let direct: Vec<std::net::SocketAddr> = addr.ip_addrs().cloned().collect();
+                let relays: Vec<String> = addr.relay_urls().map(|u| u.to_string()).collect();
+                (
+                    true,
+                    engine.endpoint.bound_sockets(),
+                    direct,
+                    relays,
+                )
+            }
+            None => (false, Vec::new(), Vec::new(), Vec::new()),
         }
     };
 
-    let mdns_res = DoctorTestResult {
-        test: "mdns".to_string(),
-        ok: mdns_ok,
-        detail: if mdns_ok {
-            "Local socket bound and active for LAN peer discovery (mDNS)".to_string()
-        } else {
-            "Client isolation detected on router (mDNS disabled or blocked on this Wi-Fi)".to_string()
-        },
+    // 1. Local engine / LAN discovery (informational)
+    let has_private_socket = bound_sockets.iter().any(|sock| {
+        let ip = sock.ip();
+        ip.is_loopback()
+            || match ip {
+                std::net::IpAddr::V4(v4) => v4.is_private(),
+                std::net::IpAddr::V6(v6) => v6.is_loopback(),
+            }
+    });
+
+    let local_detail = if !engine_started {
+        "P2P engine is still starting. Run the doctor again in a few seconds.".to_string()
+    } else if has_private_socket {
+        "LAN discovery socket is active: peers on this Wi-Fi can find you directly.".to_string()
+    } else {
+        "LAN discovery is limited on this router (client isolation). Sync still works through the encrypted relay."
+            .to_string()
     };
-    emit_result(&mdns_res);
-    results.push(mdns_res);
 
-    // 2. Test QUIC UDP
-    // Transmit a standard minimal DNS query probe to 1.1.1.1:53 and wait for response
-    // to verify genuine outbound and inbound UDP packet transmission.
-    let quic_udp_ok = async {
-        let sock = tokio::net::UdpSocket::bind("0.0.0.0:0").await.ok()?;
-        sock.connect("1.1.1.1:53").await.ok()?;
-        let query = [
-            0x12, 0x34, // Query ID
-            0x01, 0x00, // Standard query
-            0x00, 0x01, // 1 question
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x00,       // Root label "."
-            0x00, 0x01, // Type A
-            0x00, 0x01, // Class IN
-        ];
-        sock.send(&query).await.ok()?;
-        let mut buf = [0u8; 64];
-        let res = tokio::time::timeout(Duration::from_millis(1500), sock.recv(&mut buf)).await;
-        match res {
-            Ok(Ok(n)) if n > 0 => Some(true),
-            _ => None,
-        }
-    }
-    .await
-    .unwrap_or(false);
-
-    let quic_res = DoctorTestResult {
-        test: "quic_udp".to_string(),
-        ok: quic_udp_ok,
-        detail: if quic_udp_ok {
-            "Outbound UDP connectivity available for direct P2P mesh".to_string()
-        } else {
-            "Outbound UDP blocked by network firewall; traffic will tunnel through relay".to_string()
-        },
+    let local_res = DoctorTestResult {
+        test: "engine_local".to_string(),
+        ok: engine_started,
+        detail: local_detail,
     };
-    emit_result(&quic_res);
-    results.push(quic_res);
+    emit_result(&local_res);
+    results.push(local_res);
 
-    // 3. Test Relay over port 443 (TCP)
+    // 2. Direct UDP / QUIC capability (informational).
+    // We do NOT perform a raw UDP DNS probe: many campus networks block external
+    // resolvers while QUIC to the relay on UDP 443 still works, which produced
+    // misleading failures. Instead report whether the endpoint advertises a direct
+    // address it could use on trusted networks.
+    let direct_ok = engine_started;
+    let direct_detail = if !engine_started {
+        "P2P engine is not running yet, so direct UDP cannot be evaluated.".to_string()
+    } else if !direct_addrs.is_empty() {
+        let sample = direct_addrs
+            .iter()
+            .take(2)
+            .map(|a| a.to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!(
+            "Endpoint advertises {} direct address(es) ({}); fast direct QUIC transfers are possible on trusted networks.",
+            direct_addrs.len(),
+            sample
+        )
+    } else {
+        "No direct public address advertised. Transfers use the encrypted relay (slower, but fully functional). Campus Stealth Mode intentionally forces relay-only traffic."
+            .to_string()
+    };
+
+    let direct_res = DoctorTestResult {
+        test: "direct_udp".to_string(),
+        ok: direct_ok,
+        detail: direct_detail,
+    };
+    emit_result(&direct_res);
+    results.push(direct_res);
+
+    // 3. Relay over TCP port 443 (critical: this is the guaranteed sync path).
     let relay_url = crate::p2p::relay::EU_RELAY_URL;
     let relay_tcp_ok = {
         let addr_str = "euc1-1.relay.n0.iroh.link:443";
-        match tokio::time::timeout(Duration::from_millis(2500), tokio::net::TcpStream::connect(addr_str)).await {
+        match tokio::time::timeout(
+            Duration::from_millis(2500),
+            tokio::net::TcpStream::connect(addr_str),
+        )
+        .await
+        {
             Ok(Ok(_stream)) => true,
-            _ => {
-                match tokio::time::timeout(Duration::from_millis(1500), tokio::net::lookup_host(addr_str)).await {
-                    Ok(Ok(mut addrs)) => addrs.next().is_some(),
-                    _ => false,
-                }
-            }
+            _ => match tokio::time::timeout(
+                Duration::from_millis(1500),
+                tokio::net::lookup_host(addr_str),
+            )
+            .await
+            {
+                Ok(Ok(mut addrs)) => addrs.next().is_some(),
+                _ => false,
+            },
         }
+    };
+
+    let relay_detail = if relay_tcp_ok {
+        match relay_urls.first() {
+            Some(active) => format!("Reached relay {active} over TCP 443 — this is the encrypted sync fallback."),
+            None => format!("Reached Western Europe relay at {relay_url} over TCP 443."),
+        }
+    } else {
+        format!(
+            "Cannot reach the Western Europe relay at {relay_url} over TCP 443. Syncing will fail until port 443 is allowed."
+        )
     };
 
     let relay_res = DoctorTestResult {
         test: "relay_tcp".to_string(),
         ok: relay_tcp_ok,
-        detail: if relay_tcp_ok {
-            format!("Successfully reached Western Europe relay at {relay_url}")
-        } else {
-            format!("Cannot reach Western Europe relay at {relay_url} over TCP port 443")
-        },
+        detail: relay_detail,
     };
     emit_result(&relay_res);
     results.push(relay_res);
 
-    // 4. Test NAT type
-    let is_symmetric_nat = !quic_udp_ok;
-    let nat_type = if is_symmetric_nat { "symmetric" } else { "full_cone" };
-
-    let nat_res = DoctorTestResult {
-        test: "nat_type".to_string(),
-        ok: !is_symmetric_nat,
-        detail: if is_symmetric_nat {
-            format!("{nat_type} NAT detected: requires relay assistance for peer hole punching")
-        } else {
-            format!("{nat_type} NAT: direct peer connections possible")
-        },
+    // 4. Recently seen swarm peers (informational).
+    let recent_peers = {
+        let conn = state.db.lock();
+        let cutoff = crate::storage::blob_tracker::now_unix() - 300;
+        conn.query_row(
+            "SELECT COUNT(DISTINCT peer_node_id) FROM file_seeds WHERE last_seen_at > ?1",
+            rusqlite::params![cutoff],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap_or(0)
     };
-    emit_result(&nat_res);
-    results.push(nat_res);
 
-    // Compile helpful advice based on results
-    if !quic_udp_ok && relay_tcp_ok {
-        advice.push("Network is blocking direct UDP. All traffic routes through Western Europe encrypted relay — transfers work seamlessly.".to_string());
-    }
+    let peers_ok = engine_started;
+    let peers_detail = if !engine_started {
+        "P2P engine is not running yet, so peers cannot be counted.".to_string()
+    } else if recent_peers > 0 {
+        format!(
+            "{recent_peers} peer(s) seen in the last 5 minutes. Files can be fetched from the swarm."
+        )
+    } else {
+        "No peers seen recently. This is normal for a new or small swarm; files you own remain reachable through the relay."
+            .to_string()
+    };
+
+    let peers_res = DoctorTestResult {
+        test: "swarm_peers".to_string(),
+        ok: peers_ok,
+        detail: peers_detail,
+    };
+    emit_result(&peers_res);
+    results.push(peers_res);
+
+    // Compile helpful advice based on results. Only relay failure is blocking.
+    advice.push(
+        "Relay on TCP 443 is the guaranteed connection path; LAN discovery and direct UDP only make transfers faster when available."
+            .to_string(),
+    );
 
     if !relay_tcp_ok {
-        advice.push("Cannot reach the Western Europe relay. Check your internet connection or verify port 443 outbound access.".to_string());
-    }
-
-    if is_symmetric_nat {
-        advice.push("Symmetric NAT is active. P2P connections will use the encrypted relay for NAT hole-punching.".to_string());
-    }
-
-    if mdns_ok {
-        advice.push("Local discovery active: fast LAN mesh transfers available with peers on this router.".to_string());
-    }
-
-    if advice.is_empty() {
-        advice.push("All connectivity checks passed. Your device is ready to sync and share course documents.".to_string());
+        advice.push(
+            "Sync is blocked: allow outbound TCP 443, disable captive-portal logins, or switch to a trusted network."
+                .to_string(),
+        );
+    } else if direct_addrs.is_empty() {
+        advice.push(
+            "Direct peer-to-peer UDP is unavailable here; transfers will tunnel through the encrypted relay. This is normal on campus Wi-Fi."
+                .to_string(),
+        );
+    } else if !has_private_socket {
+        advice.push(
+            "LAN discovery is blocked by router client isolation; peers will still connect through the relay."
+                .to_string(),
+        );
+    } else {
+        advice.push(
+            "All connectivity paths are available: fastest direct LAN transfers plus relay fallback."
+                .to_string(),
+        );
     }
 
     let complete_payload = DoctorComplete {

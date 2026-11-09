@@ -65,6 +65,8 @@ pub struct AppSettings {
     #[serde(default)]
     pub pause_on_battery: Option<bool>,
     #[serde(default)]
+    pub battery_mode: Option<String>,
+    #[serde(default)]
     pub warn_metered: Option<bool>,
 }
 
@@ -208,6 +210,18 @@ pub async fn get_app_settings(state: State<'_, AppState>) -> Result<AppSettings,
         .map(|v| v.eq_ignore_ascii_case("true"))
         .unwrap_or(true);
 
+    let battery_mode = state
+        .db
+        .get_setting("battery_mode")
+        .map_err(|e| e.to_string())?
+        .unwrap_or_else(|| {
+            if pause_on_battery {
+                "pause".to_string()
+            } else {
+                "normal".to_string()
+            }
+        });
+
     let warn_metered = state
         .db
         .get_setting("warn_metered")
@@ -224,6 +238,7 @@ pub async fn get_app_settings(state: State<'_, AppState>) -> Result<AppSettings,
         onboarding_complete,
         bandwidth_cap: Some(bandwidth_cap),
         pause_on_battery: Some(pause_on_battery),
+        battery_mode: Some(battery_mode),
         warn_metered: Some(warn_metered),
     })
 }
@@ -278,6 +293,19 @@ pub async fn update_app_settings(
             .map_err(|e| e.to_string())?;
     }
 
+    if let Some(ref mode) = settings.battery_mode {
+        let normalized = normalize_battery_mode(mode)?;
+        state
+            .db
+            .set_setting("battery_mode", normalized)
+            .map_err(|e| e.to_string())?;
+        // Keep the legacy boolean in sync for older builds / downgrades.
+        state
+            .db
+            .set_setting("pause_on_battery", &(normalized == "pause").to_string())
+            .map_err(|e| e.to_string())?;
+    }
+
     if let Some(warn) = settings.warn_metered {
         state
             .db
@@ -301,7 +329,19 @@ pub async fn set_bandwidth_cap(
         .map_err(|e| e.to_string())
 }
 
-/// Set pause on battery setting.
+/// Validate and canonicalize a battery-mode string.
+fn normalize_battery_mode(raw: &str) -> Result<&'static str, String> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "pause" => Ok("pause"),
+        "eco" => Ok("eco"),
+        "normal" => Ok("normal"),
+        other => Err(format!(
+            "Unknown battery mode '{other}'. Expected one of: pause, eco, normal."
+        )),
+    }
+}
+
+/// Set pause on battery setting (legacy boolean, kept for compatibility).
 #[tauri::command]
 pub async fn set_pause_on_battery(
     pause: bool,
@@ -310,6 +350,24 @@ pub async fn set_pause_on_battery(
     state
         .db
         .set_setting("pause_on_battery", &pause.to_string())
+        .map_err(|e| e.to_string())?;
+    state
+        .db
+        .set_setting("battery_mode", if pause { "pause" } else { "normal" })
+        .map_err(|e| e.to_string())
+}
+
+/// Set the three-way battery behaviour: `pause`, `eco`, or `normal`.
+#[tauri::command]
+pub async fn set_battery_mode(mode: String, state: State<'_, AppState>) -> Result<(), String> {
+    let normalized = normalize_battery_mode(&mode)?;
+    state
+        .db
+        .set_setting("battery_mode", normalized)
+        .map_err(|e| e.to_string())?;
+    state
+        .db
+        .set_setting("pause_on_battery", &(normalized == "pause").to_string())
         .map_err(|e| e.to_string())
 }
 

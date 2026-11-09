@@ -38,9 +38,13 @@ interface FileTreeProps {
   onNavigateUp?: () => void;
   onCreateFolder?: () => void;
   onDeleteFolder?: (folderName: string) => void;
+  showAllFavorites?: boolean;
+  onToggleAllFavorites?: () => void;
   onPin: (hash: string) => void;
   onUnpin: (hash: string) => void;
   onDownload: (hash: string) => void;
+  onSaveAs?: (hash: string) => void;
+  onOpenExternal?: (hash: string) => void;
   onPreview: (hash: string) => void;
   onDelete?: (hash: string) => void;
   onVoteDelete?: (hash: string) => void;
@@ -69,7 +73,6 @@ function formatBytes(bytes: number): string {
 
 export const FileTree: React.FC<FileTreeProps> = ({
   files,
-  selectedHash,
   selectedHashes,
   onToggleSelectHash,
   onClearSelection,
@@ -85,9 +88,13 @@ export const FileTree: React.FC<FileTreeProps> = ({
   onNavigateUp,
   onCreateFolder,
   onDeleteFolder,
+  showAllFavorites = false,
+  onToggleAllFavorites,
   onPin,
   onUnpin,
   onDownload,
+  onSaveAs,
+  onOpenExternal,
   onPreview,
   onDelete,
   onVoteDelete,
@@ -147,12 +154,12 @@ export const FileTree: React.FC<FileTreeProps> = ({
       if (offlineOnly && f.sync_state !== 'pinned' && f.sync_state !== 'cached') {
         return false;
       }
-      if (starredOnly && !f.is_starred) {
+      if (!onToggleAllFavorites && starredOnly && !f.is_starred) {
         return false;
       }
       return true;
     });
-  }, [files, offlineOnly, starredOnly]);
+  }, [files, offlineOnly, starredOnly, onToggleAllFavorites]);
 
   const selectableFiles = useMemo(() => filteredFiles.filter((f) => !f.is_dir), [filteredFiles]);
 
@@ -200,6 +207,15 @@ export const FileTree: React.FC<FileTreeProps> = ({
   const selectedFilesTotalBytes = useMemo(() => {
     return selectedFilesList.reduce((acc, f) => acc + (f.size_bytes || 0), 0);
   }, [selectedFilesList]);
+
+  const favoritesActive = onToggleAllFavorites ? showAllFavorites : starredOnly;
+  const handleToggleFavoriteFilter = () => {
+    if (onToggleAllFavorites) {
+      onToggleAllFavorites();
+    } else {
+      setStarredOnly(!starredOnly);
+    }
+  };
 
   const ownedSelectedCount = useMemo(() => {
     if (!currentUserId) return 0;
@@ -279,16 +295,16 @@ export const FileTree: React.FC<FileTreeProps> = ({
             </button>
 
             <button
-              onClick={() => setStarredOnly(!starredOnly)}
+              onClick={handleToggleFavoriteFilter}
               className={`flex items-center gap-1 px-2 py-0.5 rounded text-xs transition-colors ${
-                starredOnly
+                favoritesActive
                   ? 'bg-amber-100 text-amber-800 font-semibold'
                   : 'text-gray-500 hover:bg-gray-200'
               }`}
-              title="Show only starred study files"
+              title="Show a flattened list of every starred favorite across all folders"
             >
               <Star className="w-3 h-3 text-amber-500 fill-amber-500" />
-              <span>Starred</span>
+              <span>{onToggleAllFavorites ? 'All Favorites' : 'Starred'}</span>
             </button>
           </div>
         </div>
@@ -359,13 +375,13 @@ export const FileTree: React.FC<FileTreeProps> = ({
       {filteredFiles.length === 0 && activeUploads.length === 0 ? (
         <div className="flex flex-col items-center justify-center flex-1 text-center p-8">
           <div className="w-16 h-16 rounded-full bg-blue-50 flex items-center justify-center text-blue-500 mb-4 shadow-xs">
-            {offlineOnly || starredOnly ? <Filter className="w-8 h-8" /> : <UploadCloud className="w-8 h-8" />}
+            {offlineOnly || favoritesActive ? <Filter className="w-8 h-8" /> : <UploadCloud className="w-8 h-8" />}
           </div>
           <h3 className="text-base font-semibold text-gray-800 mb-1">
             {offlineOnly
               ? 'No offline files available'
-              : starredOnly
-              ? 'No starred files yet'
+              : favoritesActive
+              ? 'No favorites yet'
               : isRoot
               ? 'Shared Workspace is Empty'
               : 'This Folder is Empty'}
@@ -373,8 +389,8 @@ export const FileTree: React.FC<FileTreeProps> = ({
           <p className="text-xs text-gray-400 max-w-sm mb-4">
             {offlineOnly
               ? 'Download or pin files from the cloud swarm to make them available offline.'
-              : starredOnly
-              ? 'Click the star icon on important study documents to highlight them here.'
+              : favoritesActive
+              ? 'Click the star icon on important study documents to collect them here from every folder.'
               : 'Drag and drop study files, notes, or PDFs here to share them directly across the peer swarm.'}
           </p>
           <div className="flex items-center gap-2">
@@ -413,7 +429,7 @@ export const FileTree: React.FC<FileTreeProps> = ({
             <FileRow
               key={file.hash || file.name}
               file={file}
-              isSelected={activeSelected.includes(file.hash) || selectedHash === file.hash}
+              isSelected={activeSelected.includes(file.hash)}
               onToggleSelect={() => handleToggleSelect(file.hash)}
               currentUserId={currentUserId}
               onClick={() => {
@@ -426,6 +442,8 @@ export const FileTree: React.FC<FileTreeProps> = ({
               onPin={onPin}
               onUnpin={onUnpin}
               onDownload={onDownload}
+              onSaveAs={onSaveAs}
+              onOpenExternal={onOpenExternal}
               onPreview={onPreview}
               onDelete={onDelete}
               onVoteDelete={onVoteDelete}

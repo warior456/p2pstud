@@ -23,6 +23,10 @@ use crate::storage::db::Database;
 
 pub const DEFAULT_DAILY_WRITE_BUDGET_BYTES: u64 = 3 * 1024 * 1024 * 1024; // 3 GB
 pub const SCARCITY_CHECK_INTERVAL_SECS: u64 = 600; // 10 minutes
+/// Hard cap used while the device is on battery in Eco mode.
+pub const ECO_MAX_BYTES_PER_SEC: u64 = 128 * 1024; // 128 KB/s
+/// Minimum spacing between eco-mode replications (one file every 90 seconds).
+pub const ECO_MIN_INTERVAL_SECS: u64 = 90;
 
 /// Scarcity replication event emitted to the frontend UI for toast notification.
 #[derive(Debug, Clone, serde::Serialize)]
@@ -107,6 +111,7 @@ pub fn spawn_scarcity_worker(
 ) {
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(SCARCITY_CHECK_INTERVAL_SECS));
+        let mut last_eco_replication: Option<std::time::Instant> = None;
 
         loop {
             interval.tick().await;
@@ -122,10 +127,30 @@ pub fn spawn_scarcity_worker(
                 continue;
             }
 
+            // Eco mode keeps protecting scarcity, but only one file at a time and
+            // never more than once per 90 seconds at ≤128 KB/s.
+            let eco_mode = crate::p2p::network_profile::is_battery_eco_mode(&db);
+            if eco_mode {
+                if let Some(last) = last_eco_replication {
+                    if last.elapsed() < Duration::from_secs(ECO_MIN_INTERVAL_SECS) {
+                        tracing::debug!(
+                            "Scarcity worker eco pass skipped: waiting for the 90s replication window"
+                        );
+                        continue;
+                    }
+                }
+            }
+
             // 1. Network Profile check: Always work, but throttle bandwidth during campus hours on campus networks
             let ssid = detect_os_ssid();
             let (profile, _) = resolve_network_profile(&db, ssid.as_deref());
-            let bandwidth_cap = get_background_bandwidth_limit(&db, profile);
+            let profile_cap = get_background_bandwidth_limit(&db, profile);
+            // Eco mode clamps the cap further to protect battery life.
+            let bandwidth_cap = if eco_mode {
+                Some(profile_cap.unwrap_or(u64::MAX).min(ECO_MAX_BYTES_PER_SEC))
+            } else {
+                profile_cap
+            };
             if let Some(cap) = bandwidth_cap {
                 tracing::info!(
                     profile = profile.as_str(),
@@ -195,6 +220,11 @@ pub fn spawn_scarcity_worker(
             let Ok(target_hash) = target_blob.hash.parse::<iroh_blobs::Hash>() else {
                 continue;
             };
+
+            // Eco mode: remember this attempt so the next one waits at least 90 s.
+            if eco_mode {
+                last_eco_replication = Some(std::time::Instant::now());
+            }
 
             tracing::info!(
                 hash = %target_blob.hash,

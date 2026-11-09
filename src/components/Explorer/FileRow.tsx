@@ -37,6 +37,8 @@ interface FileRowProps {
   onPin: (hash: string) => void;
   onUnpin: (hash: string) => void;
   onDownload: (hash: string) => void;
+  onSaveAs?: (hash: string) => void;
+  onOpenExternal?: (hash: string) => void;
   onPreview: (hash: string) => void;
   onDelete?: (hash: string) => void;
   onVoteDelete?: (hash: string) => void;
@@ -80,6 +82,8 @@ export const FileRow: React.FC<FileRowProps> = ({
   onPin,
   onUnpin,
   onDownload,
+  onSaveAs,
+  onOpenExternal,
   onPreview,
   onDelete,
   onVoteDelete,
@@ -498,8 +502,35 @@ export const FileRow: React.FC<FileRowProps> = ({
                 }}
                 className="w-full text-left px-3 py-1.5 flex items-center gap-2 hover:bg-gray-100 text-gray-700"
               >
-                <Download className="w-3.5 h-3.5" /> Download
+                <Download className="w-3.5 h-3.5" /> Save to Downloads Folder
               </button>
+
+              {onSaveAs && (
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setMenuOpen(false);
+                    handleSafeAction(() => onSaveAs(file.hash), 'Save As');
+                  }}
+                  className="w-full text-left px-3 py-1.5 flex items-center gap-2 hover:bg-gray-100 text-gray-700"
+                >
+                  <HardDriveDownload className="w-3.5 h-3.5 text-blue-600" /> Save As...
+                </button>
+              )}
+
+              {onOpenExternal && (
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setMenuOpen(false);
+                    handleSafeAction(() => onOpenExternal(file.hash), 'Open');
+                  }}
+                  className="w-full text-left px-3 py-1.5 flex items-center gap-2 hover:bg-gray-100 text-gray-700"
+                  title="Open this file in your operating system's default application"
+                >
+                  <Eye className="w-3.5 h-3.5 text-indigo-600" /> Open with System Viewer
+                </button>
+              )}
 
               {file.sync_state === 'pinned' ? (
                 <button

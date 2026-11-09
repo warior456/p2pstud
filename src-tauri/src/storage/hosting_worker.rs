@@ -61,6 +61,12 @@ pub async fn run_hosting_fill_pass(
         return Ok(0);
     }
 
+    // Eco mode only allows narrow scarcity replication, never general auto-fill.
+    if crate::p2p::network_profile::is_battery_eco_mode(db) {
+        tracing::debug!("Auto-fill hosting pass skipped: battery eco mode");
+        return Ok(0);
+    }
+
     let target_bytes = get_target_hosting_bytes(db)?;
     let all_records = list_all_blobs(db)?;
 

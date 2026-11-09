@@ -14,7 +14,10 @@ import {
   Sparkles,
   AlertTriangle,
   X,
-  Power
+  Power,
+  Gauge,
+  Network,
+  DatabaseBackup
 } from 'lucide-react';
 import { 
   FileEntry, 
@@ -86,7 +89,9 @@ export default function App() {
   const [currentView, setCurrentView] = useState<'explorer' | 'pdf' | 'markdown' | 'settings'>('explorer');
   const [settingsTab, setSettingsTab] = useState<'cache' | 'bandwidth' | 'network' | 'backup'>('cache');
   const [searchQuery, setSearchQuery] = useState('');
+  const [showAllFavorites, setShowAllFavorites] = useState(false);
   const [pdfData, setPdfData] = useState<Uint8Array | null>(null);
+  const [pdfLoading, setPdfLoading] = useState(false);
   const [markdownHash, setMarkdownHash] = useState<string | null>(null);
   const [markdownName, setMarkdownName] = useState<string>('');
   const [networkProfile, setNetworkProfile] = useState<NetworkProfileInfo | null>(null);
@@ -332,27 +337,29 @@ export default function App() {
     try {
       const records = await invoke<BlobRecord[]>('list_files');
       if (records) {
-        setFiles(
-          records.map((r) => ({
-            name: r.name || `Document-${r.hash.slice(0, 8)}.bin`,
-            hash: r.hash,
-            size_bytes: r.size_bytes,
-            is_dir: false,
-            sync_state: r.is_pinned ? 'pinned' : r.is_cached ? 'cached' : 'cloud_only',
-            owner_node_id: r.owner_node_id ? (toCanonicalHexNodeId(r.owner_node_id) || r.owner_node_id) : undefined,
-            last_accessed_at: r.last_accessed_at,
-            delete_votes: r.delete_votes || [],
-            keep_votes: r.keep_votes || [],
-            deletion_scheduled_at: r.deletion_scheduled_at ?? undefined,
-            seeds_count: r.seed_count ?? 1,
-            is_quarantined: r.is_quarantined ?? false,
-            quarantine_expires_at: r.quarantine_expires_at ?? null,
-            upvotes: r.upvotes ?? 0,
-            downvotes: r.downvotes ?? 0,
-            net_rating: r.net_rating ?? 0,
-            is_starred: r.is_starred ?? false,
-          }))
-        );
+        const mapped: FileEntry[] = records.map((r) => ({
+          name: r.name || `Document-${r.hash.slice(0, 8)}.bin`,
+          hash: r.hash,
+          size_bytes: r.size_bytes,
+          is_dir: false,
+          sync_state: r.is_pinned ? 'pinned' : r.is_cached ? 'cached' : 'cloud_only',
+          owner_node_id: r.owner_node_id ? (toCanonicalHexNodeId(r.owner_node_id) || r.owner_node_id) : undefined,
+          last_accessed_at: r.last_accessed_at,
+          delete_votes: r.delete_votes || [],
+          keep_votes: r.keep_votes || [],
+          deletion_scheduled_at: r.deletion_scheduled_at ?? undefined,
+          seeds_count: r.seed_count ?? 1,
+          is_quarantined: r.is_quarantined ?? false,
+          quarantine_expires_at: r.quarantine_expires_at ?? null,
+          upvotes: r.upvotes ?? 0,
+          downvotes: r.downvotes ?? 0,
+          net_rating: r.net_rating ?? 0,
+          is_starred: r.is_starred ?? false,
+        }));
+        setFiles(mapped);
+        // Drop stale selections for rows that vanished from the catalog.
+        const existingHashes = new Set(mapped.map((r) => r.hash));
+        setSelectedHashes((prev) => prev.filter((h) => existingHashes.has(h)));
       }
     } catch (err) {
       console.warn('Failed to fetch workspace files:', err);
@@ -874,6 +881,18 @@ export default function App() {
     const targetPrefix = `${targetFolder}/`;
     const containedFiles = files.filter((f) => f.name === targetFolder || f.name.startsWith(targetPrefix));
 
+    // Deleting a folder must never remove other students' uploads.
+    const foreignFiles = containedFiles.filter(
+      (f) => f.owner_node_id && !isSameNodeId(f.owner_node_id, nodeId)
+    );
+    if (foreignFiles.length > 0) {
+      setToastMessage(
+        `Cannot delete "${folderName}": it contains ${foreignFiles.length} file(s) uploaded by other peers. Only their owner can remove them.`
+      );
+      setTimeout(() => setToastMessage(null), 8000);
+      return;
+    }
+
     if (containedFiles.length > 0) {
       if (!confirm(`Folder "${folderName}" contains ${containedFiles.length} file(s).\n\nAre you sure you want to permanently delete this folder and all ${containedFiles.length} file(s) inside it?`)) {
         return;
@@ -893,13 +912,15 @@ export default function App() {
       await loadWorkspaceFolders();
       refetchStats();
     } catch (err) {
-      alert(`Failed to delete folder: ${err}`);
+      setToastMessage(`Failed to delete folder: ${err}`);
+      setTimeout(() => setToastMessage(null), 8000);
     }
   };
 
   const handleNavigateFolder = (folderName: string) => {
     setPaths((prev) => [...prev, folderName]);
     setSelectedHash(null);
+    setSelectedHashes([]);
   };
 
   const handleNavigateBreadcrumbs = (index: number) => {
@@ -909,6 +930,7 @@ export default function App() {
       setPaths(paths.slice(0, index + 1));
     }
     setSelectedHash(null);
+    setSelectedHashes([]);
     setCurrentView('explorer');
   };
 
@@ -916,6 +938,7 @@ export default function App() {
     if (paths.length > 1) {
       setPaths((prev) => prev.slice(0, -1));
       setSelectedHash(null);
+      setSelectedHashes([]);
     }
   };
 
@@ -1172,6 +1195,7 @@ export default function App() {
     if (lowerName.endsWith('.pdf')) {
       setCurrentView('pdf');
       setPdfData(null);
+      setPdfLoading(true);
       try {
         const bytes = await readFileBytes(file.hash);
         if (bytes.length > 0) {
@@ -1184,6 +1208,8 @@ export default function App() {
         console.error(err);
         setToastMessage(`Could not open "${file.name}". It may not be cached and no peers are online.`);
         setTimeout(() => setToastMessage(null), 5000);
+      } finally {
+        setPdfLoading(false);
       }
     } else if (lowerName.endsWith('.md') || lowerName.endsWith('.txt')) {
       setMarkdownHash(file.hash);
@@ -1230,24 +1256,21 @@ export default function App() {
     );
 
     try {
-      const bytes = await readFileBytes(hash);
-      if (!bytes || bytes.length === 0) {
-        throw new Error('The file is empty or could not be read.');
-      }
-      const blob = new Blob([bytes as unknown as BlobPart], { type: 'application/octet-stream' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = file.name;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-
+      const savedPath = await invoke<string>('download_file_to_downloads', {
+        hash,
+        fileName: file.name,
+      });
       setFiles((prev) =>
-        prev.map((f) => (f.hash === hash ? { ...f, sync_state: 'cached' } : f))
+        prev.map((f) =>
+          f.hash === hash
+            ? { ...f, sync_state: f.sync_state === 'pinned' ? 'pinned' : 'cached' }
+            : f
+        )
       );
+      setToastMessage(`Saved "${file.name}" to ${savedPath}`);
+      setTimeout(() => setToastMessage(null), 7000);
       refetchStats();
+      await loadWorkspaceFiles();
     } catch (err) {
       console.error('Download error:', err);
       setToastMessage(`Download failed for "${file.name}": ${err}`);
@@ -1255,6 +1278,36 @@ export default function App() {
       setFiles((prev) =>
         prev.map((f) => (f.hash === hash ? { ...f, sync_state: 'cloud_only' } : f))
       );
+    }
+  };
+
+  const handleSaveAs = async (hash: string) => {
+    const file = files.find((f) => f.hash === hash);
+    if (!file) return;
+    try {
+      const destPath = await invoke<string | null>('pick_file_save_dialog', {
+        defaultName: file.name,
+      });
+      if (!destPath) return;
+      await invoke('export_file', { hash, destPath });
+      setToastMessage(`Saved a copy to ${destPath}`);
+      setTimeout(() => setToastMessage(null), 7000);
+    } catch (err) {
+      setToastMessage(`Could not save "${file.name}": ${err}`);
+      setTimeout(() => setToastMessage(null), 6000);
+    }
+  };
+
+  const handleOpenExternal = async (hash: string) => {
+    const file = files.find((f) => f.hash === hash);
+    if (!file) return;
+    try {
+      setToastMessage(`Opening "${file.name}" in your system viewer...`);
+      await invoke<string>('open_file_with_default_app', { hash, fileName: file.name });
+      setTimeout(() => setToastMessage(null), 4000);
+    } catch (err) {
+      setToastMessage(`Could not open "${file.name}": ${err}`);
+      setTimeout(() => setToastMessage(null), 6000);
     }
   };
 
@@ -1287,6 +1340,13 @@ export default function App() {
   };
 
   const currentDisplayFiles = useMemo(() => {
+    if (showAllFavorites) {
+      // Flattened favorites view: every starred file, regardless of current folder.
+      return files
+        .filter((f) => f.is_starred)
+        .sort((a, b) => a.name.localeCompare(b.name));
+    }
+
     if (searchQuery.trim()) {
       const q = searchQuery.toLowerCase();
       return files.filter(
@@ -1356,7 +1416,7 @@ export default function App() {
     fileEntries.sort((a, b) => a.name.localeCompare(b.name));
 
     return [...folderEntries, ...fileEntries];
-  }, [files, customFolders, currentPrefix, searchQuery]);
+  }, [files, customFolders, currentPrefix, searchQuery, showAllFavorites]);
 
   // If first launch and onboarding is not complete, show full wizard
   if (onboardingComplete === false) {
@@ -1685,6 +1745,8 @@ export default function App() {
                 onPin={handlePin}
                 onUnpin={handleUnpin}
                 onDownload={handleDownload}
+                onSaveAs={handleSaveAs}
+                onOpenExternal={handleOpenExternal}
                 onPreview={(hash) => {
                   const f = files.find((item) => item.hash === hash);
                   if (f) handleSelectFile(f);
@@ -1700,6 +1762,12 @@ export default function App() {
                 onRate={handleRate}
                 onToggleStar={handleToggleStar}
                 onReportDangerous={handleReportDangerous}
+                showAllFavorites={showAllFavorites}
+                onToggleAllFavorites={() => {
+                  setShowAllFavorites((prev) => !prev);
+                  setSelectedHashes([]);
+                  if (!showAllFavorites) setPaths(['Shared Cloud']);
+                }}
                 onFileUploaded={() => {
                   loadWorkspaceFiles();
                   refetchStats();
@@ -1712,6 +1780,7 @@ export default function App() {
           {currentView === 'pdf' && (
             <PdfViewer
               data={pdfData}
+              isLoading={pdfLoading}
               onClose={() => setCurrentView('explorer')}
             />
           )}
@@ -1765,47 +1834,57 @@ export default function App() {
                 </div>
 
                 {/* Settings Navigation Tabs */}
-                <div className="flex border-b border-gray-200 space-x-4">
-                  <button
-                    onClick={() => setSettingsTab('cache')}
-                    className={`pb-2 text-xs font-semibold border-b-2 transition-colors ${
-                      settingsTab === 'cache'
-                        ? 'border-blue-600 text-blue-600'
-                        : 'border-transparent text-gray-500 hover:text-gray-700'
-                    }`}
-                  >
-                    Cache & Quota
-                  </button>
-                  <button
-                    onClick={() => setSettingsTab('bandwidth')}
-                    className={`pb-2 text-xs font-semibold border-b-2 transition-colors ${
-                      settingsTab === 'bandwidth'
-                        ? 'border-blue-600 text-blue-600'
-                        : 'border-transparent text-gray-500 hover:text-gray-700'
-                    }`}
-                  >
-                    Bandwidth & Battery
-                  </button>
-                  <button
-                    onClick={() => setSettingsTab('network')}
-                    className={`pb-2 text-xs font-semibold border-b-2 transition-colors ${
-                      settingsTab === 'network'
-                        ? 'border-blue-600 text-blue-600'
-                        : 'border-transparent text-gray-500 hover:text-gray-700'
-                    }`}
-                  >
-                    Network & Swarm
-                  </button>
-                  <button
-                    onClick={() => setSettingsTab('backup')}
-                    className={`pb-2 text-xs font-semibold border-b-2 transition-colors ${
-                      settingsTab === 'backup'
-                        ? 'border-blue-600 text-blue-600'
-                        : 'border-transparent text-gray-500 hover:text-gray-700'
-                    }`}
-                  >
-                    Backups & Disaster Recovery
-                  </button>
+                <div className="grid grid-cols-2 lg:grid-cols-4 gap-2">
+                  {(
+                    [
+                      {
+                        id: 'cache' as const,
+                        icon: HardDrive,
+                        title: 'Cache & Quota',
+                        desc: 'Disk usage, quotas and eviction',
+                      },
+                      {
+                        id: 'bandwidth' as const,
+                        icon: Gauge,
+                        title: 'Bandwidth & Battery',
+                        desc: 'Speed caps and power behaviour',
+                      },
+                      {
+                        id: 'network' as const,
+                        icon: Network,
+                        title: 'Network & Swarm',
+                        desc: 'Wi-Fi profile, peers and relay',
+                      },
+                      {
+                        id: 'backup' as const,
+                        icon: DatabaseBackup,
+                        title: 'Backup & Updates',
+                        desc: 'Export, restore and app updates',
+                      },
+                    ]
+                  ).map((tab) => {
+                    const Icon = tab.icon;
+                    const active = settingsTab === tab.id;
+                    return (
+                      <button
+                        key={tab.id}
+                        onClick={() => setSettingsTab(tab.id)}
+                        className={`text-left p-3 rounded-xl border transition cursor-pointer ${
+                          active
+                            ? 'bg-blue-50 border-blue-300 ring-1 ring-blue-200'
+                            : 'bg-white border-gray-200 hover:border-gray-300 hover:bg-gray-50'
+                        }`}
+                      >
+                        <span className={`flex items-center gap-1.5 text-xs font-bold ${active ? 'text-blue-700' : 'text-gray-800'}`}>
+                          <Icon className={`w-4 h-4 ${active ? 'text-blue-600' : 'text-gray-400'}`} />
+                          {tab.title}
+                        </span>
+                        <span className="block mt-0.5 text-[10px] leading-snug text-gray-500">
+                          {tab.desc}
+                        </span>
+                      </button>
+                    );
+                  })}
                 </div>
 
                 {settingsTab === 'cache' && (
