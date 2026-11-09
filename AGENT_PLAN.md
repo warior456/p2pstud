@@ -45,9 +45,9 @@ At the end of every session (or when interrupted), update the `## Progress Track
 
 ## Progress Tracker
 
-> **Last session:** 2026-11-08
-> **Last completed task:** Step 74 completed: Home Wi-Fi Trusted Default for Automatic LAN Peer Discovery (v0.1.44).
-> **Next action:** Production release distribution and testing.
+> **Last session:** 2026-11-09
+> **Last completed task:** Step 78 completed: Remaining Release Issues, Battery Eco Mode & Settings Restructure (v0.1.48).
+> **Next action:** Manual two-node smoke test (large PDF, note save across peers, offline upload, quota eviction) and release packaging.
 
 | # | Step | Status | Notes |
 |---|---|---|---|
@@ -125,6 +125,10 @@ At the end of every session (or when interrupted), update the `## Progress Track
 | 72 | Auto-Updater Pipeline Fix, NSIS Asset Prioritization & Session Dismissal Unlocking (v0.1.42) | ✅ | Diagnosed and resolved updater pipeline failures: (1) fixed persistent suppression where `update_dismissed_session` was permanently saved in SQLite and never reset, preventing any update notifications indefinitely; (2) added automatic startup and periodic updater invocation in `App.tsx` and `lib.rs`; (3) prioritized `-setup.exe` and `.msi` NSIS installer packages over raw unbundled binary on Windows so setup installs cleanly; (4) added `force` flag to `check_app_update` so manual checks in Settings always bypass dismissal; (5) added `reset_update_dismissal_on_startup` on app launch. |
 | 73 | SQLite WAL Truncation, Hardened Anti-Resurrection Tombstone Sync, and Dedicated Bandwidth & Battery Defense Settings (v0.1.43) | ✅ | (1) Added automatic SQLite WAL checkpointing (`PRAGMA wal_checkpoint(TRUNCATE)`) on startup, periodic 5-minute background maintenance, and `optimize_database` IPC command with Cache Settings UI button, immediately shrinking the 4.06GB WAL to 0 bytes; (2) Added `db_bytes` and `wal_bytes` to `StorageStats` for transparent disk breakdown; (3) Created dedicated `BandwidthSettings.tsx` tab in Settings with speed controls, battery pause, and live throughput meters; (4) Made telemetry speed badge clickable to open Bandwidth & Battery settings; (5) Hardened tombstone synchronization by recording deletion tombstones for all files in recursively deleted folders, preventing resurrection by peers; (6) Added `delete_virtual_folder_cascade` on `FolderDeleted` sync messages; (7) Debounced `touch_blob` and `record_peer_seed` to reduce idle SSD writes. |
 | 74 | Home Wi-Fi Trusted Default for Automatic LAN Peer Discovery (v0.1.44) | ✅ | Fixed local peer auto-discovery failure on clean/reset databases: resolved aggressive network profile fallback in `p2p/network_profile.rs` where any consumer/home Wi-Fi SSID lacking an explicit database rule was defaulting to `Campus` (stealth mode), which silenced UDP 27888 broadcasts, dropped incoming discovery packets, and enforced relay-only transport; non-university SSIDs now default to `Trusted` so LAN discovery works instantly out of the box without manual rule configuration. |
+| 75 | Release Readiness Audit & Core Blockers (v0.1.45) | ✅ | Wrote `RELEASE_READINESS_REPORT.md`; fixed large-file chunked reads, Markdown note loading/saving via `save_note`, catalog vs. local-cache conflation (`written_at = 0` catalog rows + `mark_blob_local`), duplicate upload bandwidth accounting, engine-optional uploads, `export_file`, silent ZIP upload success, case-insensitive extensions, telemetry fallback version, and star tooltip. |
+| 76 | Cache Presence & Empty-File Completion (v0.1.46) | ✅ | 0-byte files now emit `file-chunk-done`; `list_files` re-marks blobs found in the store/on disk as locally present so cache accounting stays consistent. |
+| 77 | Updater Hardening (v0.1.47) | ✅ | Streamed BLAKE3 installer hashing, GitHub/HTTPS-only download URL validation, asset-name sanitization, stale staged-installer cleanup at startup, stale pending-state reconciliation, installer self-deletion on Windows, toast instead of `alert()`, and offline-safe local actions. |
+| 78 | Remaining Release Issues, Battery Eco Mode & Settings Restructure (v0.1.48) | ✅ | Native Downloads/Save As/Open-with-system IPC; flattened All Favorites filter; selection highlight/clear/prune fixes; PDF loading placeholder; folder deletion refuses foreign-owned files (with regression test); Connection Doctor manual-run + unverified warning + relay-only critical check; three-way battery mode (`pause`/`eco`/`normal`, eco = 1 file per 90 s at ≤128 KB/s); settings tabs as icon cards and Network tab split into four sub-sections. All gates green. |
 
 ---
 
