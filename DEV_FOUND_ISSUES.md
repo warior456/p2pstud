@@ -398,6 +398,24 @@
 
 
 
+- download button only downloads to cache, there is no way to download individual files to for example your downloads folder or to open them in another better document viewer
+
+- quick filters should include a flattened list of all favorites
+
+- there are some issues with selecting files (sometimes it get's selected but isn't actually selected etc)
+
+- big files show no data provided in the beginning while still loading
+
+- i might be able to delete a whole folder even if it contains other user's files
+
+- staged installer ready: ... is showing even when the latest update is installed, also make sure to clean up old updates
+
+- the settings menu can get some restructuring it's not very intuitive (and the network and swarm tab is extremely large)
+
+- opening connection doctor instantly runs all tests and gives no warning on non verified networks it also seems 3/4 always fail (only encrypted fallback doesn't fail), are those other connection modes still used at all and do they still provide any benefit?
+
+- there is no intermediary battery mode that allows seeding files that only have a single seed (but at a very limited speed (max 1 at a time and 1/90 seconds))
+
 
 
 

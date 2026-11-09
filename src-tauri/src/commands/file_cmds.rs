@@ -49,6 +49,39 @@ async fn broadcast_catalog_event_opt(engine: &Option<IrohEngine>, msg: SyncMessa
     }
 }
 
+/// Resolve this node's identity, the running engine (if any), and the persisted
+/// secret key. Destructive/local actions must keep working while the engine is
+/// starting or the app is offline.
+async fn resolve_identity_context(
+    state: &AppState,
+) -> Result<(String, Option<IrohEngine>, iroh::SecretKey), String> {
+    let engine_guard = state.engine.read().await;
+    if let Some(engine) = engine_guard.as_ref() {
+        return Ok((
+            engine.node_id().to_string(),
+            Some(engine.clone()),
+            engine.secret_key.clone(),
+        ));
+    }
+    drop(engine_guard);
+
+    let key = crate::p2p::identity::load_or_create_secret_key(&state.data_dir)
+        .map_err(|e| format!("failed to load local identity: {e}"))?;
+    let node_id = key.public().to_string();
+    Ok((node_id, None, key))
+}
+
+/// Resolve the local blob store without requiring the P2P engine.
+async fn resolve_local_store(state: &AppState) -> Option<iroh_blobs::store::fs::FsStore> {
+    {
+        let engine_guard = state.engine.read().await;
+        if let Some(engine) = engine_guard.as_ref() {
+            return Some(engine.store.clone());
+        }
+    }
+    state.store.read().await.clone()
+}
+
 /// Progress event emitted during local file additions and ZIP archive extractions.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ImportProgressPayload {
@@ -767,9 +800,7 @@ pub async fn delete_file(
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("file '{hash}' not found in workspace"))?;
 
-    let guard = state.engine.read().await;
-    let engine = guard.as_ref().ok_or("Iroh engine not yet started")?;
-    let my_node_id = engine.node_id().to_string();
+    let (my_node_id, engine, secret_key) = resolve_identity_context(&state).await?;
 
     let is_owner = blob
         .owner_node_id
@@ -789,7 +820,7 @@ pub async fn delete_file(
         hash.clone(),
         my_node_id.clone(),
         now,
-        &engine.secret_key,
+        &secret_key,
     );
 
     // 2. Record tombstone in SQLite (which removes local_blobs and purges physical disk files)
@@ -797,15 +828,12 @@ pub async fn delete_file(
         .map_err(|e| e.to_string())?;
 
     // 3. Delete blob data tags from local Iroh store
-    let _ = engine.store.tags().delete(hash.as_bytes()).await;
+    if let Some(store) = resolve_local_store(&state).await {
+        let _ = store.tags().delete(hash.as_bytes()).await;
+    }
 
     // 4. Broadcast cryptographically signed tombstone deletion event to the entire swarm
-    broadcast_catalog_event(
-        &engine.endpoint,
-        &engine.sync_alpn,
-        SyncMessage::FileDeletedTombstone(tombstone),
-    )
-    .await;
+    broadcast_catalog_event_opt(&engine, SyncMessage::FileDeletedTombstone(tombstone)).await;
 
     tracing::info!(hash = %hash, "Deleted file from workspace (owner signed tombstone)");
     Ok(())
@@ -823,16 +851,13 @@ pub async fn vote_delete_file(
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("file '{hash}' not found in workspace"))?;
 
-    let guard = state.engine.read().await;
-    let engine = guard.as_ref().ok_or("Iroh engine not yet started")?;
-    let my_node_id = engine.node_id().to_string();
+    let (my_node_id, engine, _) = resolve_identity_context(&state).await?;
 
     let votes = cast_delete_vote(&state.db, &hash, &my_node_id).map_err(|e| e.to_string())?;
 
     // Broadcast vote to all connected swarm peers
-    broadcast_catalog_event(
-        &engine.endpoint,
-        &engine.sync_alpn,
+    broadcast_catalog_event_opt(
+        &engine,
         SyncMessage::FileVoteDelete {
             hash: hash.clone(),
             voter_node_id: my_node_id.clone(),
@@ -850,16 +875,13 @@ pub async fn unvote_delete_file(
     hash: String,
     state: State<'_, AppState>,
 ) -> Result<usize, String> {
-    let guard = state.engine.read().await;
-    let engine = guard.as_ref().ok_or("Iroh engine not yet started")?;
-    let my_node_id = engine.node_id().to_string();
+    let (my_node_id, engine, _) = resolve_identity_context(&state).await?;
 
     let votes = remove_delete_vote(&state.db, &hash, &my_node_id).map_err(|e| e.to_string())?;
 
     // Broadcast unvote to all swarm peers
-    broadcast_catalog_event(
-        &engine.endpoint,
-        &engine.sync_alpn,
+    broadcast_catalog_event_opt(
+        &engine,
         SyncMessage::FileUnvoteDelete {
             hash: hash.clone(),
             voter_node_id: my_node_id,
@@ -881,16 +903,13 @@ pub async fn vote_keep_file(
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("file '{hash}' not found in workspace"))?;
 
-    let guard = state.engine.read().await;
-    let engine = guard.as_ref().ok_or("Iroh engine not yet started")?;
-    let my_node_id = engine.node_id().to_string();
+    let (my_node_id, engine, _) = resolve_identity_context(&state).await?;
 
     let votes = cast_keep_vote(&state.db, &hash, &my_node_id).map_err(|e| e.to_string())?;
 
     // Broadcast keep vote to all connected swarm peers
-    broadcast_catalog_event(
-        &engine.endpoint,
-        &engine.sync_alpn,
+    broadcast_catalog_event_opt(
+        &engine,
         SyncMessage::FileVoteKeep {
             hash: hash.clone(),
             voter_node_id: my_node_id.clone(),
@@ -908,16 +927,13 @@ pub async fn unvote_keep_file(
     hash: String,
     state: State<'_, AppState>,
 ) -> Result<usize, String> {
-    let guard = state.engine.read().await;
-    let engine = guard.as_ref().ok_or("Iroh engine not yet started")?;
-    let my_node_id = engine.node_id().to_string();
+    let (my_node_id, engine, _) = resolve_identity_context(&state).await?;
 
     let votes = remove_keep_vote(&state.db, &hash, &my_node_id).map_err(|e| e.to_string())?;
 
     // Broadcast unvote to all swarm peers
-    broadcast_catalog_event(
-        &engine.endpoint,
-        &engine.sync_alpn,
+    broadcast_catalog_event_opt(
+        &engine,
         SyncMessage::FileUnvoteKeep {
             hash: hash.clone(),
             voter_node_id: my_node_id,
@@ -932,9 +948,7 @@ pub async fn unvote_keep_file(
 /// PREVENTED if the local node is the only active seed in the swarm to avoid irrecoverable data loss.
 #[tauri::command]
 pub async fn evict_local_file(hash: String, state: State<'_, AppState>) -> Result<(), String> {
-    let guard = state.engine.read().await;
-    let engine = guard.as_ref().ok_or("Iroh engine not yet started")?;
-    let my_node_id = engine.node_id().to_string();
+    let (my_node_id, engine, _) = resolve_identity_context(&state).await?;
 
     // User requirement: "don't allow removing from disc if you're the only active seed"
     let remote_seeds = get_seed_count(&state.db, &hash, Some(&my_node_id), false).map_err(|e| e.to_string())?;
@@ -945,12 +959,13 @@ pub async fn evict_local_file(hash: String, state: State<'_, AppState>) -> Resul
         );
     }
 
-    let _ = engine.store.tags().delete(hash.as_bytes()).await;
+    if let Some(store) = resolve_local_store(&state).await {
+        let _ = store.tags().delete(hash.as_bytes()).await;
+    }
 
     // Broadcast to the swarm that this node is no longer seeding this blob
-    broadcast_catalog_event(
-        &engine.endpoint,
-        &engine.sync_alpn,
+    broadcast_catalog_event_opt(
+        &engine,
         SyncMessage::FileUnseeded {
             hash: hash.clone(),
             seeder_node_id: my_node_id,
@@ -1577,9 +1592,8 @@ pub async fn batch_delete_files(
     state: State<'_, AppState>,
 ) -> Result<Vec<String>, String> {
     let mut deleted = Vec::new();
-    let guard = state.engine.read().await;
-    let engine = guard.as_ref().ok_or("Iroh engine not yet started")?;
-    let my_id = engine.node_id().to_string();
+    let (my_id, engine, secret_key) = resolve_identity_context(&state).await?;
+    let store = resolve_local_store(&state).await;
 
     for hash in hashes {
         let is_owner = match get_blob(&state.db, &hash) {
@@ -1597,24 +1611,20 @@ pub async fn batch_delete_files(
                 hash.clone(),
                 my_id.clone(),
                 now,
-                &engine.secret_key,
+                &secret_key,
             );
             if crate::storage::blob_tracker::record_deletion_tombstone(&state.db, &tombstone).is_ok() {
-                let _ = engine.store.tags().delete(hash.as_bytes()).await;
-                broadcast_catalog_event(
-                    &engine.endpoint,
-                    &engine.sync_alpn,
-                    SyncMessage::FileDeletedTombstone(tombstone),
-                )
-                .await;
+                if let Some(store) = store.as_ref() {
+                    let _ = store.tags().delete(hash.as_bytes()).await;
+                }
+                broadcast_catalog_event_opt(&engine, SyncMessage::FileDeletedTombstone(tombstone)).await;
                 deleted.push(hash);
             }
         } else {
             // Community voting delete
             if cast_delete_vote(&state.db, &hash, &my_id).is_ok() {
-                broadcast_catalog_event(
-                    &engine.endpoint,
-                    &engine.sync_alpn,
+                broadcast_catalog_event_opt(
+                    &engine,
                     SyncMessage::FileVoteDelete {
                         hash: hash.clone(),
                         voter_node_id: my_id.clone(),
@@ -1643,8 +1653,7 @@ pub async fn batch_move_files(
         let _ = crate::storage::blob_tracker::create_virtual_folder(&state.db, clean_target);
     }
 
-    let guard = state.engine.read().await;
-    let engine = guard.as_ref().ok_or("Iroh engine not yet started")?;
+    let (_, engine, _) = resolve_identity_context(&state).await?;
 
     for hash in hashes {
         if let Ok(Some(blob)) = get_blob(&state.db, &hash) {
@@ -1658,9 +1667,8 @@ pub async fn batch_move_files(
 
             if let Ok(sanitized) = crate::storage::path_utils::sanitize_virtual_path(&new_path) {
                 if rename_blob(&state.db, &hash, &sanitized).is_ok() {
-                    broadcast_catalog_event(
-                        &engine.endpoint,
-                        &engine.sync_alpn,
+                    broadcast_catalog_event_opt(
+                        &engine,
                         SyncMessage::FileMoved {
                             hash: hash.clone(),
                             new_name: sanitized,

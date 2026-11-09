@@ -63,6 +63,8 @@ pub fn run() {
 
             // Reset any transient session-level update dismissal from past runs
             commands::backup_cmds::reset_update_dismissal_on_startup(&db);
+            // Remove staged installers for updates that were already applied or are stale
+            commands::backup_cmds::cleanup_stale_update_artifacts(&db, &data_dir);
             // Truncate SQLite WAL on startup to prevent excessive journal growth
             let _ = db.checkpoint_wal();
 

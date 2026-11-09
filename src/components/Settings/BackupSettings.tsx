@@ -8,8 +8,7 @@ import {
   RefreshCw, 
   Sparkles, 
   FolderSearch,
-  AlertTriangle,
-  Play
+  AlertTriangle
 } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
@@ -161,7 +160,7 @@ export function BackupSettings() {
       setUpdateActionMsg('Launching setup installer in the foreground...');
       await invoke('install_app_update');
     } catch (err) {
-      alert(`Install and restart failed: ${err}`);
+      setUpdateActionMsg(`Install and restart failed: ${String(err)}`);
     }
   };
 
@@ -252,21 +251,6 @@ export function BackupSettings() {
             <div className="text-[11px] text-indigo-700 font-mono">
               {(downloadProgress.downloaded_bytes / (1024 * 1024)).toFixed(1)} MB / {(downloadProgress.total_bytes / (1024 * 1024)).toFixed(1)} MB
             </div>
-          </div>
-        )}
-
-        {updateInfo?.has_staged_installer && (
-          <div className="flex items-center justify-between bg-slate-50 border border-slate-200 rounded-lg p-3">
-            <div className="text-xs text-slate-700">
-              <span className="font-semibold text-slate-900">Staged Installer Ready:</span> Setup binary is verified on disk.
-            </div>
-            <button
-              onClick={handleInstallAndRestart}
-              className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-semibold transition cursor-pointer flex items-center gap-1.5"
-            >
-              <Play className="w-3.5 h-3.5" />
-              <span>Launch Installer (Foreground)</span>
-            </button>
           </div>
         )}
 

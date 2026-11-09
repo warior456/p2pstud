@@ -1,6 +1,6 @@
 [package]
 name = "p2pstud-tauri"
-version = "0.1.46"
+version = "0.1.47"
 edition = "2021"
 rust-version = "1.77"
 default-run = "p2pstud"
@@ -32,6 +32,7 @@ zip = { version = "9.4.1", default-features = false, features = ["deflate"] }
 
 # P2P networking
 iroh           = "1.4"
+blake3         = "1"
 iroh-blobs     = "0.104"
 iroh-relay     = { version = "1.4", features = ["server"] }
 iroh-tickets   = "1.0"

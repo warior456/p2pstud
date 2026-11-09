@@ -68,9 +68,9 @@ export const TelemetryBar: React.FC<TelemetryBarProps> = ({
           <span>Peers: {peerCount}</span>
           <span
             className="text-[10px] bg-gray-800 text-emerald-300 px-1.5 py-0.5 rounded font-mono border border-emerald-900/50"
-            title={`Application Build Version: v${stats?.current_version || '0.1.46'}`}
+            title={`Application Build Version: v${stats?.current_version || '0.1.47'}`}
           >
-            v{stats?.current_version || '0.1.46'}
+            v{stats?.current_version || '0.1.47'}
           </span>
           {stats?.swarm_median_version && stats.swarm_median_version !== stats.current_version && (
             <span

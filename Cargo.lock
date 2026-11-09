@@ -4254,9 +4254,10 @@ dependencies = [
 
 [[package]]
 name = "p2pstud-tauri"
-version = "0.1.46"
+version = "0.1.47"
 dependencies = [
  "anyhow",
+ "blake3",
  "bytes",
  "chrono",
  "clap",

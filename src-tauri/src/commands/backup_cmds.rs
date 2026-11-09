@@ -414,18 +414,143 @@ struct GitHubAsset {
     browser_download_url: String,
 }
 
+/// Parse a version string, tolerating a leading `v` and surrounding whitespace.
+fn parse_version(raw: &str) -> Option<semver::Version> {
+    semver::Version::parse(raw.trim().trim_start_matches('v')).ok()
+}
+
+/// True when `candidate` is strictly newer than `current`.
+fn is_version_newer(candidate: &str, current: &str) -> bool {
+    match (parse_version(candidate), parse_version(current)) {
+        (Some(candidate), Some(current)) => candidate > current,
+        _ => candidate.trim() != current.trim(),
+    }
+}
+
+/// Forget any staged installer reference so stale "installer ready" banners disappear.
+fn clear_staged_update_settings(db: &Database) {
+    let _ = db.set_setting("update_pending", "false");
+    let _ = db.delete_setting("update_installer_path");
+    let _ = db.delete_setting("update_installer_hash");
+}
+
+/// Reject update URLs that are not HTTPS GitHub-hosted release assets.
+fn validate_update_download_url(raw: &str) -> Result<reqwest::Url, String> {
+    let parsed = reqwest::Url::parse(raw.trim()).map_err(|e| format!("Invalid update URL: {e}"))?;
+    if parsed.scheme() != "https" {
+        return Err("Update URL must use HTTPS".to_string());
+    }
+    match parsed.host_str() {
+        Some("github.com") => Ok(parsed),
+        Some(host) if host.ends_with(".githubusercontent.com") => Ok(parsed),
+        Some(host) => Err(format!("Refusing to download update from untrusted host: {host}")),
+        None => Err("Update URL has no host".to_string()),
+    }
+}
+
+/// Reduce a GitHub release asset name to a safe bare file name.
+fn sanitize_update_asset_name(raw: &str) -> Option<String> {
+    let name = Path::new(raw.trim()).file_name()?.to_string_lossy().to_string();
+    if name.is_empty() || name == "." || name == ".." {
+        return None;
+    }
+    let invalid = name.chars().any(|c| {
+        c.is_control() || matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|')
+    });
+    if invalid {
+        None
+    } else {
+        Some(name)
+    }
+}
+
+/// Stream a file through BLAKE3 and return its hex digest (matches `iroh_blobs::Hash`).
+fn hash_file_streaming(path: &Path) -> Result<String, String> {
+    let mut file = File::open(path).map_err(|e| format!("Failed reading '{}': {e}", path.display()))?;
+    let mut hasher = blake3::Hasher::new();
+    let mut buffer = vec![0u8; 64 * 1024];
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .map_err(|e| format!("Failed reading '{}': {e}", path.display()))?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(hasher.finalize().to_hex().to_string())
+}
+
+/// Remove stale staged installers and their settings.
+///
+/// Keeps exactly one artifact only when an update for a newer version is pending and the
+/// staged file still exists inside the app's `updates` directory.
+pub fn cleanup_stale_update_artifacts(db: &Database, data_dir: &Path) {
+    let updates_dir = data_dir.join("updates");
+    let current_version = env!("CARGO_PKG_VERSION");
+
+    let staged_path = db
+        .get_setting("update_installer_path")
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    let staged_file = PathBuf::from(staged_path.trim_start_matches(r"\\?\"));
+    let pending = db
+        .get_setting("update_pending")
+        .ok()
+        .flatten()
+        .as_deref()
+        == Some("true");
+    let target_version = db
+        .get_setting("update_target_version")
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+
+    let staged_inside_updates = !staged_path.trim().is_empty() && staged_file.starts_with(&updates_dir);
+    let keep_staged = pending
+        && staged_inside_updates
+        && staged_file.is_file()
+        && is_version_newer(&target_version, current_version);
+
+    if updates_dir.is_dir() {
+        if let Ok(entries) = std::fs::read_dir(&updates_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if !path.is_file() {
+                    continue;
+                }
+                let is_kept = keep_staged
+                    && path.file_name().is_some()
+                    && path.file_name() == staged_file.file_name();
+                if !is_kept {
+                    if let Err(e) = std::fs::remove_file(&path) {
+                        tracing::warn!(path = %path.display(), error = %e, "Failed to remove stale update artifact");
+                    } else {
+                        tracing::info!(path = %path.display(), "Removed stale update artifact");
+                    }
+                }
+            }
+        }
+    }
+
+    if !keep_staged {
+        clear_staged_update_settings(db);
+    }
+}
+
 /// Internal helper to check GitHub releases and stage update settings into SQLite.
 pub async fn check_and_stage_app_update(db: &Database, force: bool) -> Result<UpdateInfo, String> {
     let current_version = env!("CARGO_PKG_VERSION").to_string();
 
-    let staged_path = db.get_setting("update_installer_path").unwrap_or_default();
-    let has_staged_installer = staged_path
-        .as_deref()
-        .map(|p| Path::new(p.trim_start_matches(r"\\?\")).exists())
-        .unwrap_or(false);
+    let staged_path = db
+        .get_setting("update_installer_path")
+        .unwrap_or_default()
+        .unwrap_or_default();
+    let staged_exists = !staged_path.trim().is_empty()
+        && Path::new(staged_path.trim_start_matches(r"\\?\")).is_file();
 
-    // Check if an update is already pending installation on restart
-    let pending = db
+    let pending_raw = db
         .get_setting("update_pending")
         .unwrap_or_default()
         .unwrap_or_default()
@@ -435,6 +560,15 @@ pub async fn check_and_stage_app_update(db: &Database, force: bool) -> Result<Up
         .get_setting("update_target_version")
         .unwrap_or_default()
         .unwrap_or_else(|| current_version.clone());
+
+    // A staged installer is only meaningful while its target release is still newer
+    // than the running build. Otherwise the update was already installed (or is stale).
+    let pending = pending_raw && staged_exists && is_version_newer(&pending_version, &current_version);
+    if pending_raw && !pending {
+        tracing::info!("Discarding stale pending-update state");
+        clear_staged_update_settings(db);
+    }
+    let has_staged_installer = pending && staged_exists;
 
     if pending {
         return Ok(UpdateInfo {
@@ -605,19 +739,23 @@ pub async fn check_and_stage_app_update(db: &Database, force: bool) -> Result<Up
         }
     };
 
-    let remote_semver = semver::Version::parse(&remote_ver_str).ok();
-    let current_semver = semver::Version::parse(&current_version).ok();
+    let is_newer = is_version_newer(&remote_ver_str, &current_version);
 
-    let is_newer = match (remote_semver, current_semver) {
-        (Some(remote), Some(curr)) => remote > curr,
-        _ => remote_ver_str != current_version,
-    };
-
-    if let Some(asset) = &matched_asset {
-        let _ = db.set_setting("update_target_version", &remote_ver_str);
-        let _ = db.set_setting("update_download_url", &asset.browser_download_url);
-        let _ = db.set_setting("update_asset_name", &asset.name);
-        let _ = db.set_setting("update_asset_size", &asset.size.to_string());
+    // Only persist download metadata for an update we would actually install. Storing it
+    // for an older/equal release risks downloading the wrong installer later.
+    if is_newer {
+        if let Some(asset) = &matched_asset {
+            match (validate_update_download_url(&asset.browser_download_url), sanitize_update_asset_name(&asset.name)) {
+                (Ok(_), Some(safe_name)) => {
+                    let _ = db.set_setting("update_target_version", &remote_ver_str);
+                    let _ = db.set_setting("update_download_url", &asset.browser_download_url);
+                    let _ = db.set_setting("update_asset_name", &safe_name);
+                    let _ = db.set_setting("update_asset_size", &asset.size.to_string());
+                }
+                (Err(e), _) => tracing::warn!(error = %e, "Ignoring update asset with unsafe download URL"),
+                (_, None) => tracing::warn!(asset = %asset.name, "Ignoring update asset with unsafe file name"),
+            }
+        }
     }
 
     if is_newer && !dismissed {
@@ -663,11 +801,17 @@ pub async fn download_app_update(app: AppHandle, state: State<'_, AppState>) -> 
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "No update download URL found. Please check for updates first.".to_string())?;
 
-    let asset_name = state
+    // Validate the stored URL before ever touching the network.
+    let validated_url = validate_update_download_url(&download_url)?;
+
+    let raw_asset_name = state
         .db
         .get_setting("update_asset_name")
         .map_err(|e| e.to_string())?
         .unwrap_or_else(|| "p2pstud-update-installer.exe".to_string());
+
+    let asset_name = sanitize_update_asset_name(&raw_asset_name)
+        .ok_or_else(|| "Stored update asset name is unsafe; please check for updates again.".to_string())?;
 
     let data_dir = app
         .path()
@@ -681,15 +825,25 @@ pub async fn download_app_update(app: AppHandle, state: State<'_, AppState>) -> 
 
     let dest_path = updates_dir.join(&asset_name);
 
+    // Drop installers left over from previous releases before writing the new one.
+    if let Ok(mut entries) = tokio::fs::read_dir(&updates_dir).await {
+        while let Ok(Some(entry)) = entries.next_entry().await {
+            let path = entry.path();
+            if path.is_file() && path != dest_path {
+                let _ = tokio::fs::remove_file(&path).await;
+            }
+        }
+    }
+
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(120))
         .build()
         .map_err(|e| e.to_string())?;
 
-    tracing::info!(url = %download_url, dest = %dest_path.display(), "Downloading application update installer");
+    tracing::info!(url = %validated_url, dest = %dest_path.display(), "Downloading application update installer");
 
     let mut resp = client
-        .get(&download_url)
+        .get(validated_url)
         .header("User-Agent", "p2pstud")
         .send()
         .await
@@ -754,10 +908,12 @@ pub async fn download_app_update(app: AppHandle, state: State<'_, AppState>) -> 
         .map_err(|e| format!("Failed to flush update file: {e}"))?;
     drop(dest_file);
 
-    let bytes = tokio::fs::read(&dest_path)
+    // Hash on a blocking thread while streaming, so a ~15 MB installer is never fully
+    // buffered in memory just to verify it.
+    let hash_path = dest_path.clone();
+    let hash = tokio::task::spawn_blocking(move || hash_file_streaming(&hash_path))
         .await
-        .map_err(|e| format!("Failed reading downloaded installer: {e}"))?;
-    let hash = iroh_blobs::Hash::new(&bytes).to_hex().to_string();
+        .map_err(|e| format!("Installer verification worker failed: {e}"))??;
 
     let _ = state.db.set_setting("update_installer_path", &dest_path.to_string_lossy());
     let _ = state.db.set_setting("update_installer_hash", &hash);
@@ -785,7 +941,7 @@ pub async fn install_app_update(_app: AppHandle, state: State<'_, AppState>) -> 
 
     let installer_path = PathBuf::from(&installer_path_str);
     let canonical_installer = installer_path.canonicalize().map_err(|_| {
-        let _ = state.db.set_setting("update_pending", "false");
+        clear_staged_update_settings(&state.db);
         format!("Installer file not found at: {}", installer_path.display())
     })?;
 
@@ -795,27 +951,29 @@ pub async fn install_app_update(_app: AppHandle, state: State<'_, AppState>) -> 
 
     // Security check 1: Path must be strictly within updates_dir
     if !canonical_installer.starts_with(&canonical_updates_dir) {
-        let _ = state.db.set_setting("update_pending", "false");
+        clear_staged_update_settings(&state.db);
         return Err("Security violation: installer is located outside the updates directory".to_string());
     }
 
     // Security check 2: Verify binary hash matches update_installer_hash recorded during download
-    let expected_hash = state
-        .db
-        .get_setting("update_installer_hash")
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| "Missing verified hash for pending update".to_string())?;
+    let expected_hash = match state.db.get_setting("update_installer_hash").map_err(|e| e.to_string())? {
+        Some(hash) if !hash.trim().is_empty() => hash,
+        _ => {
+            clear_staged_update_settings(&state.db);
+            return Err("Missing verified hash for pending update; please check for updates again.".to_string());
+        }
+    };
 
-    let disk_bytes = std::fs::read(&canonical_installer)
-        .map_err(|e| format!("Failed reading staged installer: {e}"))?;
-    let actual_hash = iroh_blobs::Hash::new(&disk_bytes).to_hex().to_string();
+    let hash_path = canonical_installer.clone();
+    let actual_hash = tokio::task::spawn_blocking(move || hash_file_streaming(&hash_path))
+        .await
+        .map_err(|e| format!("Installer verification worker failed: {e}"))??;
     if actual_hash != expected_hash {
-        let _ = state.db.set_setting("update_pending", "false");
+        clear_staged_update_settings(&state.db);
         let _ = std::fs::remove_file(&canonical_installer);
         return Err("Security verification failed: staged installer binary checksum does not match expected release digest!".to_string());
     }
 
-    let _ = state.db.set_setting("update_pending", "false");
     tracing::info!(path = %canonical_installer.display(), "Launching installer and restarting application");
 
     #[cfg(target_os = "windows")]
@@ -850,6 +1008,7 @@ pub async fn install_app_update(_app: AppHandle, state: State<'_, AppState>) -> 
                  Write-Host 'Applying MSI update silently...' -ForegroundColor Green; \
                  $proc = Start-Process -FilePath 'msiexec.exe' -ArgumentList '/i', '\"{}\"', '/quiet', '/norestart' -Wait -PassThru; \
                  Write-Host \"Installer finished with exit code $($proc.ExitCode).\" -ForegroundColor Cyan; \
+                 Remove-Item -LiteralPath '{clean_installer_str}' -Force -ErrorAction SilentlyContinue; \
                  Start-Sleep -Milliseconds 800; \
                  $f1 = [System.Environment]::GetFolderPath('LocalApplicationData') + '\\p2pstud\\p2pstud.exe'; \
                  $f2 = [System.Environment]::GetFolderPath('LocalApplicationData') + '\\Programs\\p2pstud\\p2pstud.exe'; \
@@ -874,6 +1033,7 @@ pub async fn install_app_update(_app: AppHandle, state: State<'_, AppState>) -> 
                  Write-Host 'Applying update silently...' -ForegroundColor Green; \
                  $proc = Start-Process -FilePath '{clean_installer_str}' -ArgumentList '/S' -Wait -PassThru; \
                  Write-Host \"Setup completed (Exit code: $($proc.ExitCode)).\" -ForegroundColor Cyan; \
+                 Remove-Item -LiteralPath '{clean_installer_str}' -Force -ErrorAction SilentlyContinue; \
                  Start-Sleep -Milliseconds 800; \
                  $f1 = [System.Environment]::GetFolderPath('LocalApplicationData') + '\\p2pstud\\p2pstud.exe'; \
                  $f2 = [System.Environment]::GetFolderPath('LocalApplicationData') + '\\Programs\\p2pstud\\p2pstud.exe'; \
@@ -917,6 +1077,7 @@ pub async fn install_app_update(_app: AppHandle, state: State<'_, AppState>) -> 
                  }}; \
                  if ($replaced) {{ \
                      Write-Host 'Binary successfully updated! Relaunching application...' -ForegroundColor Green; \
+                     Remove-Item -LiteralPath '{clean_installer_str}' -Force -ErrorAction SilentlyContinue; \
                      Start-Process -FilePath $target; \
                  }} else {{ \
                      Write-Host 'Failed to overwrite binary. Relaunching existing executable...' -ForegroundColor Red; \
@@ -935,10 +1096,13 @@ pub async fn install_app_update(_app: AppHandle, state: State<'_, AppState>) -> 
 
         match spawn_res {
             Ok(_) => {
+                clear_staged_update_settings(&state.db);
                 tracing::info!("Updater console spawned successfully, exiting host process");
                 std::process::exit(0);
             }
             Err(e) => {
+                // Keep the staged installer usable so the user can retry the install.
+                let _ = state.db.set_setting("update_pending", "true");
                 tracing::error!(error = %e, "Failed to spawn updater process");
                 Err(format!("Failed to launch updater: {e}"))
             }
@@ -967,6 +1131,7 @@ pub async fn install_app_update(_app: AppHandle, state: State<'_, AppState>) -> 
                 .arg(&installer_path)
                 .spawn();
         }
+        clear_staged_update_settings(&state.db);
         std::process::exit(0);
     }
 
@@ -992,6 +1157,7 @@ pub async fn install_app_update(_app: AppHandle, state: State<'_, AppState>) -> 
             let _ = std::fs::copy(&installer_path, &current_exe);
             let _ = std::process::Command::new(&current_exe).spawn();
         }
+        clear_staged_update_settings(&state.db);
         std::process::exit(0);
     }
 

@@ -162,7 +162,9 @@ export default function App() {
     const checkForUpdates = async () => {
       try {
         const update = await invoke<UpdateInfo>('check_app_update', { force: false });
-        if (update && update.update_available) {
+        // The backend clears stale pending state, so mirror both fields directly.
+        setIsUpdatePending(Boolean(update?.is_pending));
+        if (update && update.update_available && !update.is_pending) {
           setAvailableUpdate(update);
         }
       } catch (err) {
@@ -775,7 +777,7 @@ export default function App() {
       setToastMessage('Update downloaded! It will install when you restart or update.');
     } catch (err) {
       setDownloadProgress(null);
-      alert(`Failed to stage update: ${err}`);
+      setToastMessage(`Failed to stage update: ${err}`);
     }
   };
 
@@ -789,9 +791,10 @@ export default function App() {
       setDownloadProgress(null);
       await invoke('confirm_app_exit', { installUpdate: true });
     } catch (err) {
-      setIsUpdatingNow(false);
       setDownloadProgress(null);
-      alert(`Failed to apply update: ${err}`);
+      setToastMessage(`Failed to apply update: ${err}`);
+    } finally {
+      setIsUpdatingNow(false);
     }
   };
 
