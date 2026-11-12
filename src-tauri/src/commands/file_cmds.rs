@@ -171,17 +171,21 @@ pub async fn list_files(state: State<'_, AppState>) -> Result<Vec<BlobRecord>, S
                             }
                         });
                     }
-                } else if blob.is_pinned || blob.written_at.map(|w| w > 0).unwrap_or(false) {
-                    is_cached = true;
                 }
             }
             blob.is_cached = is_cached;
             // Keep the presence marker consistent with what is actually on disk.
-            if is_cached
-                && !blob.written_at.map(|w| w > 0).unwrap_or(false)
-                && crate::storage::blob_tracker::mark_blob_local(&state.db, &blob.hash).is_ok()
-            {
-                blob.written_at = Some(crate::storage::blob_tracker::now_unix());
+            if is_cached {
+                if !blob.written_at.map(|w| w > 0).unwrap_or(false)
+                    && crate::storage::blob_tracker::mark_blob_local(&state.db, &blob.hash).is_ok()
+                {
+                    blob.written_at = Some(crate::storage::blob_tracker::now_unix());
+                }
+            } else if blob.written_at.map(|w| w > 0).unwrap_or(false) {
+                // Ghost record: SQLite has written_at > 0, but the physical bytes are missing from store and disk.
+                // Reconcile SQLite so it accurately reflects that this node does NOT have the local content cached.
+                let _ = crate::storage::blob_tracker::mark_blob_remote(&state.db, &blob.hash);
+                blob.written_at = Some(0);
             }
             blob.seed_count = get_seed_count(
                 &state.db,
@@ -1094,30 +1098,52 @@ pub async fn export_file(
     Ok(())
 }
 
-/// Read a blob from the running engine or the preloaded store.
+/// Read a blob from the running engine, the preloaded store, or local disk fallback.
 async fn load_blob_bytes(state: &AppState, hash: iroh_blobs::Hash) -> Option<Vec<u8>> {
     {
         let engine_guard = state.engine.read().await;
         if let Some(engine) = engine_guard.as_ref() {
-            return engine
-                .store
-                .blobs()
-                .get_bytes(hash)
-                .await
-                .map(|b| b.to_vec())
-                .ok();
+            if let Ok(bytes) = engine.store.blobs().get_bytes(hash).await {
+                return Some(bytes.to_vec());
+            }
         }
     }
-    let store_guard = state.store.read().await;
-    match store_guard.as_ref() {
-        Some(store) => store
-            .blobs()
-            .get_bytes(hash)
-            .await
-            .map(|b| b.to_vec())
-            .ok(),
-        None => None,
+    {
+        let store_guard = state.store.read().await;
+        if let Some(store) = store_guard.as_ref() {
+            if let Ok(bytes) = store.blobs().get_bytes(hash).await {
+                return Some(bytes.to_vec());
+            }
+        }
     }
+
+    // Disk fallback: check data_dir and blob_dir on disk if redb store missed it
+    let hash_hex = hash.to_hex().to_string();
+    let blob_dir = match state.db.get_setting("custom_blob_dir") {
+        Ok(Some(custom)) if !custom.trim().is_empty() => std::path::PathBuf::from(custom.trim()),
+        _ => state.data_dir.join("blobs"),
+    };
+    let disk_file = blob_dir.join("data").join(format!("{hash_hex}.data"));
+    let fallback_disk_file = blob_dir.join(format!("{hash_hex}.data"));
+    let disk_bytes = if disk_file.exists() {
+        tokio::fs::read(&disk_file).await.ok()
+    } else if fallback_disk_file.exists() {
+        tokio::fs::read(&fallback_disk_file).await.ok()
+    } else {
+        None
+    };
+
+    if let Some(bytes) = disk_bytes {
+        // Auto-heal / re-index into store
+        let engine_guard = state.engine.read().await;
+        if let Some(engine) = engine_guard.as_ref() {
+            let _ = engine.store.blobs().add_bytes(bytes::Bytes::copy_from_slice(&bytes)).await;
+        }
+        let _ = crate::storage::blob_tracker::mark_blob_local(&state.db, &hash_hex);
+        return Some(bytes);
+    }
+
+    None
 }
 
 /// Fetch a blob from known peers (owner first, then active seeders).
@@ -1183,7 +1209,26 @@ async fn fetch_blob_from_peers(
         }
     }
 
-    Err("File is not cached locally and no peers are currently online to serve it.".to_string())
+    let file_display = blob_rec
+        .as_ref()
+        .and_then(|r| r.name.as_deref())
+        .unwrap_or(hash);
+
+    let is_owner = if let Some(owner) = blob_rec.as_ref().and_then(|r| r.owner_node_id.as_deref()) {
+        crate::storage::db::is_matching_node_id(owner, &my_node_id)
+    } else {
+        false
+    };
+
+    if is_owner {
+        Err(format!(
+            "Local file copy for \"{file_display}\" is missing from disk storage, and no other online peers currently have a copy to restore it."
+        ))
+    } else {
+        Err(format!(
+            "File \"{file_display}\" is not cached locally and no online peers are currently available to serve it."
+        ))
+    }
 }
 
 /// Load a blob from local storage, falling back to an on-demand swarm fetch.

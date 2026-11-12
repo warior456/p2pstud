@@ -231,6 +231,34 @@ pub fn run() {
                             }
                         }
                     }
+
+                    // Reconcile local_blobs in SQLite: if a blob was marked written_at > 0
+                    // but the bytes are missing from both redb store and disk, reset written_at = 0
+                    let candidate_hashes: Vec<String> = {
+                        let conn = heal_db.lock();
+                        let list = if let Ok(mut stmt) = conn.prepare("SELECT hash FROM local_blobs WHERE written_at IS NOT NULL AND written_at > 0") {
+                            if let Ok(rows) = stmt.query_map([], |r| r.get(0)) {
+                                rows.flatten().collect()
+                            } else {
+                                Vec::new()
+                            }
+                        } else {
+                            Vec::new()
+                        };
+                        list
+                    };
+
+                    for hash_str in candidate_hashes {
+                        if let Ok(parsed) = hash_str.parse::<iroh_blobs::Hash>() {
+                            let in_store = storage::hosting_worker::is_blob_cached(&heal_store, &parsed).await;
+                            let in_data_dir = heal_data_dir.join(format!("{hash_str}.data")).exists();
+                            let in_blob_dir = heal_blob_dir.join(format!("{hash_str}.data")).exists();
+                            if !in_store && !in_data_dir && !in_blob_dir {
+                                let _ = storage::blob_tracker::mark_blob_remote(&heal_db, &hash_str);
+                                tracing::warn!(hash = %hash_str, "Reconciled ghost blob: content missing from disk/store, marked remote");
+                            }
+                        }
+                    }
                 });
 
                 // 2. Start the Iroh node with the loaded store (shared store, no file lock conflict).

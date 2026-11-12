@@ -700,6 +700,16 @@ pub fn mark_blob_local(db: &Database, hash: &str) -> Result<()> {
     Ok(())
 }
 
+/// Mark a catalog blob as remote / not locally present on disk or in the blob store.
+pub fn mark_blob_remote(db: &Database, hash: &str) -> Result<()> {
+    let conn = db.lock();
+    conn.execute(
+        "UPDATE local_blobs SET written_at = 0 WHERE hash = ?1",
+        params![hash],
+    )?;
+    Ok(())
+}
+
 /// Update last_accessed_at to now (called when a blob is read/opened).
 /// Debounced so repeated chunk access within 60s does not cause constant WAL writes.
 pub fn touch_blob(db: &Database, hash: &str) -> Result<()> {

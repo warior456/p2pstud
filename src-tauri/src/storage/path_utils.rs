@@ -275,12 +275,37 @@ pub fn cleanup_orphaned_disk_blobs(
         return Ok(0);
     }
 
-    let known_hashes: std::collections::HashSet<String> = {
+    let mut known_hashes: std::collections::HashSet<String> = {
         let conn = db.lock();
         let mut stmt = conn.prepare("SELECT hash FROM local_blobs")?;
         let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
         rows.flatten().collect()
     };
+
+    // Cross-check all network databases in data_dir so we never purge blobs belonging to another network!
+    if let Ok(entries) = std::fs::read_dir(db.data_dir()) {
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if let Some(name) = p.file_name().and_then(|n| n.to_str()) {
+                if name.starts_with("p2pstud") && name.ends_with(".db") {
+                    if let Ok(conn) = rusqlite::Connection::open_with_flags(&p, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY) {
+                        if let Ok(mut stmt) = conn.prepare("SELECT hash FROM local_blobs") {
+                            if let Ok(rows) = stmt.query_map([], |r| r.get::<_, String>(0)) {
+                                for h in rows.flatten() {
+                                    known_hashes.insert(h);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Safety guard: if no known hashes are found across any database, do not perform destructive pruning
+    if known_hashes.is_empty() {
+        return Ok(0);
+    }
 
     let mut freed_bytes = 0u64;
 
