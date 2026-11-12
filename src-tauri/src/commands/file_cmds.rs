@@ -986,21 +986,34 @@ pub async fn move_file(
     let clean_path = crate::storage::path_utils::sanitize_virtual_path(&new_path)
         .map_err(|e| format!("Invalid destination path: {e}"))?;
 
+    let blob = get_blob(&state.db, &hash)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("file '{hash}' not found in workspace"))?;
+
+    let (my_node_id, engine, _) = resolve_identity_context(&state).await?;
+
+    // SECURITY: Only the file's owner can move or rename it across the workspace
+    let is_owner = blob
+        .owner_node_id
+        .as_deref()
+        .map(|o| crate::storage::db::is_matching_node_id(o, &my_node_id))
+        .unwrap_or(true);
+
+    if !is_owner {
+        return Err("Permission denied: You can only move or rename files you uploaded. For community files, organize them into folders using bookmarks or local copies.".to_string());
+    }
+
     rename_blob(&state.db, &hash, &clean_path).map_err(|e| e.to_string())?;
 
     // Broadcast file moved event to connected peers
-    let guard = state.engine.read().await;
-    if let Some(engine) = guard.as_ref() {
-        broadcast_catalog_event(
-            &engine.endpoint,
-            &engine.sync_alpn,
-            SyncMessage::FileMoved {
-                hash,
-                new_name: clean_path,
-            },
-        )
-        .await;
-    }
+    broadcast_catalog_event_opt(
+        &engine,
+        SyncMessage::FileMoved {
+            hash,
+            new_name: clean_path,
+        },
+    )
+    .await;
 
     Ok(())
 }
@@ -1268,6 +1281,21 @@ pub async fn download_file_to_downloads(
     Ok(target.to_string_lossy().to_string())
 }
 
+/// Check if a target file has an executable or potentially hazardous script extension.
+fn is_dangerous_file_extension(path: &std::path::Path) -> bool {
+    let Some(ext) = path.extension().and_then(|e| e.to_str()) else {
+        return false;
+    };
+    let lower = ext.to_ascii_lowercase();
+    const BLOCKED_EXTENSIONS: &[&str] = &[
+        "exe", "bat", "cmd", "com", "scr", "msi", "msp", "vbs", "vbe", "js", "jse", "wsf",
+        "wsh", "ps1", "ps1xml", "ps2", "ps2xml", "psc1", "psc2", "msh", "msh1", "msh2",
+        "mshxml", "msh1xml", "msh2xml", "inf", "reg", "hta", "cpl", "jar", "pif", "scf",
+        "lnk", "iso", "img", "vhd", "vhdx", "dll", "sys", "drv", "bin",
+    ];
+    BLOCKED_EXTENSIONS.contains(&lower.as_str())
+}
+
 /// Materialize a catalog file on disk and open it with the OS default application.
 #[tauri::command]
 pub async fn open_file_with_default_app(
@@ -1289,6 +1317,15 @@ pub async fn open_file_with_default_app(
     let fallback = format!("{}-{}", &hash[..hash.len().min(8)], "file");
     let name = safe_file_name(file_name.as_deref().unwrap_or(&fallback), &fallback);
     let target = preview_dir.join(&name);
+
+    // SECURITY: Prevent arbitrary code execution from malicious shared files.
+    if is_dangerous_file_extension(&target) {
+        return Err(
+            "Security restriction: Opening executable, script, or binary files directly with the system viewer is blocked. Please download or save the file to inspect it safely."
+                .to_string(),
+        );
+    }
+
     std::fs::write(&target, data)
         .map_err(|e| format!("Failed to write preview file '{}': {e}", target.display()))?;
 
@@ -1296,8 +1333,9 @@ pub async fn open_file_with_default_app(
 
     #[cfg(target_os = "windows")]
     let mut opener = {
-        let mut cmd = std::process::Command::new("cmd");
-        cmd.args(["/C", "start", "", &target_str]);
+        // Use rundll32 FileProtocolHandler to invoke default shell association without running cmd.exe interpreter
+        let mut cmd = std::process::Command::new("rundll32.exe");
+        cmd.args(["url.dll,FileProtocolHandler", &target_str]);
         cmd
     };
     #[cfg(target_os = "macos")]
@@ -1894,10 +1932,21 @@ pub async fn batch_move_files(
         let _ = crate::storage::blob_tracker::create_virtual_folder(&state.db, clean_target);
     }
 
-    let (_, engine, _) = resolve_identity_context(&state).await?;
+    let (my_node_id, engine, _) = resolve_identity_context(&state).await?;
 
     for hash in hashes {
         if let Ok(Some(blob)) = get_blob(&state.db, &hash) {
+            // SECURITY: Only allow owner to move files
+            let is_owner = blob
+                .owner_node_id
+                .as_deref()
+                .map(|o| crate::storage::db::is_matching_node_id(o, &my_node_id))
+                .unwrap_or(true);
+
+            if !is_owner {
+                continue;
+            }
+
             let old_name = blob.name.unwrap_or_else(|| hash.clone());
             let basename = old_name.split('/').next_back().unwrap_or(&old_name);
             let new_path = if clean_target.is_empty() {
@@ -2091,4 +2140,36 @@ pub async fn get_transfer_queue(
     state: State<'_, AppState>,
 ) -> Result<Vec<crate::storage::blob_tracker::TransferQueueItem>, String> {
     crate::storage::blob_tracker::list_resume_queue(&state.db).map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn test_dangerous_file_extension_blocking() {
+        // Block dangerous execution / script payloads
+        assert!(is_dangerous_file_extension(Path::new("malware.exe")));
+        assert!(is_dangerous_file_extension(Path::new("script.bat")));
+        assert!(is_dangerous_file_extension(Path::new("payload.cmd")));
+        assert!(is_dangerous_file_extension(Path::new("macro.vbs")));
+        assert!(is_dangerous_file_extension(Path::new("autorun.ps1")));
+        assert!(is_dangerous_file_extension(Path::new("installer.msi")));
+        assert!(is_dangerous_file_extension(Path::new("screensaver.scr")));
+        assert!(is_dangerous_file_extension(Path::new("app.hta")));
+        assert!(is_dangerous_file_extension(Path::new("app.jar")));
+        assert!(is_dangerous_file_extension(Path::new("shortcut.lnk")));
+        assert!(is_dangerous_file_extension(Path::new("disk.iso")));
+        assert!(is_dangerous_file_extension(Path::new("lib.dll")));
+
+        // Allow benign documents and media
+        assert!(!is_dangerous_file_extension(Path::new("lecture_notes.pdf")));
+        assert!(!is_dangerous_file_extension(Path::new("readme.md")));
+        assert!(!is_dangerous_file_extension(Path::new("assignment.txt")));
+        assert!(!is_dangerous_file_extension(Path::new("diagram.png")));
+        assert!(!is_dangerous_file_extension(Path::new("photo.jpg")));
+        assert!(!is_dangerous_file_extension(Path::new("archive.zip")));
+        assert!(!is_dangerous_file_extension(Path::new("dataset.csv")));
+    }
 }

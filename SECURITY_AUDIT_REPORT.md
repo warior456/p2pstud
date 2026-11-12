@@ -718,4 +718,34 @@ To restore the codebase to production readiness and clear all compiler/clippy wa
 
 ---
 
+# Addendum: Security Audit & Hardening (v0.1.49 / 2026-11-12)
+
+### VULN-15: Arbitrary Code Execution via Default System Viewer (`open_file_with_default_app`)
+- **Severity:** HIGH / REMOTE EXPLOITATION RISK
+- **Location:** `src-tauri/src/commands/file_cmds.rs`
+- **Issue:** Opening files with the default OS application did not restrict file extensions. If an adversary in the swarm shared a malicious file (e.g. `notes.exe`, `script.bat`, `macro.vbs`, `payload.ps1`, `setup.msi`), launching it in the system viewer executed binary code on the student's machine. On Windows, invocation via `cmd /C start` additionally exposed argument injection risks.
+- **Remediation:**
+  1. Implemented `is_dangerous_file_extension` blocking all executable, script, and installer formats (`.exe`, `.bat`, `.cmd`, `.com`, `.scr`, `.msi`, `.msp`, `.vbs`, `.ps1`, `.jar`, `.hta`, `.cpl`, `.reg`, etc.).
+  2. Switched Windows launcher from `cmd.exe /C start` to shell-safe `rundll32.exe url.dll,FileProtocolHandler` to prevent shell command injection.
+
+### VULN-16: Swarm Catalog Desynchronization & Unauthorized Move/Rename
+- **Severity:** MEDIUM
+- **Location:** `src-tauri/src/commands/file_cmds.rs` (`move_file`, `batch_move_files`)
+- **Issue:** Local IPC allowed non-owners to move/rename other peers' files locally. When `SyncMessage::FileMoved` was broadcast, peers rejected it as unauthorized, permanently desynchronizing local filenames from the swarm catalog.
+- **Remediation:** Enforced ownership checks in both `move_file` and `batch_move_files`. Only the uploader (`blob.owner_node_id`) or unowned files can be renamed or relocated across the workspace.
+
+### VULN-17: NodeId Format Inconsistency & False Rejection of Legitimate Swarm Messages
+- **Severity:** MEDIUM
+- **Location:** `src-tauri/src/p2p/sync.rs`
+- **Issue:** Direct string comparison (`sender_peer_id == Some(voter)`) caused false-rejection of legitimate votes, deletions, ratings, and moves whenever Node IDs differed between base32 (Iroh format) and 64-char hex representations.
+- **Remediation:** Migrated all peer ID and owner comparisons across `sync.rs` to `crate::storage::db::is_matching_node_id`, which normalizes and parses both formats through `iroh::EndpointId`.
+
+### VULN-18: Speculative Deletion Tombstone Preemption & Censorship
+- **Severity:** MEDIUM
+- **Location:** `src-tauri/src/storage/blob_tracker.rs`
+- **Issue:** An attacker could craft a signed deletion tombstone with their own key for an unknown hash before the legitimate owner announced it. When the genuine file arrived, `upsert_blob` saw a tombstone in `deleted_blobs` and rejected the legitimate file.
+- **Remediation:** `upsert_blob` now validates that recorded tombstones match the incoming file's `owner_node_id`. Speculative or unauthorized tombstones signed by non-owners are automatically purged.
+
+---
+
 *(Artifact stored in audit directory for persistent project reference)*

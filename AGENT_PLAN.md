@@ -45,8 +45,8 @@ At the end of every session (or when interrupted), update the `## Progress Track
 
 ## Progress Tracker
 
-> **Last session:** 2026-11-09
-> **Last completed task:** Step 78 completed: Remaining Release Issues, Battery Eco Mode & Settings Restructure (v0.1.48).
+> **Last session:** 2026-11-12
+> **Last completed task:** Step 79 completed: Quick Filters Flexibility, Unified Configuration UI, and Security Exploit Hardening (v0.1.49).
 > **Next action:** Manual two-node smoke test (large PDF, note save across peers, offline upload, quota eviction) and release packaging.
 
 | # | Step | Status | Notes |
@@ -129,6 +129,7 @@ At the end of every session (or when interrupted), update the `## Progress Track
 | 76 | Cache Presence & Empty-File Completion (v0.1.46) | ✅ | 0-byte files now emit `file-chunk-done`; `list_files` re-marks blobs found in the store/on disk as locally present so cache accounting stays consistent. |
 | 77 | Updater Hardening (v0.1.47) | ✅ | Streamed BLAKE3 installer hashing, GitHub/HTTPS-only download URL validation, asset-name sanitization, stale staged-installer cleanup at startup, stale pending-state reconciliation, installer self-deletion on Windows, toast instead of `alert()`, and offline-safe local actions. |
 | 78 | Remaining Release Issues, Battery Eco Mode & Settings Restructure (v0.1.48) | ✅ | Native Downloads/Save As/Open-with-system IPC; flattened All Favorites filter; selection highlight/clear/prune fixes; PDF loading placeholder; folder deletion refuses foreign-owned files (with regression test); Connection Doctor manual-run + unverified warning + relay-only critical check; three-way battery mode (`pause`/`eco`/`normal`, eco = 1 file per 90 s at ≤128 KB/s); settings tabs as icon cards and Network tab split into four sub-sections. All gates green. |
+| 79 | Quick Filters Flexibility, Unified Configuration UI, and Security Exploit Hardening (v0.1.49) | ✅ | Extensible Quick Filters with custom user filters & localStorage persistence; unified Configuration sidebar navigation with all 4 tabs (Cache & Quota with live usage pill, Bandwidth & Battery, Network & Stealth, Backups & Updates); blocked arbitrary code execution in default viewer; enforced owner checks on move/batch_move to prevent swarm catalog desync; migrated NodeId comparisons in P2P sync to `is_matching_node_id` to prevent format false-rejections; purged unauthorized deletion tombstones; removed redundant duplicate `src-tauri/Cargo.lock`. |
 
 ---
 

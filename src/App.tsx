@@ -2,8 +2,6 @@ import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { 
   FolderGit2, 
   Settings, 
-  FileCode, 
-  FileText, 
   Share2, 
   RefreshCw,
   Search,
@@ -17,7 +15,10 @@ import {
   Power,
   Gauge,
   Network,
-  DatabaseBackup
+  DatabaseBackup,
+  Plus,
+  Trash2,
+  Filter
 } from 'lucide-react';
 import { 
   FileEntry, 
@@ -79,6 +80,21 @@ interface BlobRecord {
   is_starred?: boolean;
 }
 
+export interface QuickFilter {
+  id: string;
+  name: string;
+  extensions: string[];
+  isCustom?: boolean;
+}
+
+const DEFAULT_QUICK_FILTERS: QuickFilter[] = [
+  { id: 'documents', name: 'Documents', extensions: ['.pdf', '.doc', '.docx', '.odt', '.rtf'] },
+  { id: 'notes', name: 'Notes', extensions: ['.md', '.txt'] },
+  { id: 'code', name: 'Code', extensions: ['.rs', '.ts', '.tsx', '.js', '.jsx', '.py', '.json', '.toml', '.html', '.css', '.c', '.cpp', '.h'] },
+  { id: 'archives', name: 'Archives', extensions: ['.zip', '.tar', '.gz', '.7z', '.rar'] },
+  { id: 'media', name: 'Media', extensions: ['.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp', '.mp4', '.mp3'] },
+];
+
 export default function App() {
   const [onboardingComplete, setOnboardingComplete] = useState<boolean | null>(null);
   const [paths, setPaths] = useState<string[]>(['Shared Cloud']);
@@ -90,6 +106,18 @@ export default function App() {
   const [settingsTab, setSettingsTab] = useState<'cache' | 'bandwidth' | 'network' | 'backup'>('cache');
   const [searchQuery, setSearchQuery] = useState('');
   const [showAllFavorites, setShowAllFavorites] = useState(false);
+  const [activeFilterId, setActiveFilterId] = useState<string | null>(null);
+  const [customQuickFilters, setCustomQuickFilters] = useState<QuickFilter[]>(() => {
+    try {
+      const saved = localStorage.getItem('p2pstud_custom_quick_filters');
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
+  });
+  const [showAddFilterModal, setShowAddFilterModal] = useState<boolean>(false);
+  const [newFilterName, setNewFilterName] = useState('');
+  const [newFilterExts, setNewFilterExts] = useState('');
   const [pdfData, setPdfData] = useState<Uint8Array | null>(null);
   const [pdfLoading, setPdfLoading] = useState(false);
   const [markdownHash, setMarkdownHash] = useState<string | null>(null);
@@ -119,6 +147,60 @@ export default function App() {
   const { stats, refetch: refetchStats } = useStorageStats();
   const { nodeId } = usePeerStatus();
   const { isOnline, relayConnected, relayUrl, disconnectReason } = useConnectionStatus();
+
+  // Save custom quick filters to localStorage
+  useEffect(() => {
+    try {
+      localStorage.setItem('p2pstud_custom_quick_filters', JSON.stringify(customQuickFilters));
+    } catch (err) {
+      console.warn('Could not save custom quick filters:', err);
+    }
+  }, [customQuickFilters]);
+
+  const allQuickFilters = useMemo(() => {
+    return [...DEFAULT_QUICK_FILTERS, ...customQuickFilters];
+  }, [customQuickFilters]);
+
+  const activeFilter = useMemo(() => {
+    return allQuickFilters.find((f) => f.id === activeFilterId) || null;
+  }, [allQuickFilters, activeFilterId]);
+
+  const handleAddCustomFilter = (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    const name = newFilterName.trim();
+    if (!name) return;
+    const exts = newFilterExts
+      .split(',')
+      .map((s) => s.trim().toLowerCase())
+      .filter(Boolean)
+      .map((s) => (s.startsWith('.') ? s : `.${s}`));
+    if (exts.length === 0) return;
+
+    const newFilter: QuickFilter = {
+      id: `custom-${Date.now()}`,
+      name,
+      extensions: exts,
+      isCustom: true,
+    };
+
+    setCustomQuickFilters((prev) => [...prev, newFilter]);
+    setActiveFilterId(newFilter.id);
+    setNewFilterName('');
+    setNewFilterExts('');
+    setShowAddFilterModal(false);
+    setToastMessage(`Added quick filter "${name}"`);
+    setTimeout(() => setToastMessage(null), 3000);
+  };
+
+  const handleDeleteCustomFilter = (filterId: string, filterName: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setCustomQuickFilters((prev) => prev.filter((f) => f.id !== filterId));
+    if (activeFilterId === filterId) {
+      setActiveFilterId(null);
+    }
+    setToastMessage(`Removed filter "${filterName}"`);
+    setTimeout(() => setToastMessage(null), 3000);
+  };
 
   // Listen for backend import progress events
   useEffect(() => {
@@ -1340,18 +1422,42 @@ export default function App() {
   };
 
   const currentDisplayFiles = useMemo(() => {
+    const matchesFilter = (fileName: string) => {
+      if (!activeFilter) return true;
+      const lower = fileName.toLowerCase();
+      return activeFilter.extensions.some((ext) => {
+        const cleanExt = ext.trim().toLowerCase();
+        if (cleanExt.startsWith('.')) {
+          return lower.endsWith(cleanExt);
+        }
+        return lower.includes(cleanExt);
+      });
+    };
+
     if (showAllFavorites) {
       // Flattened favorites view: every starred file, regardless of current folder.
-      return files
-        .filter((f) => f.is_starred)
-        .sort((a, b) => a.name.localeCompare(b.name));
+      let result = files.filter((f) => f.is_starred);
+      if (activeFilter) {
+        result = result.filter((f) => matchesFilter(f.name));
+      }
+      if (searchQuery.trim()) {
+        const q = searchQuery.toLowerCase();
+        result = result.filter(
+          (f) => f.name.toLowerCase().includes(q) || f.hash.toLowerCase().includes(q)
+        );
+      }
+      return result.sort((a, b) => a.name.localeCompare(b.name));
     }
 
-    if (searchQuery.trim()) {
-      const q = searchQuery.toLowerCase();
-      return files.filter(
-        (f) => f.name.toLowerCase().includes(q) || f.hash.toLowerCase().includes(q)
-      );
+    if (activeFilter || searchQuery.trim()) {
+      const q = searchQuery.trim().toLowerCase();
+      return files
+        .filter((f) => {
+          const passFilter = matchesFilter(f.name);
+          const passSearch = !q || f.name.toLowerCase().includes(q) || f.hash.toLowerCase().includes(q);
+          return passFilter && passSearch;
+        })
+        .sort((a, b) => a.name.localeCompare(b.name));
     }
 
     const dirMap = new Map<string, { size_bytes: number; count: number }>();
@@ -1416,7 +1522,7 @@ export default function App() {
     fileEntries.sort((a, b) => a.name.localeCompare(b.name));
 
     return [...folderEntries, ...fileEntries];
-  }, [files, customFolders, currentPrefix, searchQuery, showAllFavorites]);
+  }, [files, customFolders, currentPrefix, searchQuery, showAllFavorites, activeFilter]);
 
   // If first launch and onboarding is not complete, show full wizard
   if (onboardingComplete === false) {
@@ -1514,13 +1620,13 @@ export default function App() {
             <RefreshCw className={`w-4 h-4 ${isRefreshing ? 'animate-spin text-blue-600' : ''}`} />
           </button>
           <button
-            onClick={() => setCurrentView('settings')}
+            onClick={() => setCurrentView((prev) => (prev === 'settings' ? 'explorer' : 'settings'))}
             className={`p-1.5 rounded-lg transition-colors cursor-pointer ${
               currentView === 'settings'
-                ? 'bg-blue-100 text-blue-700'
+                ? 'bg-blue-100 text-blue-700 font-semibold'
                 : 'hover:bg-gray-100 text-gray-500 hover:text-gray-700'
             }`}
-            title="Workspace Settings"
+            title={currentView === 'settings' ? 'Return to Files Explorer' : 'Application Settings'}
           >
             <Settings className="w-4 h-4" />
           </button>
@@ -1553,7 +1659,7 @@ export default function App() {
       {/* Main Body */}
       <div className="flex-1 flex overflow-hidden">
         {/* Left Sidebar */}
-        <aside className="w-56 bg-gray-50 border-r border-gray-200 flex flex-col justify-between py-4 select-none shrink-0">
+        <aside className="w-60 bg-gray-50 border-r border-gray-200 flex flex-col justify-between py-4 select-none shrink-0 overflow-y-auto">
           <div className="space-y-6">
             <div>
               <span className="px-3 text-[11px] font-semibold tracking-wider text-gray-400 uppercase">
@@ -1561,48 +1667,80 @@ export default function App() {
               </span>
               <div className="mt-1.5 space-y-0.5">
                 <button
-                  onClick={() => handleNavigateBreadcrumbs(0)}
-                  className={`w-full flex items-center gap-2.5 px-3 py-1.5 text-xs font-medium rounded-lg transition-colors ${
-                    currentView === 'explorer'
-                      ? 'bg-blue-50 text-blue-700'
+                  onClick={() => {
+                    setCurrentView('explorer');
+                    handleNavigateBreadcrumbs(0);
+                  }}
+                  className={`w-full flex items-center gap-2.5 px-3 py-1.5 text-xs font-medium rounded-lg transition-colors cursor-pointer ${
+                    currentView === 'explorer' && !activeFilterId && !showAllFavorites
+                      ? 'bg-blue-50 text-blue-700 font-semibold'
                       : 'text-gray-600 hover:bg-gray-100'
                   }`}
                 >
-                  <Share2 className="w-4 h-4 text-blue-500" />
-                  Shared Cloud Folder
+                  <Share2 className="w-4 h-4 text-blue-500 shrink-0" />
+                  <span className="truncate">Shared Cloud Folder</span>
                 </button>
               </div>
             </div>
 
             <div>
-              <span className="px-3 text-[11px] font-semibold tracking-wider text-gray-400 uppercase">
-                Quick Filters
-              </span>
+              <div className="flex items-center justify-between px-3">
+                <span className="text-[11px] font-semibold tracking-wider text-gray-400 uppercase">
+                  Quick Filters
+                </span>
+                <button
+                  onClick={() => setShowAddFilterModal(true)}
+                  className="flex items-center gap-1 text-[11px] text-blue-600 hover:text-blue-700 font-semibold cursor-pointer px-1 py-0.5 rounded hover:bg-blue-50 transition-colors"
+                  title="Add custom file filter"
+                >
+                  <Plus className="w-3 h-3" />
+                  <span>Add</span>
+                </button>
+              </div>
               <div className="mt-1.5 space-y-0.5">
-                <button
-                  onClick={() => setSearchQuery((prev) => (prev === '.pdf' ? '' : '.pdf'))}
-                  className={`w-full flex items-center gap-2.5 px-3 py-1.5 text-xs rounded-lg transition-colors cursor-pointer ${
-                    searchQuery === '.pdf'
-                      ? 'bg-red-50 text-red-700 font-semibold'
-                      : 'text-gray-600 hover:bg-gray-100'
-                  }`}
-                  title={searchQuery === '.pdf' ? 'Click to clear filter' : 'Filter files ending with .pdf'}
-                >
-                  <FileText className="w-3.5 h-3.5 text-red-500" />
-                  Documents (.pdf)
-                </button>
-                <button
-                  onClick={() => setSearchQuery((prev) => (prev === '.md' ? '' : '.md'))}
-                  className={`w-full flex items-center gap-2.5 px-3 py-1.5 text-xs rounded-lg transition-colors cursor-pointer ${
-                    searchQuery === '.md'
-                      ? 'bg-blue-50 text-blue-700 font-semibold'
-                      : 'text-gray-600 hover:bg-gray-100'
-                  }`}
-                  title={searchQuery === '.md' ? 'Click to clear filter' : 'Filter files ending with .md or .txt'}
-                >
-                  <FileCode className="w-3.5 h-3.5 text-blue-500" />
-                  Notes (.md, .txt)
-                </button>
+                {allQuickFilters.map((filter) => {
+                  const isActive = activeFilterId === filter.id && currentView === 'explorer';
+                  return (
+                    <div
+                      key={filter.id}
+                      className="group flex items-center justify-between rounded-lg transition-colors"
+                    >
+                      <button
+                        onClick={() => {
+                          setCurrentView('explorer');
+                          setActiveFilterId((prev) => (prev === filter.id ? null : filter.id));
+                        }}
+                        className={`flex-1 flex items-center gap-2 px-3 py-1.5 text-xs rounded-lg transition-colors text-left truncate cursor-pointer ${
+                          isActive
+                            ? 'bg-blue-50 text-blue-700 font-semibold ring-1 ring-blue-200'
+                            : 'text-gray-600 hover:bg-gray-100'
+                        }`}
+                        title={
+                          isActive
+                            ? `Active: ${filter.name} (${filter.extensions.join(', ')}). Click to clear.`
+                            : `Filter by ${filter.extensions.join(', ')}`
+                        }
+                      >
+                        <Filter className={`w-3.5 h-3.5 shrink-0 ${isActive ? 'text-blue-600' : 'text-gray-400'}`} />
+                        <span className="truncate">{filter.name}</span>
+                        {isActive && (
+                          <span className="ml-auto text-[10px] bg-blue-100 text-blue-700 px-1.5 py-0.2 rounded font-mono">
+                            active
+                          </span>
+                        )}
+                      </button>
+                      {filter.isCustom && (
+                        <button
+                          onClick={(e) => handleDeleteCustomFilter(filter.id, filter.name, e)}
+                          className="opacity-0 group-hover:opacity-100 p-1 text-gray-400 hover:text-rose-600 rounded transition-opacity cursor-pointer mr-1"
+                          title={`Delete custom filter "${filter.name}"`}
+                        >
+                          <Trash2 className="w-3 h-3" />
+                        </button>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
             </div>
 
@@ -1614,43 +1752,70 @@ export default function App() {
                 <button
                   onClick={() => {
                     setCurrentView('settings');
+                    setSettingsTab('cache');
+                  }}
+                  className={`w-full flex items-center justify-between px-3 py-1.5 text-xs rounded-lg transition-colors cursor-pointer ${
+                    currentView === 'settings' && settingsTab === 'cache'
+                      ? 'bg-blue-50 text-blue-700 font-semibold ring-1 ring-blue-200'
+                      : 'text-gray-600 hover:bg-gray-100'
+                  }`}
+                  title="Configure cache limits and eviction rules"
+                >
+                  <span className="flex items-center gap-2.5 truncate">
+                    <HardDrive className="w-3.5 h-3.5 text-blue-500 shrink-0" />
+                    <span className="truncate">Cache & Quota</span>
+                  </span>
+                  <span className="text-[10px] font-bold text-blue-600 bg-blue-100/70 px-1.5 py-0.2 rounded ml-1 shrink-0">
+                    {stats ? `${Math.round(stats.quota_bytes / (1024 * 1024 * 1024))}GB` : '5GB'}
+                  </span>
+                </button>
+                <button
+                  onClick={() => {
+                    setCurrentView('settings');
+                    setSettingsTab('bandwidth');
+                  }}
+                  className={`w-full flex items-center gap-2.5 px-3 py-1.5 text-xs rounded-lg transition-colors cursor-pointer ${
+                    currentView === 'settings' && settingsTab === 'bandwidth'
+                      ? 'bg-blue-50 text-blue-700 font-semibold ring-1 ring-blue-200'
+                      : 'text-gray-600 hover:bg-gray-100'
+                  }`}
+                  title="Configure download/upload caps and battery eco mode"
+                >
+                  <Gauge className="w-3.5 h-3.5 text-amber-500 shrink-0" />
+                  <span className="truncate">Bandwidth & Battery</span>
+                </button>
+                <button
+                  onClick={() => {
+                    setCurrentView('settings');
                     setSettingsTab('network');
                   }}
-                  className="w-full flex items-center gap-2.5 px-3 py-1.5 text-xs text-gray-600 rounded-lg hover:bg-gray-100"
+                  className={`w-full flex items-center gap-2.5 px-3 py-1.5 text-xs rounded-lg transition-colors cursor-pointer ${
+                    currentView === 'settings' && settingsTab === 'network'
+                      ? 'bg-blue-50 text-blue-700 font-semibold ring-1 ring-blue-200'
+                      : 'text-gray-600 hover:bg-gray-100'
+                  }`}
+                  title="Manage Wi-Fi network stealth and swarm peers"
                 >
-                  <Wifi className="w-3.5 h-3.5 text-emerald-500" />
-                  Network & Stealth
+                  <Wifi className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
+                  <span className="truncate">Network & Stealth</span>
                 </button>
                 <button
                   onClick={() => {
                     setCurrentView('settings');
                     setSettingsTab('backup');
                   }}
-                  className="w-full flex items-center gap-2.5 px-3 py-1.5 text-xs text-gray-600 rounded-lg hover:bg-gray-100"
+                  className={`w-full flex items-center gap-2.5 px-3 py-1.5 text-xs rounded-lg transition-colors cursor-pointer ${
+                    currentView === 'settings' && settingsTab === 'backup'
+                      ? 'bg-blue-50 text-blue-700 font-semibold ring-1 ring-blue-200'
+                      : 'text-gray-600 hover:bg-gray-100'
+                  }`}
+                  title="Snapshot backups, restore, and update manager"
                 >
-                  <HardDrive className="w-3.5 h-3.5 text-purple-500" />
-                  Backups & Export
+                  <DatabaseBackup className="w-3.5 h-3.5 text-purple-500 shrink-0" />
+                  <span className="truncate">Backups & Updates</span>
                 </button>
               </div>
             </div>
-          </div>
-
-          <div className="px-3 space-y-2">
-            <button
-              onClick={() => {
-                setCurrentView('settings');
-                setSettingsTab('cache');
-              }}
-              className="w-full flex items-center justify-between p-2 rounded-lg border border-gray-200 hover:bg-gray-50 transition-colors"
-            >
-              <div className="flex items-center gap-2 text-xs font-semibold text-gray-700">
-                <Settings className="w-3.5 h-3.5 text-gray-500" />
-                Cache Limits
-              </div>
-              <span className="text-[10px] font-bold text-blue-600 bg-blue-50 px-1.5 py-0.5 rounded">
-                {stats ? `${Math.round(stats.quota_bytes / (1024 * 1024 * 1024))}GB` : '5GB'}
-              </span>
-            </button>
           </div>
         </aside>
 
@@ -1722,6 +1887,23 @@ export default function App() {
           {currentView === 'explorer' && (
             <>
               <Breadcrumbs paths={paths} onNavigate={handleNavigateBreadcrumbs} />
+              {activeFilter && (
+                <div className="flex items-center justify-between px-4 py-2 bg-blue-50/80 border-b border-blue-200/80 text-xs">
+                  <div className="flex items-center gap-2">
+                    <Filter className="w-3.5 h-3.5 text-blue-600 shrink-0" />
+                    <span className="text-gray-700">
+                      Active filter: <strong className="text-blue-900">{activeFilter.name}</strong> ({activeFilter.extensions.join(', ')})
+                    </span>
+                    <span className="text-gray-500 text-[11px]">· {currentDisplayFiles.length} file(s) matched</span>
+                  </div>
+                  <button
+                    onClick={() => setActiveFilterId(null)}
+                    className="text-xs text-blue-700 hover:text-blue-950 font-semibold cursor-pointer hover:underline"
+                  >
+                    ✕ Clear Filter
+                  </button>
+                </div>
+              )}
               <FileTree
                 files={currentDisplayFiles}
                 selectedHash={selectedHash}
@@ -2064,6 +2246,72 @@ export default function App() {
                 </button>
               )}
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Add Custom Quick Filter Modal */}
+      {showAddFilterModal && (
+        <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-xl shadow-xl max-w-sm w-full p-5 space-y-4 animate-in fade-in zoom-in-95">
+            <div className="flex items-center justify-between">
+              <h3 className="text-sm font-bold text-gray-900 flex items-center gap-2">
+                <Filter className="w-4 h-4 text-blue-600" />
+                Add Custom Quick Filter
+              </h3>
+              <button
+                onClick={() => setShowAddFilterModal(false)}
+                className="text-gray-400 hover:text-gray-600 p-1 cursor-pointer"
+              >
+                ✕
+              </button>
+            </div>
+            <form onSubmit={handleAddCustomFilter} className="space-y-3">
+              <div>
+                <label className="block text-[11px] font-semibold text-gray-700 mb-1">
+                  Filter Label
+                </label>
+                <input
+                  type="text"
+                  placeholder="e.g. Python Scripts, Datasets"
+                  value={newFilterName}
+                  onChange={(e) => setNewFilterName(e.target.value)}
+                  className="w-full px-3 py-1.5 border border-gray-300 rounded-lg text-xs focus:border-blue-500 focus:outline-none"
+                  autoFocus
+                />
+              </div>
+              <div>
+                <label className="block text-[11px] font-semibold text-gray-700 mb-1">
+                  File Extensions or Keywords (comma-separated)
+                </label>
+                <input
+                  type="text"
+                  placeholder="e.g. .py, .ipynb or .csv, .parquet"
+                  value={newFilterExts}
+                  onChange={(e) => setNewFilterExts(e.target.value)}
+                  className="w-full px-3 py-1.5 border border-gray-300 rounded-lg text-xs focus:border-blue-500 focus:outline-none"
+                />
+                <p className="text-[10px] text-gray-400 mt-1">
+                  Files matching any of these extensions will be displayed when this filter is clicked.
+                </p>
+              </div>
+              <div className="flex items-center justify-end gap-2 pt-2 border-t border-gray-100">
+                <button
+                  type="button"
+                  onClick={() => setShowAddFilterModal(false)}
+                  className="px-3 py-1.5 text-xs text-gray-600 hover:bg-gray-100 rounded-lg font-medium cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={!newFilterName.trim() || !newFilterExts.trim()}
+                  className="px-3.5 py-1.5 text-xs font-semibold bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 cursor-pointer shadow-xs"
+                >
+                  Create Filter
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}

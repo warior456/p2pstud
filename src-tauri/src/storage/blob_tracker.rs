@@ -73,6 +73,25 @@ impl DeletionTombstone {
     }
 }
 
+/// Retrieve a deletion tombstone for a specific blob hash if present.
+pub fn get_tombstone(db: &Database, hash: &str) -> Result<Option<DeletionTombstone>> {
+    let conn = db.lock();
+    let mut stmt = conn.prepare(
+        "SELECT hash, owner_node_id, deleted_at, signature FROM deleted_blobs WHERE hash = ?1 LIMIT 1",
+    )?;
+    let mut rows = stmt.query(params![hash])?;
+    if let Some(row) = rows.next()? {
+        Ok(Some(DeletionTombstone {
+            hash: row.get(0)?,
+            owner_node_id: row.get(1)?,
+            deleted_at: row.get(2)?,
+            signature: row.get(3)?,
+        }))
+    } else {
+        Ok(None)
+    }
+}
+
 /// Check if a blob has an active deletion tombstone.
 pub fn is_blob_tombstoned(db: &Database, hash: &str) -> Result<bool> {
     let conn = db.lock();
@@ -565,10 +584,27 @@ fn upsert_blob_internal(
     owner_node_id: Option<&str>,
     locally_present: bool,
 ) -> Result<()> {
-    // If this file has an active deletion tombstone, reject upsert so deleted files are never resurrected
-    if is_blob_tombstoned(db, hash)? {
-        tracing::debug!(hash = %hash, "Skipping upsert for tombstoned (deleted) blob");
-        return Ok(());
+    // If this file has an active deletion tombstone, ensure it was legitimately signed by the file owner.
+    // An attacker cannot preemptively censor/delete a file by signing a tombstone with an attacker key.
+    if let Some(tombstone) = get_tombstone(db, hash)? {
+        if let Some(owner) = owner_node_id {
+            if !crate::storage::db::is_matching_node_id(&tombstone.owner_node_id, owner) {
+                tracing::warn!(
+                    hash = %hash,
+                    tombstone_owner = %tombstone.owner_node_id,
+                    file_owner = %owner,
+                    "Purging invalid/unauthorized tombstone signed by non-owner"
+                );
+                let conn = db.lock();
+                let _ = conn.execute("DELETE FROM deleted_blobs WHERE hash = ?1", params![hash]);
+            } else {
+                tracing::debug!(hash = %hash, "Skipping upsert for legitimately tombstoned blob");
+                return Ok(());
+            }
+        } else {
+            tracing::debug!(hash = %hash, "Skipping upsert for tombstoned (deleted) blob");
+            return Ok(());
+        }
     }
 
     let now = now_unix();

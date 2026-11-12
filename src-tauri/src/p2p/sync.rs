@@ -211,13 +211,13 @@ impl CatalogSyncHandler {
                     );
                     for voter in r.delete_votes {
                         // SECURITY (VULN-02): Only accept votes from authenticated peer connection
-                        if sender_peer_id == Some(voter.as_str()) {
+                        if sender_peer_id.map(|s| crate::storage::db::is_matching_node_id(s, &voter)).unwrap_or(false) {
                             let _ = cast_delete_vote(&self.db, &r.hash, &voter);
                         }
                     }
                     for voter in r.keep_votes {
                         // SECURITY (VULN-02): Only accept votes from authenticated peer connection
-                        if sender_peer_id == Some(voter.as_str()) {
+                        if sender_peer_id.map(|s| crate::storage::db::is_matching_node_id(s, &voter)).unwrap_or(false) {
                             let _ = cast_keep_vote(&self.db, &r.hash, &voter);
                         }
                     }
@@ -328,13 +328,13 @@ impl CatalogSyncHandler {
 
                 for voter in r.delete_votes {
                     // SECURITY (VULN-02): Only accept votes from authenticated peer connection
-                    if sender_peer_id == Some(voter.as_str()) {
+                    if sender_peer_id.map(|s| crate::storage::db::is_matching_node_id(s, &voter)).unwrap_or(false) {
                         let _ = cast_delete_vote(&self.db, &r.hash, &voter);
                     }
                 }
                 for voter in r.keep_votes {
                     // SECURITY (VULN-02): Only accept votes from authenticated peer connection
-                    if sender_peer_id == Some(voter.as_str()) {
+                    if sender_peer_id.map(|s| crate::storage::db::is_matching_node_id(s, &voter)).unwrap_or(false) {
                         let _ = cast_keep_vote(&self.db, &r.hash, &voter);
                     }
                 }
@@ -353,8 +353,15 @@ impl CatalogSyncHandler {
                 // SECURITY: ONLY allow deletion if the deleter is the legitimate owner of the file!
                 // Non-owners CANNOT unilaterally delete files across peers; they must cast delete votes.
                 if let Ok(Some(blob)) = get_blob(&self.db, &hash) {
-                    let is_owner = blob.owner_node_id.as_deref() == Some(&deleter_node_id);
-                    let sender_matches = sender_peer_id.is_none() || sender_peer_id == Some(&deleter_node_id);
+                    let is_owner = blob
+                        .owner_node_id
+                        .as_deref()
+                        .map(|o| crate::storage::db::is_matching_node_id(o, &deleter_node_id))
+                        .unwrap_or(false);
+                    let sender_matches = sender_peer_id.is_none()
+                        || sender_peer_id
+                            .map(|s| crate::storage::db::is_matching_node_id(s, &deleter_node_id))
+                            .unwrap_or(false);
                     if is_owner && sender_matches {
                         let _ = delete_blob(&self.db, &hash);
                     } else {
@@ -397,7 +404,7 @@ impl CatalogSyncHandler {
                     return Ok(None);
                 }
                 // SECURITY: Verify voter is the authenticated QUIC sender to prevent vote spoofing
-                if sender_peer_id == Some(voter_node_id.as_str()) {
+                if sender_peer_id.map(|s| crate::storage::db::is_matching_node_id(s, &voter_node_id)).unwrap_or(false) {
                     let _ = cast_delete_vote(&self.db, &hash, &voter_node_id);
                 } else {
                     tracing::warn!(
@@ -416,7 +423,7 @@ impl CatalogSyncHandler {
                 if !is_valid_blob_hash(&hash) {
                     return Ok(None);
                 }
-                if sender_peer_id == Some(voter_node_id.as_str()) {
+                if sender_peer_id.map(|s| crate::storage::db::is_matching_node_id(s, &voter_node_id)).unwrap_or(false) {
                     let _ = remove_delete_vote(&self.db, &hash, &voter_node_id);
                 } else {
                     tracing::warn!(
@@ -435,7 +442,7 @@ impl CatalogSyncHandler {
                 if !is_valid_blob_hash(&hash) {
                     return Ok(None);
                 }
-                if sender_peer_id == Some(voter_node_id.as_str()) {
+                if sender_peer_id.map(|s| crate::storage::db::is_matching_node_id(s, &voter_node_id)).unwrap_or(false) {
                     let _ = cast_keep_vote(&self.db, &hash, &voter_node_id);
                 } else {
                     tracing::warn!(
@@ -454,7 +461,7 @@ impl CatalogSyncHandler {
                 if !is_valid_blob_hash(&hash) {
                     return Ok(None);
                 }
-                if sender_peer_id == Some(voter_node_id.as_str()) {
+                if sender_peer_id.map(|s| crate::storage::db::is_matching_node_id(s, &voter_node_id)).unwrap_or(false) {
                     let _ = remove_keep_vote(&self.db, &hash, &voter_node_id);
                 } else {
                     tracing::warn!(
@@ -472,7 +479,14 @@ impl CatalogSyncHandler {
                 }
                 // SECURITY: Only the file's owner can move or rename it, and target path must be sanitized
                 if let Ok(Some(blob)) = get_blob(&self.db, &hash) {
-                    let is_owner = blob.owner_node_id.as_deref() == sender_peer_id;
+                    let is_owner = sender_peer_id
+                        .map(|s| {
+                            blob.owner_node_id
+                                .as_deref()
+                                .map(|o| crate::storage::db::is_matching_node_id(o, s))
+                                .unwrap_or(false)
+                        })
+                        .unwrap_or(false);
                     if is_owner {
                         if let Ok(clean_path) = crate::storage::path_utils::sanitize_virtual_path(&new_name) {
                             let _ = rename_blob(&self.db, &hash, &clean_path);
@@ -506,7 +520,7 @@ impl CatalogSyncHandler {
                 if !is_valid_blob_hash(&hash) {
                     return Ok(None);
                 }
-                if sender_peer_id == Some(voter_node_id.as_str()) {
+                if sender_peer_id.map(|s| crate::storage::db::is_matching_node_id(s, &voter_node_id)).unwrap_or(false) {
                     let _ = crate::storage::blob_tracker::rate_file(&self.db, &hash, &voter_node_id, rating);
                 }
                 Ok(None)
@@ -518,7 +532,7 @@ impl CatalogSyncHandler {
                 if !is_valid_blob_hash(&hash) {
                     return Ok(None);
                 }
-                if sender_peer_id == Some(reporter_node_id.as_str()) {
+                if sender_peer_id.map(|s| crate::storage::db::is_matching_node_id(s, &reporter_node_id)).unwrap_or(false) {
                     let _ = crate::storage::blob_tracker::report_dangerous(&self.db, &hash, &reporter_node_id);
                 }
                 Ok(None)
@@ -661,10 +675,18 @@ pub async fn sync_catalog_with_peer(
         peer_addr,
         endpoint.addr().relay_urls().cloned(),
     );
-    register_active_peer(peer_addr.id);
     let peer_id_str = peer_addr.id.to_string();
     let alpn = get_sync_alpn(db);
-    let connection = endpoint.connect(peer_addr.clone(), &alpn).await?;
+    let connection = match endpoint.connect(peer_addr.clone(), &alpn).await {
+        Ok(c) => {
+            register_active_peer(peer_addr.id);
+            c
+        }
+        Err(e) => {
+            unregister_active_peer(peer_addr.id);
+            return Err(e.into());
+        }
+    };
 
     // Exchange version announcements for swarm median version calculation
     let my_node_id = endpoint.id().to_string();
@@ -758,13 +780,13 @@ pub async fn sync_catalog_with_peer(
                 );
                 for voter in r.delete_votes {
                     // SECURITY (VULN-02): Only accept votes from authenticated peer connection
-                    if voter == peer_id_str {
+                    if crate::storage::db::is_matching_node_id(&voter, &peer_id_str) {
                         let _ = cast_delete_vote(db, &r.hash, &voter);
                     }
                 }
                 for voter in r.keep_votes {
                     // SECURITY (VULN-02): Only accept votes from authenticated peer connection
-                    if voter == peer_id_str {
+                    if crate::storage::db::is_matching_node_id(&voter, &peer_id_str) {
                         let _ = cast_keep_vote(db, &r.hash, &voter);
                     }
                 }
@@ -809,6 +831,8 @@ pub async fn broadcast_catalog_event(endpoint: &Endpoint, alpn: &[u8], msg: Sync
                     crate::p2p::bandwidth::record_global_upload(len);
                     let _ = send.finish();
                 }
+            } else {
+                unregister_active_peer(peer_id);
             }
         });
     }
