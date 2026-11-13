@@ -43,7 +43,7 @@ export const PdfViewer: React.FC<PdfViewerProps> = ({ data, isLoading = false, o
     const loadingTask = pdfjsLib.getDocument({
       data,
       isEvalSupported: false,
-      disableScripting: true,
+      enableXfa: false,
     });
     loadingTask.promise
       .then((doc) => {
