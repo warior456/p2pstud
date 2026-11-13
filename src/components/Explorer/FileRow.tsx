@@ -55,6 +55,7 @@ interface FileRowProps {
   onExportFolderZip?: (folderName: string) => void;
   onDeleteFolder?: (folderName: string) => void;
   onBlockFile?: (hash: string) => void;
+  onInspectSecurity?: (file: FileEntry) => void;
 }
 
 const DANGEROUS_EXTENSIONS = [
@@ -102,6 +103,7 @@ export const FileRow: React.FC<FileRowProps> = ({
   onExportFolderZip,
   onDeleteFolder,
   onBlockFile,
+  onInspectSecurity,
 }) => {
   const [menuOpen, setMenuOpen] = useState(false);
   const [isDragTarget, setIsDragTarget] = useState(false);
@@ -281,16 +283,24 @@ export const FileRow: React.FC<FileRowProps> = ({
 
             {file.is_quarantined ? (
               <span
-                className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold bg-red-100 text-red-800 border border-red-300"
-                title={`Quarantined by community security reports (${file.quarantine_report_count || 5}+ reports). Opening and downloading blocked to protect your computer.`}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onInspectSecurity?.(file);
+                }}
+                className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold bg-red-100 text-red-800 border border-red-300 hover:bg-red-200 cursor-pointer transition-colors"
+                title={`Quarantined by community security reports (${file.quarantine_report_count || 5}+ reports). Click to inspect threat details.`}
               >
                 <ShieldAlert className="w-3 h-3 text-red-600" />
                 ⛔ Quarantined ({file.quarantine_report_count || 5} reports)
               </span>
             ) : (file.quarantine_report_count || 0) > 0 ? (
               <span
-                className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-semibold bg-amber-100 text-amber-800 border border-amber-300"
-                title={`Reported as suspicious by ${file.quarantine_report_count} peer(s). 5 reports within 1 hour triggers emergency swarm quarantine.`}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onInspectSecurity?.(file);
+                }}
+                className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-semibold bg-amber-100 text-amber-800 border border-amber-300 hover:bg-amber-200 cursor-pointer transition-colors"
+                title={`Reported as suspicious by ${file.quarantine_report_count} peer(s). Click to inspect threat details.`}
               >
                 <ShieldAlert className="w-3 h-3 text-amber-600" />
                 ⚠️ Flagged ({file.quarantine_report_count})
@@ -623,6 +633,19 @@ export const FileRow: React.FC<FileRowProps> = ({
           >
             <Copy className="w-3.5 h-3.5" /> Copy Hash (BLAKE3)
           </button>
+
+          {!file.is_dir && onInspectSecurity && (file.is_quarantined || (file.quarantine_report_count || 0) > 0) && (
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                setMenuOpen(false);
+                onInspectSecurity(file);
+              }}
+              className="w-full text-left px-3 py-1.5 flex items-center gap-2 hover:bg-amber-50 text-amber-800 font-medium"
+            >
+              <ShieldAlert className="w-3.5 h-3.5 text-amber-600" /> View Threat Details
+            </button>
+          )}
 
           {!file.is_dir && onReportDangerous && (
             <button

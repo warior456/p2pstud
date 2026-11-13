@@ -258,13 +258,18 @@ pub fn resolve_network_profile(
 
     if let Some(ssid) = current_ssid {
         let lower = ssid.to_lowercase();
-        // Automatic campus heuristic for Belgian and international university networks
+        // Automatic campus heuristic for university and metered mobile hotspot networks
         if lower.contains("eduroam")
             || lower.contains("campus")
             || lower.contains("kuleuven")
             || lower.contains("kotnet")
             || lower.contains("student")
             || lower.contains("associatie")
+            || lower.contains("hotspot")
+            || lower.contains("iphone")
+            || lower.contains("androidap")
+            || lower.contains("mobile")
+            || lower.contains("tether")
         {
             return (NetworkProfile::Campus, None);
         }
@@ -745,6 +750,22 @@ mod tests {
 
         delete_ssid_rule_db(&db, "MyHomeWiFi").unwrap();
         assert_eq!(get_rule_for_ssid(&db, "MyHomeWiFi").unwrap(), None);
+    }
+
+    #[test]
+    fn test_hotspot_heuristic_resolves_to_campus() {
+        let (_dir, db) = make_test_db();
+        let (prof1, _) = resolve_network_profile(&db, Some("Matteo's iPhone"));
+        assert_eq!(prof1, NetworkProfile::Campus);
+
+        let (prof2, _) = resolve_network_profile(&db, Some("AndroidAP_5G"));
+        assert_eq!(prof2, NetworkProfile::Campus);
+
+        let (prof3, _) = resolve_network_profile(&db, Some("Tether_Hotspot"));
+        assert_eq!(prof3, NetworkProfile::Campus);
+
+        let (prof4, _) = resolve_network_profile(&db, Some("Home_Living_Room_5G"));
+        assert_eq!(prof4, NetworkProfile::Trusted);
     }
 
     #[test]

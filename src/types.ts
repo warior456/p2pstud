@@ -111,6 +111,12 @@ export interface QuarantineStatus {
   report_count: number;
 }
 
+export interface QuarantineInfo {
+  is_quarantined: boolean;
+  report_count: number;
+  reasons: string[];
+}
+
 export interface SoleSeedFile {
   hash: string;
   name: string | null;

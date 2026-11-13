@@ -45,6 +45,7 @@
 | 2026-11-13 | **Public Safety Iteration 3 (v0.1.53)**: Public Swarm Privacy Disclosures & Warnings, "Privacy Shield / Stealth Mode" P2P relay encapsulation & IP hiding, Sybil-Resistant Deletion Immunity (protecting pinned files from peer votes), and dual Decimal GB / Binary GiB cache telemetry metrics | Public Safety |
 | 2026-11-13 | **Build Fix for PDF.js Options (v0.1.54)**: Fixed TypeScript compilation failure in `PdfViewer.tsx` where `disableScripting` was not recognized in `DocumentInitParameters`; replaced with `isEvalSupported: false` and `enableXfa: false` | CI / Build Fix |
 | 2026-11-13 | **Public Safety Iteration 4 (v0.1.55)**: Community Quarantine Enforcement, Threat Reporting Reasons & Early Warning Badges, Backend Execution Locks, and Anti-Masquerading Binary Magic-Byte Detection | Public Safety |
+| 2026-11-13 | **Public Safety Iteration 5 (v0.1.56)**: Threat Details Inspector Modal, BLAKE3 Poison/Corruption Guard & Mobile Hotspot Auto-Throttling | Public Safety |
 
 ---
 

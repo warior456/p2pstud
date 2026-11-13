@@ -50,6 +50,7 @@ import { SoleSeedBanner } from './components/SoleSeedBanner';
 import { ImportingBanner } from './components/ImportingBanner';
 import { OnboardingWizard } from './components/Onboarding/OnboardingWizard';
 import { ZipImportModal, ZipFileItem } from './components/Explorer/ZipImportModal';
+import { SecurityDetailsModal } from './components/Modals/SecurityDetailsModal';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { isSameNodeId, toCanonicalHexNodeId } from './utils/nodeId';
@@ -141,6 +142,7 @@ export default function App() {
   const [isUpdatingNow, setIsUpdatingNow] = useState<boolean>(false);
   const [dismissedNetworkPrompt, setDismissedNetworkPrompt] = useState<boolean>(false);
   const [showQuitModal, setShowQuitModal] = useState<boolean>(false);
+  const [securityModalTarget, setSecurityModalTarget] = useState<FileEntry | null>(null);
   const [soleSeedsOnQuit, setSoleSeedsOnQuit] = useState<any[]>([]);
   const [isRefreshing, setIsRefreshing] = useState<boolean>(false);
   const [isVerifyingQuit, setIsVerifyingQuit] = useState<boolean>(false);
@@ -1958,6 +1960,7 @@ export default function App() {
                 onToggleStar={handleToggleStar}
                 onReportDangerous={handleReportDangerous}
                 onBlockFile={handleBlockFile}
+                onInspectSecurity={(file) => setSecurityModalTarget(file)}
                 showAllFavorites={showAllFavorites}
                 onToggleAllFavorites={() => {
                   setShowAllFavorites((prev) => !prev);
@@ -2138,6 +2141,15 @@ export default function App() {
         onUnpack={handleExecuteZipUnpack}
         onUploadAsZip={handleExecuteUploadAsZip}
         onCancel={handleCancelZipModal}
+      />
+
+      {/* Community Threat Quarantine & Security Details Modal */}
+      <SecurityDetailsModal
+        isOpen={Boolean(securityModalTarget)}
+        file={securityModalTarget}
+        onClose={() => setSecurityModalTarget(null)}
+        onBlockFile={handleBlockFile}
+        onReportDangerous={handleReportDangerous}
       />
 
       {/* Non-intrusive Update Available Toast (R23.3) */}

@@ -299,11 +299,29 @@ pub async fn read_file_bytes(
                 None
             };
 
-            if let Some(bytes) = disk_bytes {
-                let engine_guard = state.engine.read().await;
-                if let Some(engine) = engine_guard.as_ref() {
-                    let _ = engine.store.blobs().add_bytes(bytes::Bytes::copy_from_slice(&bytes)).await;
+            let verified_disk_bytes = if let Some(bytes) = disk_bytes {
+                let actual = iroh_blobs::Hash::new(&bytes);
+                if actual == parsed_hash {
+                    let engine_guard = state.engine.read().await;
+                    if let Some(engine) = engine_guard.as_ref() {
+                        let _ = engine.store.blobs().add_bytes(bytes::Bytes::copy_from_slice(&bytes)).await;
+                    }
+                    Some(bytes)
+                } else {
+                    tracing::warn!(expected = %parsed_hash, actual = %actual, "Corrupted local disk blob file detected. Purging bad file.");
+                    if disk_file.exists() {
+                        let _ = tokio::fs::remove_file(&disk_file).await;
+                    }
+                    if fallback_disk_file.exists() {
+                        let _ = tokio::fs::remove_file(&fallback_disk_file).await;
+                    }
+                    None
                 }
+            } else {
+                None
+            };
+
+            if let Some(bytes) = verified_disk_bytes {
                 bytes
             } else {
                 // Blob is not in local cache: fetch on-demand from the swarm peers!
@@ -1222,6 +1240,11 @@ async fn fetch_blob_from_peers(
                     .is_ok()
                 {
                     if let Ok(bytes) = engine.store.blobs().get_bytes(parsed_hash).await {
+                        let actual_hash = iroh_blobs::Hash::new(&bytes);
+                        if actual_hash != parsed_hash {
+                            tracing::error!(expected = %parsed_hash, actual = %actual_hash, "Corrupted/poisoned chunk received from peer!");
+                            return Err("Data integrity failure: downloaded payload does not match expected BLAKE3 hash.".to_string());
+                        }
                         let _ = crate::storage::blob_tracker::mark_blob_local(&state.db, hash);
                         return Ok(bytes.to_vec());
                     }
@@ -1254,6 +1277,11 @@ async fn fetch_blob_from_peers(
                 .is_ok()
             {
                 if let Ok(bytes) = engine.store.blobs().get_bytes(parsed_hash).await {
+                    let actual_hash = iroh_blobs::Hash::new(&bytes);
+                    if actual_hash != parsed_hash {
+                        tracing::error!(expected = %parsed_hash, actual = %actual_hash, "Corrupted/poisoned chunk received from peer!");
+                        continue;
+                    }
                     let _ = crate::storage::blob_tracker::mark_blob_local(&state.db, hash);
                     return Ok(bytes.to_vec());
                 }

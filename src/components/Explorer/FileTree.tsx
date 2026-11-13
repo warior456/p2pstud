@@ -62,6 +62,7 @@ interface FileTreeProps {
   onReportDangerous?: (hash: string, reason: string) => void;
   onExportFolderZip?: (folderVirtualPath: string) => void;
   onBlockFile?: (hash: string) => void;
+  onInspectSecurity?: (file: FileEntry) => void;
 }
 
 function formatBytes(bytes: number): string {
@@ -112,6 +113,7 @@ export const FileTree: React.FC<FileTreeProps> = ({
   onReportDangerous,
   onExportFolderZip,
   onBlockFile,
+  onInspectSecurity,
 }) => {
   const [isDragging, setIsDragging] = useState(false);
   const [offlineOnly, setOfflineOnly] = useState(false);
@@ -461,6 +463,7 @@ export const FileTree: React.FC<FileTreeProps> = ({
               onExportFolderZip={onExportFolderZip}
               onDeleteFolder={onDeleteFolder}
               onBlockFile={onBlockFile}
+              onInspectSecurity={onInspectSecurity}
             />
           ))}
         </div>
