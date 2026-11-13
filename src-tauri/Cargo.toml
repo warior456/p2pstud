@@ -76,7 +76,7 @@ unicode-normalization = "0.1"
 clap = { version = "4", features = ["derive"] }
 
 # Rate limiting
-governor = "0.7"
+governor = "0.10"
 tauri-plugin-autostart = "2.0.0-rc.1"
 rfd = { version = "0.17", default-features = false, features = ["xdg-portal"] }
 
