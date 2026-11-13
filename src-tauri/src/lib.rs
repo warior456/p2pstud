@@ -369,6 +369,7 @@ pub fn run() {
             commands::file_cmds::rate_file,
             commands::file_cmds::toggle_star,
             commands::file_cmds::report_dangerous,
+            commands::file_cmds::get_quarantine_info,
             commands::file_cmds::create_folder,
             commands::file_cmds::list_folders,
             commands::file_cmds::delete_folder,

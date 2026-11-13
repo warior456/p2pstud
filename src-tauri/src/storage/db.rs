@@ -226,6 +226,10 @@ const MIGRATIONS: &[&str] = &[
     );
     INSERT OR IGNORE INTO settings(key, value) VALUES ('auto_host_public_files', 'false');
     "#,
+    // Migration 0019 — Public safety: record quarantine report reason
+    r#"
+    ALTER TABLE quarantine_reports ADD COLUMN reason TEXT;
+    "#,
 ];
 
 fn apply_migrations_to_conn(conn: &Connection) -> Result<()> {

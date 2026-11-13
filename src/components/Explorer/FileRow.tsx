@@ -279,15 +279,23 @@ export const FileRow: React.FC<FileRowProps> = ({
               {file.name}
             </span>
 
-            {file.is_quarantined && (
+            {file.is_quarantined ? (
               <span
                 className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold bg-red-100 text-red-800 border border-red-300"
-                title="Quarantined by community security reports. Download blocked by default."
+                title={`Quarantined by community security reports (${file.quarantine_report_count || 5}+ reports). Opening and downloading blocked to protect your computer.`}
               >
                 <ShieldAlert className="w-3 h-3 text-red-600" />
-                ⛔ Quarantined
+                ⛔ Quarantined ({file.quarantine_report_count || 5} reports)
               </span>
-            )}
+            ) : (file.quarantine_report_count || 0) > 0 ? (
+              <span
+                className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-semibold bg-amber-100 text-amber-800 border border-amber-300"
+                title={`Reported as suspicious by ${file.quarantine_report_count} peer(s). 5 reports within 1 hour triggers emergency swarm quarantine.`}
+              >
+                <ShieldAlert className="w-3 h-3 text-amber-600" />
+                ⚠️ Flagged ({file.quarantine_report_count})
+              </span>
+            ) : null}
 
             {isScheduledForDeletion ? (
               <span

@@ -6,9 +6,9 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use crate::p2p::engine::IrohEngine;
 use crate::p2p::sync::{broadcast_catalog_event, SyncMessage};
 use crate::storage::blob_tracker::{
-    cast_delete_vote, cast_keep_vote, delete_blob, get_blob, get_seed_count, list_all_blobs,
-    record_peer_seed, remove_delete_vote, remove_keep_vote, rename_blob, set_pinned, touch_blob,
-    upsert_blob, BlobRecord, DeletionTombstone,
+    cast_delete_vote, cast_keep_vote, delete_blob, get_blob, get_seed_count,
+    list_all_blobs_filtered, record_peer_seed, remove_delete_vote, remove_keep_vote, rename_blob,
+    set_pinned, touch_blob, upsert_blob, BlobRecord, DeletionTombstone,
 };
 use crate::storage::hosting_worker::is_blob_cached;
 use crate::AppState;
@@ -112,7 +112,7 @@ pub(crate) fn emit_import_progress(app: Option<&AppHandle>, payload: &ImportProg
 /// Works 100% offline using the preloaded local store and SQLite metadata.
 #[tauri::command]
 pub async fn list_files(state: State<'_, AppState>) -> Result<Vec<BlobRecord>, String> {
-    let mut blobs = list_all_blobs(&state.db).map_err(|e| e.to_string())?;
+    let mut blobs = list_all_blobs_filtered(&state.db, true).map_err(|e| e.to_string())?;
 
     // Determine our node ID (from running engine or persistent secret key on disk)
     let my_node_id = {
@@ -252,6 +252,13 @@ pub async fn read_file_bytes(
     state: State<'_, AppState>,
 ) -> Result<Vec<u8>, String> {
     const INLINE_LIMIT: u64 = 8 * 1024 * 1024; // 8 MB
+
+    if crate::storage::blob_tracker::is_quarantined(&state.db, &hash).unwrap_or(false) {
+        return Err("File is quarantined by community security consensus. Reading bytes is restricted.".to_string());
+    }
+    if crate::storage::blob_tracker::is_blob_blocked(&state.db, &hash).unwrap_or(false) {
+        return Err("File is blocked by local security policy.".to_string());
+    }
 
     // Update access timestamp (LRU tracking).
     let _ = touch_blob(&state.db, &hash);
@@ -1077,6 +1084,13 @@ pub async fn export_file(
         .parse::<iroh_blobs::Hash>()
         .map_err(|e| format!("invalid hash '{hash}': {e}"))?;
 
+    if crate::storage::blob_tracker::is_quarantined(&state.db, &hash).unwrap_or(false) {
+        return Err("Security restriction: Exporting this file is blocked because it has been quarantined by community safety reports.".to_string());
+    }
+    if crate::storage::blob_tracker::is_blob_blocked(&state.db, &hash).unwrap_or(false) {
+        return Err("Security restriction: Exporting this file is blocked because it is on your local blocklist.".to_string());
+    }
+
     // Read from the running engine if available, otherwise the preloaded store.
     let data = {
         let engine_guard = state.engine.read().await;
@@ -1122,6 +1136,10 @@ pub async fn export_file(
                 format!("failed to create destination directory '{}': {e}", parent.display())
             })?;
         }
+    }
+
+    if is_executable_masquerading_as_doc(&target, &data) {
+        return Err("Security alert: This file claims to be a document or image, but contains executable binary headers (masquerading attack). Export blocked.".to_string());
     }
 
     std::fs::write(&target, data)
@@ -1342,6 +1360,13 @@ pub async fn download_file_to_downloads(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<String, String> {
+    if crate::storage::blob_tracker::is_quarantined(&state.db, &hash).unwrap_or(false) {
+        return Err("Security restriction: Downloading this file is blocked because it has been quarantined by community safety reports.".to_string());
+    }
+    if crate::storage::blob_tracker::is_blob_blocked(&state.db, &hash).unwrap_or(false) {
+        return Err("Security restriction: Downloading this file is blocked because it is on your local blocklist.".to_string());
+    }
+
     let data = load_or_fetch_blob_bytes(&state, &hash).await?;
 
     let downloads = app
@@ -1354,6 +1379,10 @@ pub async fn download_file_to_downloads(
     let fallback = format!("{}-{}", &hash[..hash.len().min(8)], "download");
     let name = safe_file_name(file_name.as_deref().unwrap_or(&fallback), &fallback);
     let target = unique_destination(&downloads, &name);
+
+    if is_executable_masquerading_as_doc(&target, &data) {
+        return Err("Security alert: This file claims to be a document or image, but contains executable binary headers (masquerading attack). Download blocked.".to_string());
+    }
 
     std::fs::write(&target, data)
         .map_err(|e| format!("Failed to save '{}': {e}", target.display()))?;
@@ -1392,6 +1421,43 @@ fn is_dangerous_file_extension(path: &std::path::Path) -> bool {
     BLOCKED_EXTENSIONS.contains(&lower.as_str())
 }
 
+/// Check if file content contains executable binary headers (PE/MZ, ELF, Mach-O)
+/// masquerading under harmless document, image, or text extensions.
+fn is_executable_masquerading_as_doc(path: &std::path::Path, data: &[u8]) -> bool {
+    let Some(ext) = path.extension().and_then(|e| e.to_str()) else {
+        return false;
+    };
+    let lower = ext.to_ascii_lowercase();
+    const DOC_EXTENSIONS: &[&str] = &[
+        "pdf", "png", "jpg", "jpeg", "gif", "webp", "bmp", "tiff",
+        "txt", "md", "csv", "json", "docx", "xlsx", "pptx", "odt",
+        "mp3", "mp4", "wav", "flac", "ogg", "epub",
+    ];
+    if !DOC_EXTENSIONS.contains(&lower.as_str()) {
+        return false;
+    }
+
+    // Windows PE / DOS binary: starts with "MZ" (0x4D, 0x5A)
+    if data.len() >= 2 && &data[0..2] == b"MZ" {
+        return true;
+    }
+    // Linux ELF binary: starts with 0x7F, 'E', 'L', 'F'
+    if data.len() >= 4 && &data[0..4] == b"\x7fELF" {
+        return true;
+    }
+    // macOS Mach-O binary signatures
+    if data.len() >= 4 && (
+        &data[0..4] == b"\xfe\xed\xfa\xce" ||
+        &data[0..4] == b"\xfe\xed\xfa\xcf" ||
+        &data[0..4] == b"\xce\xfa\xed\xfe" ||
+        &data[0..4] == b"\xcf\xfa\xed\xfe" ||
+        &data[0..4] == b"\xca\xfe\xba\xbe"
+    ) {
+        return true;
+    }
+    false
+}
+
 /// Materialize a catalog file on disk and open it with the OS default application.
 #[tauri::command]
 pub async fn open_file_with_default_app(
@@ -1400,6 +1466,13 @@ pub async fn open_file_with_default_app(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<String, String> {
+    if crate::storage::blob_tracker::is_quarantined(&state.db, &hash).unwrap_or(false) {
+        return Err("Security restriction: Opening this file is blocked because it has been quarantined by community safety reports.".to_string());
+    }
+    if crate::storage::blob_tracker::is_blob_blocked(&state.db, &hash).unwrap_or(false) {
+        return Err("Security restriction: Opening this file is blocked because it is on your local blocklist.".to_string());
+    }
+
     let data = load_or_fetch_blob_bytes(&state, &hash).await?;
 
     let preview_dir = app
@@ -1420,6 +1493,11 @@ pub async fn open_file_with_default_app(
             "Security restriction: Opening executable, script, or binary files directly with the system viewer is blocked. Please download or save the file to inspect it safely."
                 .to_string(),
         );
+    }
+
+    // SECURITY: Detect executable binary masquerading as document/image
+    if is_executable_masquerading_as_doc(&target, &data) {
+        return Err("Security alert: This file claims to be a document or image, but contains executable binary headers (masquerading attack). Opening blocked.".to_string());
     }
 
     std::fs::write(&target, data)
@@ -2110,14 +2188,20 @@ pub async fn toggle_star(
 #[tauri::command]
 pub async fn report_dangerous(
     hash: String,
+    reason: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<crate::storage::blob_tracker::QuarantineStatus, String> {
     let guard = state.engine.read().await;
     let engine = guard.as_ref().ok_or("Iroh engine not started")?;
     let my_id = engine.node_id().to_string();
 
-    let status = crate::storage::blob_tracker::report_dangerous(&state.db, &hash, &my_id)
-        .map_err(|e| e.to_string())?;
+    let status = crate::storage::blob_tracker::report_dangerous(
+        &state.db,
+        &hash,
+        &my_id,
+        reason.as_deref(),
+    )
+    .map_err(|e| e.to_string())?;
 
     broadcast_catalog_event(
         &engine.endpoint,
@@ -2125,10 +2209,20 @@ pub async fn report_dangerous(
         SyncMessage::FileQuarantineReport {
             hash,
             reporter_node_id: my_id,
+            reason,
         },
     )
     .await;
     Ok(status)
+}
+
+/// Retrieve full quarantine status and reported reasons for a file.
+#[tauri::command]
+pub async fn get_quarantine_info(
+    hash: String,
+    state: State<'_, AppState>,
+) -> Result<crate::storage::blob_tracker::QuarantineInfo, String> {
+    crate::storage::blob_tracker::get_quarantine_info(&state.db, &hash).map_err(|e| e.to_string())
 }
 
 /// Create and persist a virtual folder, broadcasting it to the swarm.
@@ -2268,5 +2362,30 @@ mod tests {
         assert!(!is_dangerous_file_extension(Path::new("photo.jpg")));
         assert!(!is_dangerous_file_extension(Path::new("archive.zip")));
         assert!(!is_dangerous_file_extension(Path::new("dataset.csv")));
+    }
+
+    #[test]
+    fn test_executable_masquerading_detection() {
+        // Windows MZ executable header disguised as pdf/png/txt
+        let mz_header = b"MZ\x90\x00\x03\x00\x00\x00\x04\x00";
+        assert!(is_executable_masquerading_as_doc(Path::new("syllabus.pdf"), mz_header));
+        assert!(is_executable_masquerading_as_doc(Path::new("chart.png"), mz_header));
+        assert!(is_executable_masquerading_as_doc(Path::new("notes.txt"), mz_header));
+
+        // Linux ELF binary disguised as pdf
+        let elf_header = b"\x7fELF\x02\x01\x01\x00";
+        assert!(is_executable_masquerading_as_doc(Path::new("homework.pdf"), elf_header));
+
+        // Legitimate PDF (starts with %PDF-)
+        let real_pdf = b"%PDF-1.7\n%\xb5\xed\xae\xfb\n";
+        assert!(!is_executable_masquerading_as_doc(Path::new("homework.pdf"), real_pdf));
+
+        // Legitimate PNG (starts with \x89PNG)
+        let real_png = b"\x89PNG\r\n\x1a\n";
+        assert!(!is_executable_masquerading_as_doc(Path::new("diagram.png"), real_png));
+
+        // Legitimate plain text
+        let real_text = b"Hello world! This is my lecture notes.";
+        assert!(!is_executable_masquerading_as_doc(Path::new("notes.txt"), real_text));
     }
 }

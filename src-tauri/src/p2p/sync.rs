@@ -104,6 +104,8 @@ pub enum SyncMessage {
     FileQuarantineReport {
         hash: String,
         reporter_node_id: String,
+        #[serde(default)]
+        reason: Option<String>,
     },
     /// Bilateral cryptographic receipt proving chunks were served by a seeder to a recipient.
     SeedingReceipt {
@@ -532,12 +534,18 @@ impl CatalogSyncHandler {
             SyncMessage::FileQuarantineReport {
                 hash,
                 reporter_node_id,
+                reason,
             } => {
                 if !is_valid_blob_hash(&hash) {
                     return Ok(None);
                 }
                 if sender_peer_id.map(|s| crate::storage::db::is_matching_node_id(s, &reporter_node_id)).unwrap_or(false) {
-                    let _ = crate::storage::blob_tracker::report_dangerous(&self.db, &hash, &reporter_node_id);
+                    let _ = crate::storage::blob_tracker::report_dangerous(
+                        &self.db,
+                        &hash,
+                        &reporter_node_id,
+                        reason.as_deref(),
+                    );
                 }
                 Ok(None)
             }

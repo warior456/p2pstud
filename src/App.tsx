@@ -74,6 +74,7 @@ interface BlobRecord {
   is_cached?: boolean;
   is_quarantined?: boolean;
   quarantine_expires_at?: number | null;
+  quarantine_report_count?: number;
   upvotes?: number;
   downvotes?: number;
   net_rating?: number;
@@ -433,6 +434,7 @@ export default function App() {
           seeds_count: r.seed_count ?? 1,
           is_quarantined: r.is_quarantined ?? false,
           quarantine_expires_at: r.quarantine_expires_at ?? null,
+          quarantine_report_count: r.quarantine_report_count ?? 0,
           upvotes: r.upvotes ?? 0,
           downvotes: r.downvotes ?? 0,
           net_rating: r.net_rating ?? 0,

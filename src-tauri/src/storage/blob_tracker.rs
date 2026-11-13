@@ -285,6 +285,8 @@ pub struct BlobRecord {
     #[serde(default)]
     pub quarantine_expires_at: Option<i64>,
     #[serde(default)]
+    pub quarantine_report_count: u32,
+    #[serde(default)]
     pub upvotes: usize,
     #[serde(default)]
     pub downvotes: usize,
@@ -316,6 +318,7 @@ impl Default for BlobRecord {
             written_at: Some(now),
             is_quarantined: false,
             quarantine_expires_at: None,
+            quarantine_report_count: 0,
             upvotes: 0,
             downvotes: 0,
             net_rating: 0,
@@ -910,6 +913,7 @@ pub fn oldest_unpinned(db: &Database, limit: usize) -> Result<Vec<BlobRecord>> {
                 written_at,
                 is_quarantined,
                 quarantine_expires_at,
+                quarantine_report_count: 0,
                 upvotes: 0,
                 downvotes: 0,
                 net_rating: 0,
@@ -930,6 +934,7 @@ pub fn oldest_unpinned(db: &Database, limit: usize) -> Result<Vec<BlobRecord>> {
         r.downvotes = down;
         r.net_rating = net;
         r.is_starred = is_starred(db, &r.hash).unwrap_or(false);
+        r.quarantine_report_count = get_quarantine_report_count(db, &r.hash).unwrap_or(0);
     }
 
     Ok(records)
@@ -975,6 +980,7 @@ pub fn get_blob(db: &Database, hash: &str) -> Result<Option<BlobRecord>> {
     let seed_count = get_seed_count(db, &hash_val, None, false).unwrap_or(1);
     let (upvotes, downvotes, net_rating) = get_file_ratings(db, &hash_val).unwrap_or((0, 0, 0));
     let is_starred_val = is_starred(db, &hash_val).unwrap_or(false);
+    let quarantine_report_count = get_quarantine_report_count(db, &hash_val).unwrap_or(0);
 
     Ok(Some(BlobRecord {
         hash: hash_val,
@@ -991,6 +997,7 @@ pub fn get_blob(db: &Database, hash: &str) -> Result<Option<BlobRecord>> {
         written_at,
         is_quarantined,
         quarantine_expires_at,
+        quarantine_report_count,
         upvotes,
         downvotes,
         net_rating,
@@ -1074,6 +1081,7 @@ pub fn list_all_blobs_filtered(db: &Database, include_quarantined: bool) -> Resu
                 written_at,
                 is_quarantined,
                 quarantine_expires_at,
+                quarantine_report_count: 0,
                 upvotes: 0,
                 downvotes: 0,
                 net_rating: 0,
@@ -1094,6 +1102,7 @@ pub fn list_all_blobs_filtered(db: &Database, include_quarantined: bool) -> Resu
         r.downvotes = down;
         r.net_rating = net;
         r.is_starred = is_starred(db, &r.hash).unwrap_or(false);
+        r.quarantine_report_count = get_quarantine_report_count(db, &r.hash).unwrap_or(0);
     }
 
     Ok(records)
@@ -1221,12 +1230,17 @@ pub fn is_starred(db: &Database, hash: &str) -> Result<bool> {
 }
 
 /// Report a file as dangerous. Triggers emergency quarantine if quorum of reports arrives in 1 hour.
-pub fn report_dangerous(db: &Database, hash: &str, reporter_node_id: &str) -> Result<QuarantineStatus> {
+pub fn report_dangerous(
+    db: &Database,
+    hash: &str,
+    reporter_node_id: &str,
+    reason: Option<&str>,
+) -> Result<QuarantineStatus> {
     let now = now_unix();
     let conn = db.lock();
     conn.execute(
-        "INSERT OR REPLACE INTO quarantine_reports(hash, reporter_node_id, reported_at) VALUES(?1, ?2, ?3)",
-        params![hash, reporter_node_id, now],
+        "INSERT OR REPLACE INTO quarantine_reports(hash, reporter_node_id, reported_at, reason) VALUES(?1, ?2, ?3, ?4)",
+        params![hash, reporter_node_id, now, reason],
     )?;
 
     // Check distinct reports within the last 1 hour (3600 seconds)
@@ -1267,6 +1281,67 @@ pub fn report_dangerous(db: &Database, hash: &str, reporter_node_id: &str) -> Re
     Ok(QuarantineStatus {
         is_quarantined,
         report_count: count as u32,
+    })
+}
+
+/// Check if a file is currently under quarantine.
+pub fn is_quarantined(db: &Database, hash: &str) -> Result<bool> {
+    let now = now_unix();
+    let conn = db.lock();
+    // Auto-expire quarantine if duration has passed
+    let _ = conn.execute(
+        "UPDATE local_blobs SET is_quarantined = 0, quarantine_expires_at = NULL
+         WHERE is_quarantined = 1 AND quarantine_expires_at IS NOT NULL AND quarantine_expires_at <= ?1",
+        params![now],
+    );
+    let is_quar: bool = conn
+        .query_row(
+            "SELECT is_quarantined FROM local_blobs WHERE hash = ?1",
+            params![hash],
+            |r| r.get::<_, Option<i64>>(0).map(|v| v.unwrap_or(0) != 0),
+        )
+        .unwrap_or(false);
+    Ok(is_quar)
+}
+
+/// Get number of distinct reports within the last hour for a file.
+pub fn get_quarantine_report_count(db: &Database, hash: &str) -> Result<u32> {
+    let now = now_unix();
+    let conn = db.lock();
+    let count: i64 = conn
+        .query_row(
+            "SELECT COUNT(DISTINCT reporter_node_id) FROM quarantine_reports WHERE hash = ?1 AND reported_at > (?2 - 3600)",
+            params![hash, now],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    Ok(count as u32)
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QuarantineInfo {
+    pub is_quarantined: bool,
+    pub report_count: u32,
+    pub reasons: Vec<String>,
+}
+
+/// Retrieve comprehensive quarantine status and reported reasons.
+pub fn get_quarantine_info(db: &Database, hash: &str) -> Result<QuarantineInfo> {
+    let is_quar = is_quarantined(db, hash)?;
+    let count = get_quarantine_report_count(db, hash)?;
+    let conn = db.lock();
+    let mut stmt = conn.prepare(
+        "SELECT DISTINCT reason FROM quarantine_reports WHERE hash = ?1 AND reason IS NOT NULL AND reason != ''",
+    )?;
+    let reasons: Vec<String> = stmt
+        .query_map(params![hash], |r| r.get::<_, String>(0))?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    Ok(QuarantineInfo {
+        is_quarantined: is_quar,
+        report_count: count,
+        reasons,
     })
 }
 
@@ -1932,7 +2007,7 @@ mod tests {
         // Quarantine reports
         // 4 reports in 1 hour -> not quarantined
         for i in 1..=4 {
-            let res = report_dangerous(&db, "hash_q", &format!("reporter_{i}")).unwrap();
+            let res = report_dangerous(&db, "hash_q", &format!("reporter_{i}"), Some("malware payload")).unwrap();
             assert_eq!(res.report_count, i);
             assert!(!res.is_quarantined);
         }
@@ -1940,18 +2015,26 @@ mod tests {
         assert_eq!(unquar_blobs.len(), 1);
 
         // 5th report -> triggers quarantine!
-        let res5 = report_dangerous(&db, "hash_q", "reporter_5").unwrap();
+        let res5 = report_dangerous(&db, "hash_q", "reporter_5", Some("trojan")).unwrap();
         assert_eq!(res5.report_count, 5);
         assert!(res5.is_quarantined);
+
+        // Check get_quarantine_info
+        let q_info = get_quarantine_info(&db, "hash_q").unwrap();
+        assert!(q_info.is_quarantined);
+        assert_eq!(q_info.report_count, 5);
+        assert!(q_info.reasons.contains(&"malware payload".to_string()));
+        assert!(q_info.reasons.contains(&"trojan".to_string()));
 
         // Filtered list_all_blobs hides quarantined file
         let regular_blobs = list_all_blobs(&db).unwrap();
         assert!(regular_blobs.is_empty());
 
-        // But list_all_blobs_filtered(include_quarantined = true) shows it
+        // But list_all_blobs_filtered(include_quarantined = true) shows it with report count
         let all_blobs = list_all_blobs_filtered(&db, true).unwrap();
         assert_eq!(all_blobs.len(), 1);
         assert!(all_blobs[0].is_quarantined);
+        assert_eq!(all_blobs[0].quarantine_report_count, 5);
     }
 
     #[test]

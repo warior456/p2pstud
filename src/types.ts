@@ -14,6 +14,7 @@ export interface FileEntry {
   item_count?: number; // For virtual folders: number of nested items
   is_quarantined?: boolean;
   quarantine_expires_at?: number | null;
+  quarantine_report_count?: number;
   upvotes?: number;
   downvotes?: number;
   net_rating?: number;
