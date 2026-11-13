@@ -1095,6 +1095,8 @@ pub async fn export_file(
     std::fs::write(&target, data)
         .map_err(|e| format!("failed to write destination file '{}': {e}", target.display()))?;
 
+    attach_windows_zone_identifier(&target);
+
     Ok(())
 }
 
@@ -1323,10 +1325,23 @@ pub async fn download_file_to_downloads(
 
     std::fs::write(&target, data)
         .map_err(|e| format!("Failed to save '{}': {e}", target.display()))?;
+    attach_windows_zone_identifier(&target);
     Ok(target.to_string_lossy().to_string())
 }
 
-/// Check if a target file has an executable or potentially hazardous script extension.
+/// Attach Mark-of-the-Web (Zone.Identifier) on Windows so downloaded/materialized files
+/// are properly inspected and sandboxed by Windows Defender, SmartScreen, and Office Protected View.
+fn attach_windows_zone_identifier(path: &std::path::Path) {
+    #[cfg(target_os = "windows")]
+    {
+        let zone_path = format!("{}:Zone.Identifier", path.display());
+        let _ = std::fs::write(&zone_path, "[ZoneTransfer]\r\nZoneId=3\r\n");
+    }
+    #[cfg(not(target_os = "windows"))]
+    let _ = path;
+}
+
+/// Check if a target file has an executable, macro, or potentially hazardous script extension.
 fn is_dangerous_file_extension(path: &std::path::Path) -> bool {
     let Some(ext) = path.extension().and_then(|e| e.to_str()) else {
         return false;
@@ -1337,6 +1352,10 @@ fn is_dangerous_file_extension(path: &std::path::Path) -> bool {
         "wsh", "ps1", "ps1xml", "ps2", "ps2xml", "psc1", "psc2", "msh", "msh1", "msh2",
         "mshxml", "msh1xml", "msh2xml", "inf", "reg", "hta", "cpl", "jar", "pif", "scf",
         "lnk", "iso", "img", "vhd", "vhdx", "dll", "sys", "drv", "bin",
+        // Dangerous web and markup formats that execute active code when opened in browser
+        "html", "htm", "xhtml", "svg",
+        // Dangerous macro-enabled Office document formats
+        "docm", "xlsm", "pptm", "dotm", "xltm", "potm",
     ];
     BLOCKED_EXTENSIONS.contains(&lower.as_str())
 }
@@ -1373,6 +1392,7 @@ pub async fn open_file_with_default_app(
 
     std::fs::write(&target, data)
         .map_err(|e| format!("Failed to write preview file '{}': {e}", target.display()))?;
+    attach_windows_zone_identifier(&target);
 
     let target_str = target.to_string_lossy().to_string();
 

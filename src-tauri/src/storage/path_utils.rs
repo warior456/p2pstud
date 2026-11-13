@@ -98,13 +98,26 @@ fn normalize_path(path: &Path) -> PathBuf {
     components.iter().collect()
 }
 
+/// Bidirectional formatting and override characters (e.g. Right-to-Left Override U+202E)
+/// which can be abused to spoof executable extensions (e.g. document[U+202E]fdp.exe).
+pub const BIDI_CONTROL_CHARS: &[char] = &[
+    '\u{202A}', '\u{202B}', '\u{202C}', '\u{202D}', '\u{202E}', // LRE, RLE, PDF, LRO, RLO
+    '\u{2066}', '\u{2067}', '\u{2068}', '\u{2069}',             // LRI, RLI, FSI, PDI
+    '\u{200E}', '\u{200F}',                                     // LRM, RLM
+    '\u{061C}',                                                 // ALM
+];
+
 /// Validate and sanitize a virtual workspace path/filename.
 /// Ensures the path is strictly relative, normalized with forward slashes `/`,
 /// does not contain directory traversal (`..`), null bytes, Windows drive prefixes,
-/// reserved device names, or invalid filename characters.
+/// reserved device names, bidirectional overrides, or invalid filename characters.
 pub fn sanitize_virtual_path(raw: &str) -> Result<String> {
     if raw.contains('\0') {
         bail!("path contains null byte");
+    }
+
+    if raw.chars().any(|c| BIDI_CONTROL_CHARS.contains(&c)) {
+        bail!("path contains forbidden bidirectional/override formatting characters");
     }
 
     let trimmed = raw.trim();
@@ -169,6 +182,11 @@ pub fn normalize_virtual_path(input: &str, folder_sibling_names: &[&str]) -> Res
     // 2. Reject strings containing null bytes
     if nfc_input.contains('\0') {
         return Err("Path contains null byte".to_string());
+    }
+
+    // 2b. Reject strings containing bidirectional override or embedding characters
+    if nfc_input.chars().any(|c| BIDI_CONTROL_CHARS.contains(&c)) {
+        return Err("Path contains forbidden bidirectional/override formatting characters".to_string());
     }
 
     // 3. Reject strings containing Windows-illegal characters
@@ -431,5 +449,18 @@ mod tests {
         );
         assert!(normalize_virtual_path("file\0name.txt", &[]).is_err());
         assert!(normalize_virtual_path(&"a".repeat(201), &[]).is_err());
+    }
+
+    #[test]
+    fn bidi_rtlo_rejected() {
+        // RTLO character U+202E disguises an .exe as a .pdf
+        let evil_virtual = "lecture_\u{202E}fdp.exe";
+        assert!(sanitize_virtual_path(evil_virtual).is_err());
+        assert!(normalize_virtual_path(evil_virtual, &[]).is_err());
+
+        // LRO character U+202D
+        let lro_path = "document_\u{202D}test.txt";
+        assert!(sanitize_virtual_path(lro_path).is_err());
+        assert!(normalize_virtual_path(lro_path, &[]).is_err());
     }
 }

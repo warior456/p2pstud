@@ -45,9 +45,9 @@ At the end of every session (or when interrupted), update the `## Progress Track
 
 ## Progress Tracker
 
-> **Last session:** 2026-11-12
-> **Last completed task:** Step 79 completed: Quick Filters Flexibility, Unified Configuration UI, and Security Exploit Hardening (v0.1.49).
-> **Next action:** Manual two-node smoke test (large PDF, note save across peers, offline upload, quota eviction) and release packaging.
+> **Last session:** 2026-11-13
+> **Last completed task:** Step 81 completed: Public Safety Iteration 1 — Webview Lockdown, Mark-of-the-Web (Zone.Identifier), RTLO/Bidi Sanitization, Macro/Web Lockout & PDF Scripting Quarantine (v0.1.51).
+> **Next action:** Public Safety Iteration 2: Public Swarm Selective Seeding, Per-Peer Rate Limiting & Sybil-Resistant Moderation.
 
 | # | Step | Status | Notes |
 |---|---|---|---|
@@ -131,6 +131,7 @@ At the end of every session (or when interrupted), update the `## Progress Track
 | 78 | Remaining Release Issues, Battery Eco Mode & Settings Restructure (v0.1.48) | ✅ | Native Downloads/Save As/Open-with-system IPC; flattened All Favorites filter; selection highlight/clear/prune fixes; PDF loading placeholder; folder deletion refuses foreign-owned files (with regression test); Connection Doctor manual-run + unverified warning + relay-only critical check; three-way battery mode (`pause`/`eco`/`normal`, eco = 1 file per 90 s at ≤128 KB/s); settings tabs as icon cards and Network tab split into four sub-sections. All gates green. |
 | 79 | Quick Filters Flexibility, Unified Configuration UI, and Security Exploit Hardening (v0.1.49) | ✅ | Extensible Quick Filters with custom user filters & localStorage persistence; unified Configuration sidebar navigation with all 4 tabs (Cache & Quota with live usage pill, Bandwidth & Battery, Network & Stealth, Backups & Updates); blocked arbitrary code execution in default viewer; enforced owner checks on move/batch_move to prevent swarm catalog desync; migrated NodeId comparisons in P2P sync to `is_matching_node_id` to prevent format false-rejections; purged unauthorized deletion tombstones; removed redundant duplicate `src-tauri/Cargo.lock`. |
 | 80 | Resolving "I Am The Peer" Phantom Seeding & Disk Data Resilience (v0.1.50) | ✅ | (1) Fixed phantom `Seeding` / `cached` state in `list_files` which falsely set `is_cached = true` when `written_at > 0` even when physical bytes were missing from disk and store; (2) added automatic reconciliation in `list_files` and startup worker to reset ghost `written_at = 0` when physical bytes are absent, eliminating false sole-seed warnings; (3) added multi-database cross-checking and safety abort in `cleanup_orphaned_disk_blobs` to prevent purging shared blobs when switching swarm networks or when databases are newly created; (4) implemented disk file fallback and auto-healing in `load_blob_bytes` for `open_file_with_default_app` and `download_file_to_downloads`; (5) improved `fetch_blob_from_peers` error messages to accurately differentiate missing local files from missing remote peers. |
+| 81 | Public Safety Iteration 1 — Webview Lockdown, Mark-of-the-Web, RTLO/Bidi Sanitization, Macro/Web Lockout & PDF Scripting Quarantine (v0.1.51) | ✅ | (1) Minimized Tauri capabilities in `capabilities/default.json` by removing raw `shell:default` and `fs:default` to enforce least-privilege webview isolation; (2) attached Windows Mark-of-the-Web (`Zone.Identifier` ZoneId=3) in `export_file`, `save_to_downloads`, and `open_file_with_default_app` so OS antivirus, SmartScreen, and Office Protected View inspect and sandbox materialized files; (3) eliminated Unicode Right-to-Left Override (RTLO) spoofing in `path_utils.rs` by rejecting Bidi formatting characters (`U+202A`–`U+202E`, `U+2066`–`U+2069`) with unit test verification; (4) expanded dangerous extension lockout to block direct system execution of web code (`.html`, `.htm`, `.svg`) and macro documents (`.docm`, `.xlsm`, etc.); (5) disabled PDF eval and active scripting in `PDFViewer.tsx` (`isEvalSupported: false`, `disableScripting: true`). |
 
 ---
 

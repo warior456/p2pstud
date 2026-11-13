@@ -40,6 +40,7 @@
 | 2026-11-05 | **ZIP Import Warning Modal & Toolbar Duplication Fix**: Added modal warning for unpacking ZIP archives with single-file alternative; removed duplicate empty folder toolbar buttons and fixed Back button shrink | Bug fix & UX |
 | 2026-11-08 | **Auto-Updater Pipeline Fix & NSIS Prioritization (v0.1.42)**: Cleared persistent update dismissal on launch; prioritized NSIS setup packages; automated background update polling | Bug fix |
 | 2026-11-08 | **SQLite WAL Truncation, Hardened Anti-Resurrection Tombstones & Bandwidth Settings (v0.1.43)**: Enforced periodic SQLite WAL checkpointing shrinking 4GB WAL; added dedicated Bandwidth & Battery tab; hardened recursive folder deletion against peer resurrection | Bug fix & UX |
+| 2026-11-13 | **Public Safety Iteration 1 (v0.1.51)**: Webview capability minimization (removed raw `shell`/`fs`), Windows Mark-of-the-Web (`Zone.Identifier`), Unicode Bidi/RTLO path sanitization, macro/web extension lockout, and PDF JavaScript quarantine | Public Safety |
 
 ---
 
