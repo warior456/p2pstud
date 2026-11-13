@@ -134,6 +134,60 @@ pub fn remove_deletion_tombstone(db: &Database, hash: &str) -> Result<()> {
     Ok(())
 }
 
+/// Check if a blob has been locally blocked by the user.
+pub fn is_blob_blocked(db: &Database, hash: &str) -> Result<bool> {
+    let conn = db.lock();
+    let exists = conn
+        .query_row(
+            "SELECT 1 FROM blocked_blobs WHERE hash = ?1 LIMIT 1",
+            params![hash],
+            |_| Ok(true),
+        )
+        .optional()?
+        .unwrap_or(false);
+    Ok(exists)
+}
+
+/// Block a blob locally, purge it from local_blobs, and delete its physical files from disk.
+pub fn block_blob(db: &Database, hash: &str, reason: Option<&str>) -> Result<()> {
+    let now = now_unix();
+    {
+        let conn = db.lock();
+        conn.execute(
+            "INSERT INTO blocked_blobs(hash, blocked_at, reason) VALUES (?1, ?2, ?3)
+             ON CONFLICT(hash) DO UPDATE SET blocked_at = excluded.blocked_at, reason = excluded.reason",
+            params![hash, now, reason],
+        )?;
+    }
+
+    // Remove from local metadata
+    let _ = delete_blob(db, hash);
+
+    // Physically delete any cached files from disk
+    let blob_dir = db.resolve_blob_dir();
+    crate::storage::path_utils::delete_blob_files_from_disk(&blob_dir, hash);
+    Ok(())
+}
+
+/// Unblock a previously blocked blob.
+pub fn unblock_blob(db: &Database, hash: &str) -> Result<()> {
+    let conn = db.lock();
+    conn.execute("DELETE FROM blocked_blobs WHERE hash = ?1", params![hash])?;
+    Ok(())
+}
+
+/// Retrieve all hashes blocked locally by the user.
+pub fn list_blocked_blobs(db: &Database) -> Result<Vec<String>> {
+    let conn = db.lock();
+    let mut stmt = conn.prepare("SELECT hash FROM blocked_blobs ORDER BY blocked_at DESC")?;
+    let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+    let mut hashes = Vec::new();
+    for row in rows {
+        hashes.push(row?);
+    }
+    Ok(hashes)
+}
+
 /// Validate and apply an incoming deletion tombstone.
 /// Ensures the cryptographic signature verifies and that the signer matches the known owner.
 pub fn record_deletion_tombstone(db: &Database, tombstone: &DeletionTombstone) -> Result<bool> {
@@ -584,6 +638,12 @@ fn upsert_blob_internal(
     owner_node_id: Option<&str>,
     locally_present: bool,
 ) -> Result<()> {
+    // If this file has been locally blocked by the user, ignore all upsert attempts
+    if is_blob_blocked(db, hash)? {
+        tracing::debug!(hash = %hash, "Skipping upsert for locally blocked blob");
+        return Ok(());
+    }
+
     // If this file has an active deletion tombstone, ensure it was legitimately signed by the file owner.
     // An attacker cannot preemptively censor/delete a file by signing a tombstone with an attacker key.
     if let Some(tombstone) = get_tombstone(db, hash)? {
@@ -953,6 +1013,7 @@ pub fn list_all_blobs_filtered(db: &Database, include_quarantined: bool) -> Resu
                     written_at, is_quarantined, quarantine_expires_at, catalog_first_seen_at, last_any_seed_seen_at
              FROM local_blobs
              WHERE hash NOT IN (SELECT hash FROM deleted_blobs)
+               AND hash NOT IN (SELECT hash FROM blocked_blobs)
              ORDER BY last_accessed_at DESC"
         } else {
             "SELECT hash, name, size_bytes, last_accessed_at, is_pinned, owner_node_id, deletion_scheduled_at,
@@ -960,6 +1021,7 @@ pub fn list_all_blobs_filtered(db: &Database, include_quarantined: bool) -> Resu
              FROM local_blobs
              WHERE (is_quarantined = 0 OR is_quarantined IS NULL)
                AND hash NOT IN (SELECT hash FROM deleted_blobs)
+               AND hash NOT IN (SELECT hash FROM blocked_blobs)
              ORDER BY last_accessed_at DESC"
         };
         let mut stmt = conn.prepare(sql)?;
@@ -2017,5 +2079,36 @@ mod tests {
         // 5. Another peer sends a CatalogDump or FileAdded containing the deleted file
         upsert_blob(&db, hash, Some("important_lecture.pdf"), 4096, false, Some(&owner_id)).unwrap();
         assert!(get_blob(&db, hash).unwrap().is_none(), "Tombstone must strictly prevent resurrection");
+    }
+
+    #[test]
+    fn test_block_and_unblock_blob() {
+        let (_dir, db) = make_db();
+        let hash = "hash_to_block_123";
+
+        // 1. Initially upsert a file
+        upsert_blob(&db, hash, Some("suspicious_file.pdf"), 2048, false, Some("node1")).unwrap();
+        assert!(get_blob(&db, hash).unwrap().is_some());
+        assert!(!is_blob_blocked(&db, hash).unwrap());
+
+        // 2. Block the blob
+        block_blob(&db, hash, Some("malicious content")).unwrap();
+        assert!(is_blob_blocked(&db, hash).unwrap());
+        assert!(get_blob(&db, hash).unwrap().is_none());
+        assert!(list_all_blobs(&db).unwrap().is_empty());
+        assert_eq!(list_blocked_blobs(&db).unwrap(), vec![hash.to_string()]);
+
+        // 3. Upsert attempt while blocked must be rejected
+        upsert_blob(&db, hash, Some("suspicious_file.pdf"), 2048, false, Some("node1")).unwrap();
+        assert!(get_blob(&db, hash).unwrap().is_none(), "Blocked blob must not be resurrected");
+
+        // 4. Unblock
+        unblock_blob(&db, hash).unwrap();
+        assert!(!is_blob_blocked(&db, hash).unwrap());
+        assert!(list_blocked_blobs(&db).unwrap().is_empty());
+
+        // 5. Upsert works after unblock
+        upsert_blob(&db, hash, Some("reinstated_file.pdf"), 2048, false, Some("node1")).unwrap();
+        assert!(get_blob(&db, hash).unwrap().is_some());
     }
 }

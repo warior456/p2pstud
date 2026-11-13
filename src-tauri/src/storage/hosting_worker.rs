@@ -49,6 +49,30 @@ pub fn get_target_hosting_bytes(db: &Database) -> Result<u64> {
     Ok((quota as f64 * TARGET_FILL_RATIO) as u64)
 }
 
+/// Check if auto-fill should be allowed for the current network.
+/// In public swarms (no network secret configured), auto-fill is blocked unless the user explicitly
+/// opted in via `auto_host_public_files = true` to protect against liability from unvetted content.
+pub fn is_auto_hosting_allowed(db: &Database) -> bool {
+    let has_secret = db
+        .get_setting("network_secret")
+        .ok()
+        .flatten()
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(false);
+
+    if has_secret {
+        // In private networks with a shared passphrase, peers are within a trusted cohort.
+        return true;
+    }
+
+    // In public swarms, require explicit user opt-in
+    db.get_setting("auto_host_public_files")
+        .ok()
+        .flatten()
+        .map(|s| s.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+}
+
 /// Perform one auto-fill pass. Downloads un-cached workspace files from connected peers
 /// until the local cache reaches ~80% of quota.
 pub async fn run_hosting_fill_pass(
@@ -56,6 +80,11 @@ pub async fn run_hosting_fill_pass(
     engine: &IrohEngine,
     bandwidth: Option<&Arc<BandwidthTracker>>,
 ) -> Result<usize> {
+    if !is_auto_hosting_allowed(db) {
+        tracing::debug!("Auto-fill hosting pass skipped: auto-hosting public files is disabled");
+        return Ok(0);
+    }
+
     if crate::p2p::network_profile::should_pause_on_battery(db) {
         tracing::debug!("Auto-fill hosting pass skipped: running on battery power");
         return Ok(0);

@@ -85,6 +85,7 @@ export interface AppSettings {
   pause_on_battery?: boolean;
   battery_mode?: BatteryMode;
   warn_metered?: boolean;
+  auto_host_public_files?: boolean;
 }
 
 export type BatteryMode = 'pause' | 'eco' | 'normal';

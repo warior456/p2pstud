@@ -217,6 +217,15 @@ const MIGRATIONS: &[&str] = &[
     );
     CREATE INDEX IF NOT EXISTS idx_deleted_blobs_owner ON deleted_blobs(owner_node_id);
     "#,
+    // Migration 0018 — Public safety: blocked blobs table & auto-host public files setting
+    r#"
+    CREATE TABLE IF NOT EXISTS blocked_blobs (
+        hash       TEXT PRIMARY KEY,
+        blocked_at INTEGER NOT NULL,
+        reason     TEXT
+    );
+    INSERT OR IGNORE INTO settings(key, value) VALUES ('auto_host_public_files', 'false');
+    "#,
 ];
 
 fn apply_migrations_to_conn(conn: &Connection) -> Result<()> {

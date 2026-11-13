@@ -23,7 +23,8 @@ import {
   ThumbsUp,
   ThumbsDown,
   ShieldAlert,
-  Archive
+  Archive,
+  Ban
 } from 'lucide-react';
 import { FileEntry } from '../../types';
 import { isSameNodeId } from '../../utils/nodeId';
@@ -53,11 +54,13 @@ interface FileRowProps {
   onReportDangerous?: (hash: string, reason: string) => void;
   onExportFolderZip?: (folderName: string) => void;
   onDeleteFolder?: (folderName: string) => void;
+  onBlockFile?: (hash: string) => void;
 }
 
 const DANGEROUS_EXTENSIONS = [
   '.exe', '.bat', '.cmd', '.msi', '.ps1', '.sh', '.bash', '.elf', '.bin', 
-  '.dll', '.so', '.dylib', '.vbs', '.js', '.vbe', '.wsf', '.wsh', '.scr', '.pif'
+  '.dll', '.so', '.dylib', '.vbs', '.js', '.vbe', '.wsf', '.wsh', '.scr', '.pif',
+  '.html', '.htm', '.xhtml', '.svg', '.docm', '.xlsm', '.pptm'
 ];
 
 function isDangerousFile(filename: string): boolean {
@@ -98,6 +101,7 @@ export const FileRow: React.FC<FileRowProps> = ({
   onReportDangerous,
   onExportFolderZip,
   onDeleteFolder,
+  onBlockFile,
 }) => {
   const [menuOpen, setMenuOpen] = useState(false);
   const [isDragTarget, setIsDragTarget] = useState(false);
@@ -627,6 +631,25 @@ export const FileRow: React.FC<FileRowProps> = ({
               className="w-full text-left px-3 py-1.5 flex items-center gap-2 hover:bg-red-50 text-red-600"
             >
               <ShieldAlert className="w-3.5 h-3.5 text-red-600" /> Report Dangerous / Malicious
+            </button>
+          )}
+
+          {!file.is_dir && onBlockFile && (
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                setMenuOpen(false);
+                const confirm = window.confirm(
+                  `Block and purge "${file.name}" locally?\n\nThis will permanently delete the file from your disk and ignore all swarm announcements for this content.`
+                );
+                if (confirm) {
+                  onBlockFile(file.hash);
+                }
+              }}
+              className="w-full text-left px-3 py-1.5 flex items-center gap-2 hover:bg-rose-50 text-rose-700"
+              title="Permanently remove from local disk and block future sync"
+            >
+              <Ban className="w-3.5 h-3.5 text-rose-700" /> Block & Purge Locally
             </button>
           )}
 

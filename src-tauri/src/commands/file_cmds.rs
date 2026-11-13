@@ -211,6 +211,38 @@ pub async fn unpin_file(hash: String, state: State<'_, AppState>) -> Result<(), 
     set_pinned(&state.db, &hash, false).map_err(|e| e.to_string())
 }
 
+/// Block a file locally, immediately purging physical bytes from disk and preventing
+/// future catalog auto-sync or background hosting of this content.
+#[tauri::command]
+pub async fn block_file(
+    hash: String,
+    reason: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    crate::storage::blob_tracker::block_blob(&state.db, &hash, reason.as_deref())
+        .map_err(|e| format!("failed to block file: {e}"))?;
+
+    if let Some(store) = resolve_local_store(&state).await {
+        let _ = store.tags().delete(hash.as_bytes()).await;
+    }
+
+    Ok(())
+}
+
+/// Unblock a previously blocked file hash.
+#[tauri::command]
+pub async fn unblock_file(hash: String, state: State<'_, AppState>) -> Result<(), String> {
+    crate::storage::blob_tracker::unblock_blob(&state.db, &hash)
+        .map_err(|e| format!("failed to unblock file: {e}"))
+}
+
+/// List all locally blocked file hashes.
+#[tauri::command]
+pub async fn list_blocked_files(state: State<'_, AppState>) -> Result<Vec<String>, String> {
+    crate::storage::blob_tracker::list_blocked_blobs(&state.db)
+        .map_err(|e| format!("failed to list blocked files: {e}"))
+}
+
 /// Read a file's bytes from the local iroh-blobs store, automatically downloading
 /// on-demand from connected peers/swarm if not currently cached on disk.
 #[tauri::command]

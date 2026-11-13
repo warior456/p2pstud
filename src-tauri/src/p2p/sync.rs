@@ -192,7 +192,9 @@ impl CatalogSyncHandler {
     /// Process an incoming message and update local SQLite catalog.
     pub async fn handle_message(&self, msg: SyncMessage, sender_peer_id: Option<&str>) -> Result<Option<SyncMessage>> {
         match msg {
-            SyncMessage::CatalogDump(remote_records) => {
+            SyncMessage::CatalogDump(mut remote_records) => {
+                // SECURITY: Cap batch size to defend against memory exhaustion and SQLite write lockouts
+                remote_records.truncate(500);
                 for r in remote_records {
                     if !is_valid_blob_hash(&r.hash) {
                         continue;
@@ -384,7 +386,9 @@ impl CatalogSyncHandler {
                 }
                 Ok(None)
             }
-            SyncMessage::TombstoneDump(remote_tombstones) => {
+            SyncMessage::TombstoneDump(mut remote_tombstones) => {
+                // SECURITY: Cap batch size to defend against memory exhaustion and SQLite write lockouts
+                remote_tombstones.truncate(500);
                 for t in remote_tombstones {
                     let hash_clone = t.hash.clone();
                     if crate::storage::blob_tracker::record_deletion_tombstone(&self.db, &t).unwrap_or(false) {
@@ -615,6 +619,11 @@ impl ProtocolHandler for CatalogSyncHandler {
 
             // Loop to accept all incoming bi-directional streams on this connection
             while let Ok((mut send, mut recv)) = connection.accept_bi().await {
+                if !check_peer_sync_rate_limit(remote_id) {
+                    tracing::warn!(remote = %remote_id, "Catalog sync rate limit exceeded; rejecting stream");
+                    let _ = send.finish();
+                    continue;
+                }
                 let this = this.clone();
                 let sender_peer = sender_peer.clone();
                 tokio::spawn(async move {
@@ -639,6 +648,32 @@ impl ProtocolHandler for CatalogSyncHandler {
 }
 
 static ACTIVE_SWARM_PEERS: std::sync::RwLock<Vec<iroh::EndpointId>> = std::sync::RwLock::new(Vec::new());
+
+static PEER_SYNC_RATE_LIMITER: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<iroh::EndpointId, (u32, std::time::Instant)>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
+fn check_peer_sync_rate_limit(peer_id: iroh::EndpointId) -> bool {
+    const MAX_STREAMS_PER_WINDOW: u32 = 40;
+    const WINDOW_DURATION: std::time::Duration = std::time::Duration::from_secs(10);
+
+    let mut lock = match PEER_SYNC_RATE_LIMITER.lock() {
+        Ok(guard) => guard,
+        Err(_) => return true,
+    };
+
+    let now = std::time::Instant::now();
+    let entry = lock.entry(peer_id).or_insert((0, now));
+    if now.duration_since(entry.1) > WINDOW_DURATION {
+        *entry = (1, now);
+        true
+    } else if entry.0 < MAX_STREAMS_PER_WINDOW {
+        entry.0 += 1;
+        true
+    } else {
+        false
+    }
+}
 
 pub fn register_active_peer(peer_id: iroh::EndpointId) {
     if let Ok(mut lock) = ACTIVE_SWARM_PEERS.write() {
@@ -758,9 +793,10 @@ pub async fn sync_catalog_with_peer(
 
     // Read the remote catalog response
     if let Ok(reply_bytes) = recv.read_to_end(2 * 1024 * 1024).await {
-        if let Ok(SyncMessage::CatalogDump(remote_records)) =
+        if let Ok(SyncMessage::CatalogDump(mut remote_records)) =
             serde_json::from_slice::<SyncMessage>(&reply_bytes)
         {
+            remote_records.truncate(500);
             let peer_id_str = peer_addr.id.to_string();
             for r in remote_records {
                 if !is_valid_blob_hash(&r.hash) {

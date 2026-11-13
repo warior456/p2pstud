@@ -1421,6 +1421,17 @@ export default function App() {
     }
   };
 
+  const handleBlockFile = async (hash: string) => {
+    try {
+      await invoke('block_file', { hash, reason: 'user_blocked' });
+      alert('File has been blocked locally and purged from your computer.');
+      await loadWorkspaceFiles();
+      await refetchStats();
+    } catch (err) {
+      alert(`Failed to block file: ${err}`);
+    }
+  };
+
   const currentDisplayFiles = useMemo(() => {
     const matchesFilter = (fileName: string) => {
       if (!activeFilter) return true;
@@ -1944,6 +1955,7 @@ export default function App() {
                 onRate={handleRate}
                 onToggleStar={handleToggleStar}
                 onReportDangerous={handleReportDangerous}
+                onBlockFile={handleBlockFile}
                 showAllFavorites={showAllFavorites}
                 onToggleAllFavorites={() => {
                   setShowAllFavorites((prev) => !prev);

@@ -68,6 +68,8 @@ pub struct AppSettings {
     pub battery_mode: Option<String>,
     #[serde(default)]
     pub warn_metered: Option<bool>,
+    #[serde(default)]
+    pub auto_host_public_files: Option<bool>,
 }
 
 /// Return current storage statistics to the frontend.
@@ -229,6 +231,13 @@ pub async fn get_app_settings(state: State<'_, AppState>) -> Result<AppSettings,
         .map(|v| v.eq_ignore_ascii_case("true"))
         .unwrap_or(true);
 
+    let auto_host_public_files = state
+        .db
+        .get_setting("auto_host_public_files")
+        .map_err(|e| e.to_string())?
+        .map(|v| v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+
     Ok(AppSettings {
         relay_url,
         cache_limit_bytes,
@@ -240,6 +249,7 @@ pub async fn get_app_settings(state: State<'_, AppState>) -> Result<AppSettings,
         pause_on_battery: Some(pause_on_battery),
         battery_mode: Some(battery_mode),
         warn_metered: Some(warn_metered),
+        auto_host_public_files: Some(auto_host_public_files),
     })
 }
 
@@ -313,8 +323,27 @@ pub async fn update_app_settings(
             .map_err(|e| e.to_string())?;
     }
 
+    if let Some(auto_host) = settings.auto_host_public_files {
+        state
+            .db
+            .set_setting("auto_host_public_files", &auto_host.to_string())
+            .map_err(|e| e.to_string())?;
+    }
+
     tracing::info!(?settings, "Updated application settings");
     Ok(())
+}
+
+/// Configure whether the local node automatically seeds unvetted public swarm files.
+#[tauri::command]
+pub async fn set_auto_host_public_files(
+    enabled: bool,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    state
+        .db
+        .set_setting("auto_host_public_files", &enabled.to_string())
+        .map_err(|e| e.to_string())
 }
 
 /// Set background bandwidth limit (e.g. "128kb", "512kb", "2mb", "unlimited").

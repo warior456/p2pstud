@@ -38,10 +38,18 @@ export const CacheSlider: React.FC<CacheSliderProps> = ({ stats, onStatsUpdated 
   const [savingCacheDir, setSavingCacheDir] = useState<boolean>(false);
   const [cacheDirFeedback, setCacheDirFeedback] = useState<{ msg: string; isError: boolean } | null>(null);
 
+  // Public Swarm Zero-Trust Auto-Hosting Guard
+  const [autoHostPublic, setAutoHostPublic] = useState<boolean>(false);
+  const [savingAutoHost, setSavingAutoHost] = useState<boolean>(false);
+
   useEffect(() => {
     invoke<boolean>('is_autostart_enabled')
       .then((val) => setAutostartEnabled(Boolean(val)))
       .catch((err) => console.warn('Could not read autostart status:', err));
+
+    invoke<string | null>('get_setting', { key: 'auto_host_public_files' })
+      .then((val) => setAutoHostPublic(val === 'true'))
+      .catch((err) => console.warn('Could not read auto_host_public_files:', err));
 
     invoke<string>('get_cache_directory')
       .then((dir) => {
@@ -51,6 +59,19 @@ export const CacheSlider: React.FC<CacheSliderProps> = ({ stats, onStatsUpdated 
       })
       .catch((err) => console.warn('Could not read cache directory:', err));
   }, []);
+
+  const handleToggleAutoHost = async () => {
+    const nextVal = !autoHostPublic;
+    setSavingAutoHost(true);
+    try {
+      await invoke('set_auto_host_public_files', { enabled: nextVal });
+      setAutoHostPublic(nextVal);
+    } catch (err) {
+      console.error('Failed to update auto_host_public_files:', err);
+    } finally {
+      setSavingAutoHost(false);
+    }
+  };
 
   const handleToggleAutostart = async () => {
     const nextVal = !autostartEnabled;
@@ -247,6 +268,26 @@ export const CacheSlider: React.FC<CacheSliderProps> = ({ stats, onStatsUpdated 
             </div>
             <p className="text-[11px] text-gray-500 mt-0.5">
               Disables the automatic LRU eviction worker and auto-downloads all course workspace blobs locally to provide 100% offline redundancy.
+            </p>
+          </label>
+        </div>
+
+        <div className="p-4 bg-gray-50 rounded-lg border border-gray-200 flex items-start gap-3">
+          <input
+            type="checkbox"
+            id="auto-host-public"
+            checked={autoHostPublic}
+            disabled={savingAutoHost}
+            onChange={handleToggleAutoHost}
+            className="mt-1 h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
+          />
+          <label htmlFor="auto-host-public" className="cursor-pointer">
+            <div className="flex items-center gap-1.5 text-xs font-bold text-gray-900">
+              <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" />
+              Auto-Seed Public Swarm Files (Zero-Trust Guard)
+            </div>
+            <p className="text-[11px] text-gray-500 mt-0.5 leading-relaxed">
+              When disabled (recommended for public use), background cache auto-fill and scarcity replication only run in password-protected cohorts. In public swarms, files are only cached when you explicitly open, download, or pin them to prevent liability from unvetted content.
             </p>
           </label>
         </div>

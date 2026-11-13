@@ -42,6 +42,11 @@ pub async fn find_endangered_blob(
     db: &Database,
     engine: &IrohEngine,
 ) -> Result<Option<BlobRecord>> {
+    if !crate::storage::hosting_worker::is_auto_hosting_allowed(db) {
+        tracing::debug!("Scarcity replication skipped: auto-hosting public files is disabled");
+        return Ok(None);
+    }
+
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
