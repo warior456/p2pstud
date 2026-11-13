@@ -42,6 +42,7 @@
 | 2026-11-08 | **SQLite WAL Truncation, Hardened Anti-Resurrection Tombstones & Bandwidth Settings (v0.1.43)**: Enforced periodic SQLite WAL checkpointing shrinking 4GB WAL; added dedicated Bandwidth & Battery tab; hardened recursive folder deletion against peer resurrection | Bug fix & UX |
 | 2026-11-13 | **Public Safety Iteration 1 (v0.1.51)**: Webview capability minimization (removed raw `shell`/`fs`), Windows Mark-of-the-Web (`Zone.Identifier`), Unicode Bidi/RTLO path sanitization, macro/web extension lockout, and PDF JavaScript quarantine | Public Safety |
 | 2026-11-13 | **Public Safety Iteration 2 (v0.1.52)**: Zero-Trust Auto-Hosting Guard (prevents blind public cache auto-fill/scarcity), Content Blocklist & Instant Quarantine (`blocked_blobs` with physical disk wipe), "Block & Purge Locally" context action, and P2P sync stream rate limiting (40 streams/10s, 500-item batch cap) | Public Safety |
+| 2026-11-13 | **Public Safety Iteration 3 (v0.1.53)**: Public Swarm Privacy Disclosures & Warnings, "Privacy Shield / Stealth Mode" P2P relay encapsulation & IP hiding, Sybil-Resistant Deletion Immunity (protecting pinned files from peer votes), and dual Decimal GB / Binary GiB cache telemetry metrics | Public Safety |
 
 ---
 

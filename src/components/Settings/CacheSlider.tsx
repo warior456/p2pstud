@@ -209,10 +209,16 @@ export const CacheSlider: React.FC<CacheSliderProps> = ({ stats, onStatsUpdated 
           <div className="p-4 bg-gray-50 rounded-lg border border-gray-100">
             <div className="text-xs font-medium text-gray-500">Currently Used</div>
             <div className="text-2xl font-bold text-gray-900 mt-1">{formatGigabytes(stats?.used_bytes || 0)} GB</div>
+            <div className="text-[11px] text-gray-400 mt-0.5">
+              ~{((stats?.used_bytes || 0) / 1_000_000_000).toFixed(2)} decimal GB (binary {formatGigabytes(stats?.used_bytes || 0)} GiB)
+            </div>
           </div>
           <div className="p-4 bg-gray-50 rounded-lg border border-gray-100">
             <div className="text-xs font-medium text-gray-500">Pinned (Protected)</div>
             <div className="text-2xl font-bold text-green-600 mt-1">{formatGigabytes(stats?.pinned_bytes || 0)} GB</div>
+            <div className="text-[11px] text-gray-400 mt-0.5">
+              ~{((stats?.pinned_bytes || 0) / 1_000_000_000).toFixed(2)} decimal GB (binary {formatGigabytes(stats?.pinned_bytes || 0)} GiB)
+            </div>
           </div>
         </div>
 

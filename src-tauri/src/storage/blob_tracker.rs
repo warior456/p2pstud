@@ -407,15 +407,28 @@ pub fn evaluate_deletion_schedule(db: &Database, hash: &str) -> Result<DeletionS
     let k_votes = get_keep_votes(db, hash)?.len();
     let total_votes = d_votes + k_votes;
 
-    let scheduled_at: Option<i64> = {
+    let (scheduled_at, is_pinned): (Option<i64>, bool) = {
         let conn = db.lock();
         conn.query_row(
-            "SELECT deletion_scheduled_at FROM local_blobs WHERE hash = ?1",
+            "SELECT deletion_scheduled_at, is_pinned FROM local_blobs WHERE hash = ?1",
             params![hash],
-            |r| r.get(0),
+            |r| Ok((r.get(0)?, r.get::<_, i64>(1).unwrap_or(0) == 1)),
         )
-        .unwrap_or(None)
+        .unwrap_or((None, false))
     };
+
+    // Anti-Censorship & Public Safety: Pinned / locally protected files must NEVER
+    // be purged by external peer votes.
+    if is_pinned {
+        if scheduled_at.is_some() {
+            let conn = db.lock();
+            let _ = conn.execute(
+                "UPDATE local_blobs SET deletion_scheduled_at = NULL WHERE hash = ?1",
+                params![hash],
+            );
+        }
+        return Ok(DeletionScheduleStatus::Safe);
+    }
 
     let ratio = if total_votes > 0 {
         d_votes as f64 / total_votes as f64
@@ -1857,6 +1870,27 @@ mod tests {
         remove_keep_vote(&db, "target_vote", "defender1").unwrap();
         let b5 = get_blob(&db, "target_vote").unwrap().unwrap();
         assert!(b5.deletion_scheduled_at.is_some());
+    }
+
+    #[test]
+    fn pinned_blob_immune_to_community_deletion() {
+        let (_dir, db) = make_db();
+        // Insert pinned blob
+        upsert_blob(&db, "pinned_doc", Some("important.pdf"), 500, true, Some("me")).unwrap();
+
+        // Cast 5 delete votes from different peers
+        for i in 1..=5 {
+            cast_delete_vote(&db, "pinned_doc", &format!("hostile_peer_{i}")).unwrap();
+        }
+
+        let b = get_blob(&db, "pinned_doc").unwrap().unwrap();
+        assert_eq!(b.delete_votes.len(), 5);
+        // Must remain Safe and never schedule deletion
+        assert_eq!(b.deletion_scheduled_at, None);
+        assert!(matches!(
+            evaluate_deletion_schedule(&db, "pinned_doc").unwrap(),
+            DeletionScheduleStatus::Safe
+        ));
     }
 
     #[test]

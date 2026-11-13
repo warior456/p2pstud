@@ -332,9 +332,9 @@ export function NetworkSettings() {
           <div className="flex items-center gap-2">
             <span className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Current Wi-Fi Profile</span>
             {profileInfo?.profile === 'campus' && (
-              <span className="px-2 py-0.5 bg-amber-50 text-amber-700 text-xs font-bold rounded-full flex items-center gap-1 border border-amber-200">
-                <Shield className="w-3 h-3 text-amber-600" />
-                Campus Stealth Active
+              <span className="px-2 py-0.5 bg-indigo-50 text-indigo-700 text-xs font-bold rounded-full flex items-center gap-1 border border-indigo-200">
+                <Shield className="w-3 h-3 text-indigo-600" />
+                Privacy Shield / Stealth Active
               </span>
             )}
             {profileInfo?.profile === 'trusted' && (
@@ -645,15 +645,15 @@ export function NetworkSettings() {
               onClick={() => handleSetOverride('campus')}
               className={`p-2.5 rounded-lg border text-left transition cursor-pointer ${
                 overrideMode === 'campus'
-                  ? 'border-amber-600 bg-amber-50/50 ring-1 ring-amber-600'
+                  ? 'border-indigo-600 bg-indigo-50/50 ring-1 ring-indigo-600'
                   : 'border-gray-200 hover:bg-gray-50'
               }`}
             >
-              <div className="flex items-center gap-1.5 text-xs font-bold text-amber-900">
-                <Shield className="w-3.5 h-3.5 text-amber-600" />
-                Force Campus
+              <div className="flex items-center gap-1.5 text-xs font-bold text-indigo-950">
+                <Shield className="w-3.5 h-3.5 text-indigo-600" />
+                Privacy Shield / Stealth
               </div>
-              <p className="text-[11px] text-gray-500 mt-0.5">Always enable stealth</p>
+              <p className="text-[11px] text-gray-500 mt-0.5">Tunnel over 443 relay; hides IP</p>
             </button>
 
             <button

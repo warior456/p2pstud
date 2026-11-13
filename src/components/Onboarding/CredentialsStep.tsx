@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { KeyRound, ShieldCheck, Info } from 'lucide-react';
+import { KeyRound, ShieldCheck, ShieldAlert, Info } from 'lucide-react';
 
 interface CredentialsStepProps {
   initialValue?: string;
@@ -45,6 +45,30 @@ export function CredentialsStep({ initialValue = '', onComplete, onBack }: Crede
             <strong>Standalone P2P Mode:</strong> If your university has not set up a central authentication server or campus email OTP, standalone mode works out-of-the-box without any external dependencies.
           </span>
         </div>
+
+        {!passphrase.trim() ? (
+          <div className="bg-amber-950/40 border border-amber-800/60 rounded-lg p-3 flex items-start gap-2.5 text-xs text-amber-200">
+            <ShieldAlert className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+            <div className="space-y-1">
+              <strong className="text-amber-300">Public Swarm Transparency & Safety:</strong>
+              <p className="text-[11px] text-amber-200/90 leading-relaxed">
+                Joining without a passphrase connects you to the open campus swarm.
+              </p>
+              <ul className="list-disc list-inside space-y-0.5 text-[11px] text-amber-300/80">
+                <li>Background auto-fill of unvetted files is <strong>disabled</strong> to protect your storage.</li>
+                <li>Direct P2P discloses your public IP address to peers unless <strong>Stealth / Privacy Shield</strong> is enabled.</li>
+                <li>You are solely responsible for materials you choose to share under local copyright and honor codes.</li>
+              </ul>
+            </div>
+          </div>
+        ) : (
+          <div className="bg-emerald-950/40 border border-emerald-800/60 rounded-lg p-2.5 flex items-start gap-2 text-xs text-emerald-200">
+            <ShieldCheck className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
+            <span>
+              <strong>Private Cohort Swarm:</strong> Only classmates with this exact passphrase can discover your network and exchange files.
+            </span>
+          </div>
+        )}
       </div>
 
       <div className="flex items-center justify-between pt-4 border-t border-slate-800">
