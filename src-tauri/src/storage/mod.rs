@@ -3,6 +3,7 @@ pub mod blob_tracker;
 pub mod db;
 pub mod eviction;
 pub mod hosting_worker;
+pub mod metadata_stripper;
 pub mod path_utils;
 pub mod pruning;
 pub mod scarcity;

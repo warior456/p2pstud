@@ -176,6 +176,14 @@ pub fn unblock_blob(db: &Database, hash: &str) -> Result<()> {
     Ok(())
 }
 
+/// Detailed record of a locally blocked blob.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BlockedBlobRecord {
+    pub hash: String,
+    pub blocked_at: i64,
+    pub reason: Option<String>,
+}
+
 /// Retrieve all hashes blocked locally by the user.
 pub fn list_blocked_blobs(db: &Database) -> Result<Vec<String>> {
     let conn = db.lock();
@@ -186,6 +194,25 @@ pub fn list_blocked_blobs(db: &Database) -> Result<Vec<String>> {
         hashes.push(row?);
     }
     Ok(hashes)
+}
+
+/// Retrieve detailed records of all blobs blocked locally by the user.
+pub fn list_blocked_blobs_detailed(db: &Database) -> Result<Vec<BlockedBlobRecord>> {
+    let conn = db.lock();
+    let mut stmt =
+        conn.prepare("SELECT hash, blocked_at, reason FROM blocked_blobs ORDER BY blocked_at DESC")?;
+    let rows = stmt.query_map([], |r| {
+        Ok(BlockedBlobRecord {
+            hash: r.get(0)?,
+            blocked_at: r.get(1)?,
+            reason: r.get(2)?,
+        })
+    })?;
+    let mut records = Vec::new();
+    for row in rows {
+        records.push(row?);
+    }
+    Ok(records)
 }
 
 /// Validate and apply an incoming deletion tombstone.
@@ -2214,6 +2241,11 @@ mod tests {
         assert!(get_blob(&db, hash).unwrap().is_none());
         assert!(list_all_blobs(&db).unwrap().is_empty());
         assert_eq!(list_blocked_blobs(&db).unwrap(), vec![hash.to_string()]);
+        let detailed = list_blocked_blobs_detailed(&db).unwrap();
+        assert_eq!(detailed.len(), 1);
+        assert_eq!(detailed[0].hash, hash);
+        assert_eq!(detailed[0].reason.as_deref(), Some("malicious content"));
+        assert!(detailed[0].blocked_at > 0);
 
         // 3. Upsert attempt while blocked must be rejected
         upsert_blob(&db, hash, Some("suspicious_file.pdf"), 2048, false, Some("node1")).unwrap();

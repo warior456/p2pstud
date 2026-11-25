@@ -343,6 +343,7 @@ pub fn run() {
             commands::file_cmds::block_file,
             commands::file_cmds::unblock_file,
             commands::file_cmds::list_blocked_files,
+            commands::file_cmds::list_blocked_files_detailed,
             commands::file_cmds::list_files,
             commands::file_cmds::read_file_bytes,
             commands::file_cmds::add_file,

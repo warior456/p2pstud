@@ -243,6 +243,15 @@ pub async fn list_blocked_files(state: State<'_, AppState>) -> Result<Vec<String
         .map_err(|e| format!("failed to list blocked files: {e}"))
 }
 
+/// List all locally blocked file records with timestamps and reasons.
+#[tauri::command]
+pub async fn list_blocked_files_detailed(
+    state: State<'_, AppState>,
+) -> Result<Vec<crate::storage::blob_tracker::BlockedBlobRecord>, String> {
+    crate::storage::blob_tracker::list_blocked_blobs_detailed(&state.db)
+        .map_err(|e| format!("failed to list blocked files: {e}"))
+}
+
 /// Read a file's bytes from the local iroh-blobs store, automatically downloading
 /// on-demand from connected peers/swarm if not currently cached on disk.
 #[tauri::command]
@@ -716,6 +725,12 @@ pub async fn upload_file_bytes(
     let clean_name = crate::storage::path_utils::sanitize_virtual_path(&name)
         .map_err(|e| format!("Invalid filename: {e}"))?;
 
+    // Privacy guard: strip EXIF/GPS/text metadata from uploaded images before hashing & sharing
+    let data = crate::storage::metadata_stripper::strip_metadata_if_image(
+        std::path::Path::new(&clean_name),
+        &data,
+    );
+
     let size_bytes = data.len() as u64;
     let import_id = format!(
         "upload-{}",
@@ -1160,7 +1175,8 @@ pub async fn export_file(
         return Err("Security alert: This file claims to be a document or image, but contains executable binary headers (masquerading attack). Export blocked.".to_string());
     }
 
-    std::fs::write(&target, data)
+    let safe_data = crate::storage::metadata_stripper::strip_metadata_if_image(&target, &data);
+    std::fs::write(&target, safe_data)
         .map_err(|e| format!("failed to write destination file '{}': {e}", target.display()))?;
 
     attach_windows_zone_identifier(&target);
@@ -1412,7 +1428,8 @@ pub async fn download_file_to_downloads(
         return Err("Security alert: This file claims to be a document or image, but contains executable binary headers (masquerading attack). Download blocked.".to_string());
     }
 
-    std::fs::write(&target, data)
+    let safe_data = crate::storage::metadata_stripper::strip_metadata_if_image(&target, &data);
+    std::fs::write(&target, safe_data)
         .map_err(|e| format!("Failed to save '{}': {e}", target.display()))?;
     attach_windows_zone_identifier(&target);
     Ok(target.to_string_lossy().to_string())
@@ -1966,11 +1983,29 @@ pub async fn upload_file_path(
 
     let (store, owner_node_id, engine) = resolve_upload_context(&state).await?;
 
-    let outcome = match store
-        .blobs()
-        .add_path(path)
-        .await
-    {
+    let is_strippable_image = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| matches!(e.to_ascii_lowercase().as_str(), "jpg" | "jpeg" | "png"))
+        .unwrap_or(false)
+        && size_bytes <= 50 * 1024 * 1024;
+
+    let add_result = if is_strippable_image {
+        match tokio::fs::read(path).await {
+            Ok(raw_bytes) => {
+                let stripped = crate::storage::metadata_stripper::strip_metadata_if_image(
+                    std::path::Path::new(&clean_name),
+                    &raw_bytes,
+                );
+                store.blobs().add_bytes(bytes::Bytes::from(stripped)).await
+            }
+            Err(_) => store.blobs().add_path(path).await,
+        }
+    } else {
+        store.blobs().add_path(path).await
+    };
+
+    let outcome = match add_result {
         Ok(tag_info) => {
             let h = tag_info.hash;
             let _ = store.tags().set(clean_name.as_bytes(), tag_info).await;

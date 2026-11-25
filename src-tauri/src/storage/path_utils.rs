@@ -282,6 +282,35 @@ pub fn delete_blob_files_from_disk(blob_dir: &Path, hash: &str) {
     }
 }
 
+/// Redact OS user home directory names from paths before emitting to logs or diagnostics.
+/// Masks `/Users/<name>/...`, `/home/<name>/...`, and `C:\Users\<name>\...`.
+pub fn redact_sensitive_path(path: &Path) -> String {
+    let raw = path.to_string_lossy();
+    let mut out = String::with_capacity(raw.len());
+    let parts: Vec<&str> = raw.split(['/', '\\']).collect();
+    let sep = if raw.contains('\\') { '\\' } else { '/' };
+
+    let mut i = 0;
+    while i < parts.len() {
+        let part = parts[i];
+        if i > 0 {
+            out.push(sep);
+        }
+        out.push_str(part);
+        if (part.eq_ignore_ascii_case("users") || part.eq_ignore_ascii_case("home"))
+            && i + 1 < parts.len()
+            && !parts[i + 1].is_empty()
+        {
+            out.push(sep);
+            out.push_str("[USER]");
+            i += 2;
+            continue;
+        }
+        i += 1;
+    }
+    out
+}
+
 /// Scan blob storage directory and prune any orphaned physical files (.data, .obao4, etc.)
 /// that do not exist in the active `local_blobs` database table.
 pub fn cleanup_orphaned_disk_blobs(
@@ -462,5 +491,23 @@ mod tests {
         let lro_path = "document_\u{202D}test.txt";
         assert!(sanitize_virtual_path(lro_path).is_err());
         assert!(normalize_virtual_path(lro_path, &[]).is_err());
+    }
+
+    #[test]
+    fn redact_sensitive_path_masks_usernames() {
+        let win = Path::new(r"C:\Users\alice\AppData\Roaming\p2pstud\p2pstud.db");
+        let redacted_win = redact_sensitive_path(win);
+        assert!(!redacted_win.contains("alice"));
+        assert!(redacted_win.contains("[USER]"));
+
+        let mac = Path::new("/Users/bob/Library/Application Support/p2pstud");
+        let redacted_mac = redact_sensitive_path(mac);
+        assert!(!redacted_mac.contains("bob"));
+        assert!(redacted_mac.contains("[USER]"));
+
+        let linux = Path::new("/home/charlie/.local/share/p2pstud");
+        let redacted_linux = redact_sensitive_path(linux);
+        assert!(!redacted_linux.contains("charlie"));
+        assert!(redacted_linux.contains("[USER]"));
     }
 }

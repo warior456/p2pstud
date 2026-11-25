@@ -239,3 +239,28 @@ pub fn spawn_hosting_worker(
         }
     });
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn test_is_auto_hosting_allowed_public_vs_private() {
+        let dir = TempDir::new().unwrap();
+        let db = Database::open(&dir.path().join("test_hosting.db")).unwrap();
+
+        // Public swarm (no network_secret): disabled by default (Zero-Trust Guard)
+        assert!(!is_auto_hosting_allowed(&db));
+
+        // Explicit opt-in enables auto-hosting in public swarm
+        db.set_setting("auto_host_public_files", "true").unwrap();
+        assert!(is_auto_hosting_allowed(&db));
+
+        // Reset opt-in to false; switching to a private passphrase cohort enables auto-hosting
+        db.set_setting("auto_host_public_files", "false").unwrap();
+        assert!(!is_auto_hosting_allowed(&db));
+        db.set_setting("network_secret", "math-101-cohort").unwrap();
+        assert!(is_auto_hosting_allowed(&db));
+    }
+}

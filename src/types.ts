@@ -117,6 +117,12 @@ export interface QuarantineInfo {
   reasons: string[];
 }
 
+export interface BlockedFileRecord {
+  hash: string;
+  blocked_at: number;
+  reason: string | null;
+}
+
 export interface SoleSeedFile {
   hash: string;
   name: string | null;

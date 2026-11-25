@@ -9,9 +9,11 @@ import {
   Power, 
   Laptop,
   Database as DatabaseIcon,
-  Sparkles
+  Sparkles,
+  ShieldAlert,
+  RotateCcw
 } from 'lucide-react';
-import { StorageStats } from '../../types';
+import { StorageStats, BlockedFileRecord } from '../../types';
 
 interface CacheSliderProps {
   stats: StorageStats | null;
@@ -42,6 +44,10 @@ export const CacheSlider: React.FC<CacheSliderProps> = ({ stats, onStatsUpdated 
   const [autoHostPublic, setAutoHostPublic] = useState<boolean>(false);
   const [savingAutoHost, setSavingAutoHost] = useState<boolean>(false);
 
+  // Locally Blocked Content
+  const [blockedFiles, setBlockedFiles] = useState<BlockedFileRecord[]>([]);
+  const [unblockingHash, setUnblockingHash] = useState<string | null>(null);
+
   useEffect(() => {
     invoke<boolean>('is_autostart_enabled')
       .then((val) => setAutostartEnabled(Boolean(val)))
@@ -58,7 +64,23 @@ export const CacheSlider: React.FC<CacheSliderProps> = ({ stats, onStatsUpdated 
         setCustomCacheDirInput(safeDir);
       })
       .catch((err) => console.warn('Could not read cache directory:', err));
+
+    invoke<BlockedFileRecord[]>('list_blocked_files_detailed')
+      .then((items) => setBlockedFiles(Array.isArray(items) ? items : []))
+      .catch((err) => console.warn('Could not read blocked files:', err));
   }, []);
+
+  const handleUnblockFile = async (hash: string) => {
+    setUnblockingHash(hash);
+    try {
+      await invoke('unblock_file', { hash });
+      setBlockedFiles((prev) => prev.filter((item) => item.hash !== hash));
+    } catch (err) {
+      console.error('Failed to unblock file:', err);
+    } finally {
+      setUnblockingHash(null);
+    }
+  };
 
   const handleToggleAutoHost = async () => {
     const nextVal = !autoHostPublic;
@@ -422,6 +444,53 @@ export const CacheSlider: React.FC<CacheSliderProps> = ({ stats, onStatsUpdated 
           {dbOptimizedMsg && (
             <div className="p-2 rounded text-[11px] font-medium bg-emerald-50 text-emerald-800 border border-emerald-200">
               {dbOptimizedMsg}
+            </div>
+          )}
+        </div>
+
+        {/* Locally Blocked Content */}
+        <div className="p-4 bg-gray-50 rounded-xl border border-gray-200 space-y-3">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <ShieldAlert className="w-4 h-4 text-red-600" />
+              <span className="text-xs font-bold text-gray-900">Locally Blocked Content</span>
+            </div>
+            <span className="text-[10px] font-mono bg-red-50 text-red-700 border border-red-200 px-2 py-0.5 rounded">
+              {blockedFiles.length} blocked
+            </span>
+          </div>
+          <p className="text-[11px] text-gray-500 leading-relaxed">
+            Hashes you blocked are purged from disk and ignored during P2P catalog sync. Unblock an item here if you want to allow it back into your workspace.
+          </p>
+          {blockedFiles.length === 0 ? (
+            <div className="text-[11px] text-gray-400 italic py-1">
+              No locally blocked files.
+            </div>
+          ) : (
+            <div className="space-y-1.5 max-h-40 overflow-y-auto pr-1">
+              {blockedFiles.map((item) => (
+                <div
+                  key={item.hash}
+                  className="flex items-center justify-between gap-2 p-2 bg-white border border-gray-200 rounded-lg text-xs"
+                >
+                  <div className="min-w-0 flex-1">
+                    <div className="font-mono text-[11px] text-gray-800 truncate" title={item.hash}>
+                      {item.hash.slice(0, 16)}…{item.hash.slice(-8)}
+                    </div>
+                    <div className="text-[10px] text-gray-500 truncate">
+                      {item.reason || 'user_blocked'} • {new Date(item.blocked_at * 1000).toLocaleDateString()}
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => handleUnblockFile(item.hash)}
+                    disabled={unblockingHash === item.hash}
+                    className="inline-flex items-center gap-1 px-2.5 py-1 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-md text-[11px] font-semibold transition cursor-pointer disabled:opacity-50 shrink-0"
+                  >
+                    <RotateCcw className="w-3 h-3" />
+                    {unblockingHash === item.hash ? 'Unblocking...' : 'Unblock'}
+                  </button>
+                </div>
+              ))}
             </div>
           )}
         </div>

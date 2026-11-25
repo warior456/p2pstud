@@ -51,7 +51,7 @@ pub struct ConnectionStatus {
 }
 
 /// Global application settings.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Serialize, Deserialize)]
 pub struct AppSettings {
     pub relay_url: String,
     pub cache_limit_bytes: u64,
@@ -70,6 +70,31 @@ pub struct AppSettings {
     pub warn_metered: Option<bool>,
     #[serde(default)]
     pub auto_host_public_files: Option<bool>,
+}
+
+impl std::fmt::Debug for AppSettings {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AppSettings")
+            .field("relay_url", &self.relay_url)
+            .field("cache_limit_bytes", &self.cache_limit_bytes)
+            .field("full_mirror", &self.full_mirror)
+            .field("node_id", &self.node_id)
+            .field(
+                "network_secret",
+                &if self.network_secret.trim().is_empty() {
+                    "[PUBLIC]"
+                } else {
+                    "[REDACTED]"
+                },
+            )
+            .field("onboarding_complete", &self.onboarding_complete)
+            .field("bandwidth_cap", &self.bandwidth_cap)
+            .field("pause_on_battery", &self.pause_on_battery)
+            .field("battery_mode", &self.battery_mode)
+            .field("warn_metered", &self.warn_metered)
+            .field("auto_host_public_files", &self.auto_host_public_files)
+            .finish()
+    }
 }
 
 /// Return current storage statistics to the frontend.
@@ -431,7 +456,7 @@ pub async fn set_network_secret(
     }
 
     let _ = app.emit("network-database-switched", trimmed);
-    tracing::info!(trimmed, "Switched network secret and isolated database");
+    tracing::info!(is_private = !trimmed.is_empty(), "Switched network secret and isolated database");
     Ok(())
 }
 
@@ -735,7 +760,7 @@ pub async fn switch_network_database(
     }
 
     let _ = app.emit("network-database-switched", trimmed);
-    tracing::info!(trimmed, "Switched network database");
+    tracing::info!(is_private = !trimmed.is_empty(), "Switched network database");
     Ok(())
 }
 
@@ -766,4 +791,29 @@ pub async fn delete_network_database(
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     state.db.delete_network_database(&secret).map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_app_settings_debug_redacts_network_secret() {
+        let settings = AppSettings {
+            relay_url: "https://relay.example.com".to_string(),
+            cache_limit_bytes: 5_000_000_000,
+            full_mirror: false,
+            node_id: Some("node123".to_string()),
+            network_secret: "super-secret-passphrase-2026".to_string(),
+            onboarding_complete: Some("true".to_string()),
+            bandwidth_cap: None,
+            pause_on_battery: Some(true),
+            battery_mode: Some("eco".to_string()),
+            warn_metered: Some(true),
+            auto_host_public_files: Some(false),
+        };
+        let debug_str = format!("{:?}", settings);
+        assert!(!debug_str.contains("super-secret-passphrase-2026"));
+        assert!(debug_str.contains("[REDACTED]"));
+    }
 }
